@@ -1,0 +1,14 @@
+{
+  "acrylic": true,
+  "auto_hide_on_blur": true,
+  "auto_popup": true,
+  "hotkey": "<ctrl>+<shift>+k",
+  "input_method": "clipboard",
+  "max_recent": 30,
+  "max_visible_items": 8,
+  "opacity": 0.9,
+  "page_size": 3,
+  "theme": "light",
+  "window_height": 180,
+  "window_width": 620
+}

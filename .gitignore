@@ -1,0 +1,27 @@
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+
+# 运行时用户数据（最近使用 / 收藏，按用户生成）
+data/user_state.json
+
+# 日志
+*.log
+
+# 打包产物
+build/
+dist/
+*.spec
+
+# 编辑器 / IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store

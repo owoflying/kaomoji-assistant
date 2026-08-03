@@ -25,12 +25,13 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import (
     Qt, Signal, QEvent, QTimer, QPoint, QPropertyAnimation, QEasingCurve,
 )
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QGuiApplication
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QGuiApplication, QCursor
 
 from core.kaomoji_data import KaomojiData
 from core.user_state import UserState
 from core import win_utils
 from core.global_keys import GlobalKeyInterceptor
+from core.global_mouse import GlobalMouseInterceptor
 from ui.win_style import (
     apply_backdrop, apply_dark_mode,
     DWMSBT_TRANSIENTWINDOW, DWMSBT_NONE,
@@ -159,6 +160,11 @@ class PickerWindow(QWidget):
         self._interceptor.action.connect(self._on_hk_action)
         self._interceptor.dismiss.connect(self._on_hk_dismiss)
         self._interceptor.start()
+        # 全局鼠标钩子：面板可见时，点在“界面外”即关闭（见 core/global_mouse.py）；
+        # 内部点击交给各自控件处理，不会误伤。
+        self._mouse_watch = GlobalMouseInterceptor(lambda: self._hk_active)
+        self._mouse_watch.outside_click.connect(self._on_outside_click)
+        self._mouse_watch.start()
 
     # ---------- 窗口与材质 ----------
     def _init_window(self):
@@ -462,6 +468,20 @@ class PickerWindow(QWidget):
         self._drag = None
         super().mouseReleaseEvent(e)
 
+    # ---------- 全局鼠标钩子回调：点在面板“外部”即关闭 ----------
+    def _on_outside_click(self):
+        if not self.isVisible() or self._hiding:
+            return
+        # 点在面板矩形内（候选、翻页、空白点一下关闭等）交给各自控件，不处理；
+        # 真正的“外部”才收起。判定放在主线程里做，安全。
+        if self.geometry().contains(QCursor.pos()):
+            return
+        self._closing_enabled = False
+        # 记一个时间戳，避免“点托盘又立刻被本钩子关掉又由托盘 toggle 重开”的抖动：
+        # 外部点击关闭后 0.4s 内的热键/托盘切换会被忽略（与键盘 dismiss 同机制）。
+        self._dismiss_at = time.time()
+        self.hide()
+
     # ---------- 显示：手动 / 自动弹出 ----------
     def _finish_hide_now(self):
         """若正在播淡出动画，立刻收尾真隐藏。
@@ -552,7 +572,7 @@ class PickerWindow(QWidget):
         self._anim.start()
 
     def shutdown(self):
-        """退出前卸载全局键盘钩子，避免钩子线程残留。"""
+        """退出前卸载全局键盘/鼠标钩子，避免钩子线程残留。"""
         try:
             self._focus_timer.stop()
         except Exception:
@@ -560,6 +580,10 @@ class PickerWindow(QWidget):
         self._hk_active = False
         try:
             self._interceptor.stop()
+        except Exception:
+            pass
+        try:
+            self._mouse_watch.stop()
         except Exception:
             pass
 

@@ -5,8 +5,6 @@
 
 产物：
     dist/KaomojiAssistant/KaomojiAssistant.exe  （连同依赖 DLL 与 data 资源）
-
-随后可用 installer/KaomojiAssistant.iss（Inno Setup）封装为安装程序。
 """
 import os
 import sys

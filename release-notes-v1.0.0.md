@@ -2,10 +2,9 @@
 
 Windows 托盘程序，通过全局热键快速插入颜文字。
 
-## 下载（任选其一，内容相同）
+## 下载
 
-- **KaomojiAssistant-Setup.exe** — Inno Setup 安装包：自动创建开始菜单/桌面快捷方式，可选开机自启动、写入卸载项。
-- **KaomojiAssistant-v1.0.0.zip** — 绿色版：解压后直接运行 `KaomojiAssistant.exe`，无需安装，不写注册表。
+**KaomojiAssistant-v1.0.0.zip** — 绿色版：解压后直接运行 `KaomojiAssistant.exe`，无需安装、不写注册表。
 
 ## 功能
 - 全局热键（默认 Ctrl+Shift+K）唤起选择窗口
@@ -14,8 +13,7 @@ Windows 托盘程序，通过全局热键快速插入颜文字。
 - 设置内支持开机自启动（写入当前用户注册表，无需管理员权限）
 
 ## 使用
-- 安装包：双击安装，首次启动后驻留系统托盘，按 Ctrl+Shift+K 唤起。
-- 绿色版：解压后运行 `KaomojiAssistant.exe`，同样按 Ctrl+Shift+K 唤起。
+解压后运行 `KaomojiAssistant.exe`，按 Ctrl+Shift+K 唤起。
 
 ## 说明
 - 仅支持 Windows（依赖全局键盘钩子）。

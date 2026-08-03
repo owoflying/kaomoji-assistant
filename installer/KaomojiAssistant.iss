@@ -21,6 +21,8 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 OutputDir=out
 OutputBaseFilename=KaomojiAssistant-Setup
+; 安装包自身也带上同款图标（build.py 生成在项目根的 app.ico）
+SetupIconFile=..\app.ico
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern

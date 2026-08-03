@@ -4,8 +4,9 @@ import os
 
 from PySide6.QtCore import QObject, Signal
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-STATE_PATH = os.path.join(BASE_DIR, "data", "user_state.json")
+from core.runtime import state_path
+
+STATE_PATH = state_path()
 
 
 class UserState(QObject):

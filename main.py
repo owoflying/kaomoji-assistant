@@ -16,38 +16,46 @@ from core.hotkey import NativeHotkeyManager
 from core.emotion_monitor import EmotionMonitor
 from core.injector import KaomojiInjector
 from core.user_state import UserState
-from core import win_utils
+from core import runtime
+from core import autostart
+from core.app_icon import make_icon
 from ui.picker_window import PickerWindow
 from ui.settings_dialog import SettingsDialog
 
+# 配置项的默认值；load_config 会把磁盘值合并进来，缺失项自动补默认，
+# 这样新增配置项时旧配置不会因缺字段而报错。
+DEFAULT_CONFIG = {
+    "hotkey": "<ctrl>+<shift>+k",
+    "theme": "light",
+    "opacity": 0.98,
+    "acrylic": True,
+    "input_method": "type",
+    "max_recent": 30,
+    "auto_popup": True,
+    "page_size": 3,
+    "autostart": False,
+}
+
 
 def load_config():
-    path = os.path.join(BASE_DIR, "config.json")
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+    cfg = dict(DEFAULT_CONFIG)
+    try:
+        with open(runtime.config_path(), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            cfg.update(data)
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+    return cfg
 
 
 def save_config(config):
-    path = os.path.join(BASE_DIR, "config.json")
+    path = runtime.config_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
-
-
-def make_icon():
-    """生成一个简单的表情图标（无外部图片依赖）。"""
-    size = 64
-    pix = QPixmap(size, size)
-    pix.fill(QColor(0, 0, 0, 0))
-    p = QPainter(pix)
-    p.setRenderHint(QPainter.Antialiasing)
-    p.setBrush(QColor(255, 255, 255))
-    p.setPen(QColor(0, 0, 0, 0))
-    p.drawRoundedRect(4, 4, size - 8, size - 8, 14, 14)
-    p.setPen(QColor(40, 40, 40))
-    p.setFont(QFont("Segoe UI", 28))
-    p.drawText(pix.rect(), Qt.AlignCenter, "(◕‿◕)")
-    p.end()
-    return QIcon(pix)
 
 
 def main():
@@ -56,6 +64,10 @@ def main():
     app.setApplicationName("颜文字输入辅助器")
 
     config = load_config()
+    # 让「配置里的 autostart」与注册表实际状态保持一致
+    if autostart.is_supported():
+        if bool(config.get("autostart", False)) != autostart.is_enabled():
+            autostart.set_enabled(bool(config.get("autostart", False)))
     data = KaomojiData()
     # 传入颜文字库作为白名单：最近/收藏只保留库中真实存在的条目，
     # 任何脏数据（测试残留、手改 JSON 出错）都会在载入时被自动清掉
@@ -122,6 +134,9 @@ def main():
         config.clear()
         config.update(new_cfg)
         save_config(config)
+        # 开机自启动：仅在打包 exe 形态下实际写注册表
+        if autostart.is_supported():
+            autostart.set_enabled(bool(config.get("autostart", False)))
         # 实时应用：换肤等；热键的实际重新注册放到设置关闭时统一处理，
         # 避免“先注册、又在录制/操作期间被旧热键误触发”的竞态
         window.apply_config(config)
@@ -153,8 +168,7 @@ def main():
     menu.addAction(quit_action)
     tray.setContextMenu(menu)
 
-    label = win_utils.hotkey_label(config.get("hotkey", "<ctrl>+<shift>+k"))
-    tray.setToolTip("颜文字输入辅助器 (%s)" % label)
+    tray.setToolTip("颜文字输入辅助器")
     tray.show()
 
     hotkey.start(config.get("hotkey", "<ctrl>+<shift>+k"))

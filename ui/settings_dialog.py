@@ -11,6 +11,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 
 from core import win_utils
+from core import autostart
 from core.win_utils import MOD_CONTROL, MOD_ALT, MOD_SHIFT, MOD_WIN
 
 # pynput 仅在「热键录制」时按需导入，缺失该依赖只禁用录制、不拖垮整个程序
@@ -162,6 +163,18 @@ class SettingsDialog(QDialog):
         page_row.addWidget(self.page_spin)
         root.addLayout(page_row)
 
+        root.addWidget(self._divider())
+
+        # 系统
+        root.addWidget(self._section_label("系统"))
+        autostart_row = QHBoxLayout()
+        self.autostart_check = QCheckBox("开机自动启动")
+        if not autostart.is_supported():
+            self.autostart_check.setEnabled(False)
+            self.autostart_check.setToolTip("仅打包后的 exe 版本支持")
+        autostart_row.addWidget(self.autostart_check)
+        root.addLayout(autostart_row)
+
         root.addStretch(1)
 
         # 底部按钮
@@ -205,6 +218,7 @@ class SettingsDialog(QDialog):
         self.recent_spin.setValue(int(cfg.get("max_recent", 30)))
         self.auto_check.setChecked(bool(cfg.get("auto_popup", True)))
         self.page_spin.setValue(int(cfg.get("page_size", 3)))
+        self.autostart_check.setChecked(autostart.is_enabled())
 
     def _update_hotkey_label(self, hotkey_str=None):
         if self._captured is not None:
@@ -335,6 +349,7 @@ class SettingsDialog(QDialog):
         new_cfg["max_recent"] = self.recent_spin.value()
         new_cfg["auto_popup"] = self.auto_check.isChecked()
         new_cfg["page_size"] = self.page_spin.value()
+        new_cfg["autostart"] = self.autostart_check.isChecked()
         self.config = new_cfg
         self.config_applied.emit(new_cfg)
         self.accept()

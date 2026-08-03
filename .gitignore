@@ -19,6 +19,8 @@ data/user_state.json
 build/
 dist/
 *.spec
+# 打包时自动生成的图标（build.py 每次构建都会重新生成）
+app.ico
 
 # 编辑器 / IDE
 .idea/

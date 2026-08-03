@@ -45,5 +45,31 @@ python main.py
 { "categories": [ { "name": "开心", "items": ["(｡･ω･｡)", "(◕‿◕)"] } ] }
 ```
 
+## 编译 EXE（发布版）
+把项目打包成 Windows 可执行程序（onedir 模式，无控制台窗口，托盘常驻）：
+
+```bat
+.venv\Scripts\activate
+pip install -r requirements.txt
+python build.py
+```
+
+- 产物在 `dist\KaomojiAssistant\`（含 `KaomojiAssistant.exe` 与依赖 DLL、data 资源）。
+- 打包时会**自动生成 `app.ico`**（与系统托盘同款的「白底圆角 + 颜文字 (◕‿◕)」图标），作为 exe 文件图标，无需手动准备图片。
+- 只读资源 `data/kaomoji.json` 由 `core/runtime.py` 在运行时自动定位（源码态取项目目录，冻结态取 `_internal`），两种形态互不干扰。
+
+## 生成安装程序
+1. 打包完成后，用 [Inno Setup](https://jrsoftware.org/isdl.php) 封装安装程序：
+   ```bat
+   iscc installer\KaomojiAssistant.iss
+   ```
+   或直接双击 `installer\build_installer.bat`。输出 `installer\out\KaomojiAssistant-Setup.exe`。
+2. 安装时可选「开机自动启动」「创建桌面快捷方式」；设置里也能随时开关。
+
+## 开机自启动
+- 安装时勾选「开机自动启动」，或在「设置 → 系统 → 开机自动启动」中开启。
+- 通过写入当前用户注册表 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 实现，**无需管理员权限**。
+- 已安装版本的用户配置位于 `%APPDATA%\KaomojiAssistant\`（含 `config.json`、`user_state.json`），重装不丢失。
+
 ## 协议
 Apache-2.0。

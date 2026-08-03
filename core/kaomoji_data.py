@@ -1,8 +1,9 @@
 import json
 import os
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_PATH = os.path.join(BASE_DIR, "data", "kaomoji.json")
+from core.runtime import kaomoji_path
+
+DATA_PATH = kaomoji_path()
 
 
 class KaomojiData:

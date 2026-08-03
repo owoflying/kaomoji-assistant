@@ -1,2 +1,4 @@
 PySide6>=6.5.0
 pynput>=1.7.6
+# 仅打包发布时需要
+pyinstaller>=6.0

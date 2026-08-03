@@ -145,6 +145,8 @@ class PickerWindow(QWidget):
         self._closing_enabled = False
         self._pending = None
         self._drag = None
+        self._press_global = QPoint()  # 按下时的全局坐标，用于区分“点击”与“拖动”
+        self._drag_moved = False       # 本次按压是否发生了足以算作拖动的位移
         self._hk_active = False        # 全局钩子是否生效（面板可见时为 True）
         self._hiding = False           # 正在播放淡出动画
         self._dismiss_at = 0.0         # 上次因“继续打字”自动关闭的时间戳
@@ -430,20 +432,33 @@ class PickerWindow(QWidget):
             return
         super().keyPressEvent(e)
 
-    # ---------- 拖动（按住空白处即可挪窗） ----------
+    # ---------- 拖动 / 点击（空白处按住拖动=挪窗，点一下=关闭） ----------
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton:
             self._drag = e.globalPos() - self.frameGeometry().topLeft()
+            self._press_global = e.globalPos()
+            self._drag_moved = False
             return
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
         if self._drag is not None and (e.buttons() & Qt.LeftButton):
+            # 位移超过阈值才记为“拖动”，否则视为一次点击（松开时关闭面板）
+            if (e.globalPos() - self._press_global).manhattanLength() > 4:
+                self._drag_moved = True
             self.move(e.globalPos() - self._drag)
             return
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
+        if e.button() == Qt.LeftButton and not self._drag_moved:
+            # 空白处“点一下”（几乎没移动）= 关闭面板。
+            # 这能解决：手动（托盘）唤起、且当前没有输入框聚焦时，
+            # 失焦自动关闭逻辑因从未见过可编辑焦点而不武装，
+            # 导致点击面板空白既不会关闭、又没别的退出途径（只能 Esc 或再点托盘）。
+            # 拖动（按住移动）仍用于挪窗，二者靠位移阈值区分。
+            self._closing_enabled = False
+            self.hide()
         self._drag = None
         super().mouseReleaseEvent(e)
 

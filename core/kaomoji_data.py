@@ -8,15 +8,23 @@ DATA_PATH = kaomoji_path()
 
 
 def _is_valid_kaomoji(text):
-    """颜文字不应包含任何中文字符（CJK 统一表意文字）。
+    """载入时自查，剔除中文文本脏数据，但保留合法颜文字。
 
-    用于载入时自查：任何混入中文（如测试残留、手改 JSON 出错、从别处
-    复制时夹带的“哦哦”之类）的条目一律丢弃，绝不上屏成为候选。
-    半角片假名（｡ ヽ ﾉ 等）与符号是合法颜文字成分，放行。
+    核心判据：是否存在「连续 2 个及以上汉字」的片段。
+      * 正常颜文字里即便用到汉字，也只是「益 / 皿」之类孤立单字当五官，
+        绝不会两个汉字连在一起；
+      * 而混入的中文文本（如「哦哦」、整句中文）天然是连续汉字串。
+    因此：只要出现连续 2+ 汉字就判为脏数据丢弃；其余一律保留。
+    半角片假名（｡ ヽ ﾉ 等）与符号属合法颜文字成分，不计入。
     """
+    run = 0
     for ch in text:
-        if unicodedata.category(ch).startswith("Lo") and _is_cjk(ch):
-            return False
+        if _is_cjk(ch):
+            run += 1
+            if run >= 2:
+                return False
+        else:
+            run = 0
     return True
 
 

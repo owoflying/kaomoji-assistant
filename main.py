@@ -29,7 +29,7 @@ DEFAULT_CONFIG = {
     "theme": "light",
     "opacity": 0.98,
     "acrylic": True,
-    "input_method": "type",
+    "input_method": "clipboard",
     "max_recent": 30,
     "auto_popup": True,
     "page_size": 3,
@@ -98,7 +98,7 @@ def main():
         monitor.notify_injected(text)
         # 延迟一点，确保面板隐藏、焦点已回到原窗口后再注入文本
         QTimer.singleShot(
-            0, lambda: injector.inject(text, config.get("input_method", "type"))
+            0, lambda: injector.inject(text, config.get("input_method", "clipboard"))
         )
 
     window.selected.connect(on_selected)

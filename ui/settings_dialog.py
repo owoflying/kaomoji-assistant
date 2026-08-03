@@ -136,9 +136,13 @@ class SettingsDialog(QDialog):
         method_row.addWidget(QLabel("输入方式"))
         method_row.addStretch(1)
         self.method_combo = QComboBox()
-        self.method_combo.addItem("模拟键入", "type")
         self.method_combo.addItem("剪贴板粘贴", "clipboard")
+        self.method_combo.addItem("模拟键入", "type")
         self.method_combo.setMinimumWidth(140)
+        self.method_combo.setToolTip(
+            "剪贴板粘贴（默认，推荐）：发 Ctrl+V，不被中文输入法拦截；"
+            "模拟键入在微软拼音等中文输入法下可能产生乱码"
+        )
         method_row.addWidget(self.method_combo)
         root.addLayout(method_row)
 

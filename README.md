@@ -37,7 +37,7 @@ python main.py
 
 ## 配置
 编辑 `config.json`，或托盘右键「设置」可视化修改（即时生效）：
-- `hotkey` 热键 · `theme` 主题 · `opacity` 不透明度 · `acrylic` 亚克力 · `input_method` 输入方式（`type` 直接键入 / `clipboard` 剪贴板粘贴，后者可规避中文输入法拦截）
+- `hotkey` 热键 · `theme` 主题 · `opacity` 不透明度 · `acrylic` 亚克力 · `input_method` 输入方式（`clipboard` 剪贴板粘贴为默认，发 Ctrl+V 不被中文输入法拦截；`type` 模拟键入在微软拼音等中文输入法下可能产生乱码，仅推荐英文输入模式使用）
 
 ## 自定义颜文字
 编辑 `data/kaomoji.json`，在对应分类的 `items` 中增删即可：

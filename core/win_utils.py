@@ -340,14 +340,22 @@ def get_keyboard_layout(hwnd):
 def set_keyboard_layout(hwnd, hkl):
     """把前台窗口线程的键盘布局切到指定 HKL（如英文(美国)），从而剥离 IME。
 
-    主路径：AttachThreadInput 把本线程输入处理与前景线程绑定后，在本线程
-    ActivateKeyboardLayout 会同步作用于前台线程——即时生效、确定性强、无首字符竞态；
-    随后再补一条 WM_INPUTLANGCHANGEREQUEST 让目标窗口自己的消息循环也同步状态。
-    若绑定失败（跨桌面/跨进程受限）则退回纯 PostMessage。任何失败都静默忽略，
-    绝不抛到调用方。
+    主路径：向前台窗口投递 WM_INPUTLANGCHANGEREQUEST，由它自己的消息循环切换输入法。
+    这是最干净、对微软拼音双向（切到英文 / 切回中文）都有效的做法；切换是异步的，
+    由调用方轮询 get_keyboard_layout 确认真正生效后再继续（见 injector._wait_layout），
+    从而消除“打字抢在切换前面”的乱码竞态。
+    仅当投递失败时才退回 AttachThreadInput + ActivateKeyboardLayout 兜底。
+    任何失败都静默忽略，绝不抛到调用方。
     """
     if not hwnd or not hkl:
         return
+    # 主路径：WM_INPUTLANGCHANGEREQUEST 投给目标窗口，由其自身切换（双向可靠）
+    try:
+        user32.PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST, 0, hkl)
+        return
+    except Exception:
+        pass
+    # 兜底：AttachThreadInput + ActivateKeyboardLayout（极少走到）
     try:
         fg = user32.GetForegroundWindow()
         ft = user32.GetWindowThreadProcessId(fg, ctypes.byref(wintypes.DWORD(0)))
@@ -358,17 +366,6 @@ def set_keyboard_layout(hwnd, hkl):
         user32.ActivateKeyboardLayout(hkl, KLF_ACTIVATE)
         if attached:
             user32.AttachThreadInput(ft, ct, False)
-        # 让目标窗口自身也同步（部分自绘控件只看自己线程的状态）
-        try:
-            user32.PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST, 0, hkl)
-        except Exception:
-            pass
-        return
-    except Exception:
-        pass
-    # 兜底：仅 PostMessage
-    try:
-        user32.PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST, 0, hkl)
     except Exception:
         pass
 

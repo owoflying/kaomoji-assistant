@@ -5,10 +5,11 @@
     微秒级返回，绝不在钩子里做 UIA/COM 调用，否则全系统打字都会卡；
   * 采样线程被事件唤醒后，先等约 40ms 让刚敲的字符落进控件（消除“多按一键”竞态），
     再节流（默认 200ms 一次）去读「当前焦点控件的真实文本」：
-        1. WM_GETTEXT（core.win_utils）—— 老式 Win32 控件的亚毫秒级快速路径，
-           记事本 / 桌面程序等绝大多数场景走这里，应优先尝试；
-        2. UI Automation（core.uia_text）—— 覆盖浏览器 / Electron / UWP / WPF / Qt，
-           这些自绘控件不响应 WM_GETTEXT，回退到此拿到 IME 合成后的中文；
+        1. 原生 Win32 编辑框（记事本等，class=Edit/RichEdit）走 WM_GETTEXT——
+           亚毫秒级可靠快速路径，确认是原生编辑框时优先使用；
+        2. UI Automation（core.uia_text）—— 覆盖浏览器 / Electron / Qt / WPF / UWP 等
+           自绘控件，它们不响应 WM_GETTEXT（只能拿到窗口标题等无效文本），
+           必须回退到此读取真实输入框内容；
         3. 可见字符缓冲 —— 英文/拼音场景的最后兜底。
   * 只在文本尾部判定情绪，避免整段历史文字把情绪「焊死」；
   * 取「最靠右」命中的情绪（detect_last），保证推荐跟着最新输入走。
@@ -144,18 +145,23 @@ class EmotionMonitor(QObject):
 
     # ---------- 采样线程 ----------
     def _read_focus_text(self):
-        """按 WM_GETTEXT -> UIA -> 字符缓冲 的优先级读取当前输入内容。
+        """按 原生编辑框(WM_GETTEXT) -> UIA -> 字符缓冲 的优先级读取当前输入内容。
 
-        老式 Win32 控件（记事本、桌面程序等）走 WM_GETTEXT 是亚毫秒级快速路径，
-        应优先尝试；浏览器 / Electron / UWP / WPF / Qt 等自绘控件不响应 WM_GETTEXT，
-        才回退到 UI Automation（core.uia_text），后者是 COM 调用，耗时明显更高。
+        仅当焦点控件确为原生 Win32 编辑框（记事本等，class=Edit/RichEdit）时，
+        WM_GETTEXT 才是可靠且亚毫秒级的快速路径，优先使用；
+        浏览器 / Electron / Qt / WPF 等自绘控件不响应 WM_GETTEXT，拿到的是窗口标题
+        等无效文本，一旦被当作输入内容就会让情绪判定全盘失败（自动弹出失效），
+        因此这类控件必须交给 UI Automation（core.uia_text）读取真实输入框文本。
         """
-        try:
-            t = win_utils.get_focused_text(self._max_buf)
-            if t:
-                return t
-        except Exception:
-            pass
+        # 保守判断：只有确认是原生编辑框才走 WM_GETTEXT，否则直接 UIA
+        hwnd = win_utils.get_focused_control_hwnd()
+        if hwnd and win_utils.is_native_edit(hwnd):
+            try:
+                t = win_utils.get_focused_text(self._max_buf)
+                if t:
+                    return t
+            except Exception:
+                pass
         if uia_text is not None:
             try:
                 t = uia_text.get_focused_text(self._max_buf)
@@ -163,6 +169,13 @@ class EmotionMonitor(QObject):
                     return t
             except Exception:
                 pass
+        # 兜底：UIA 不可用（非 Windows / COM 异常）且非原生编辑框时，再试一次 WM_GETTEXT
+        try:
+            t = win_utils.get_focused_text(self._max_buf)
+            if t:
+                return t
+        except Exception:
+            pass
         return self._buffer
 
     def _strip_injected(self, text):

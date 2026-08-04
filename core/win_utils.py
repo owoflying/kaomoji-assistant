@@ -397,6 +397,29 @@ def get_focused_control_hwnd():
         return None
 
 
+def is_native_edit(hwnd):
+    """判断 hwnd 是否为原生 Win32 编辑框（Edit / RichEdit 类）。
+
+    原生编辑框可用 WM_GETTEXT 亚毫秒级读取真实文本；
+    浏览器 / Electron / Qt / WPF 等自绘控件不响应 WM_GETTEXT
+    （只能拿到窗口标题等无效文本），必须交给 UIA 读取。
+    任何失败都静默返回 False（保守地回退到 UIA 路径）。
+    """
+    if not hwnd:
+        return False
+    try:
+        buf = ctypes.create_unicode_buffer(256)
+        user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+        user32.GetClassNameW.restype = ctypes.c_int
+        n = user32.GetClassNameW(hwnd, buf, 256)
+        if n <= 0:
+            return False
+        cls = (buf.value or "").lower()
+        return cls == "edit" or cls.startswith("richedit")
+    except Exception:
+        return False
+
+
 def post_wm_char(hwnd, text):
     """把 text 以 UTF-16 代码单元为单位，逐个 PostMessageW(WM_CHAR) 投递到 hwnd。
 

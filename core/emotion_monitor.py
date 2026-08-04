@@ -51,6 +51,11 @@ class EmotionMonitor(QObject):
         self._typed_evt = threading.Event()
         self._interval = 0.20       # UIA 采样节流间隔（秒）
         self._settle = 0.04         # keydown 后等字符落进控件再读的短暂延迟（消“多按一键”）
+        # 一次唤醒后连采几次的“驻留轮询”窗口：中文输入法(IME)在 keydown 后
+        # 数十~数百毫秒才把中文落定到控件（如「开心」要等空格上屏），单采一次往往
+        # 读不到，必须多采几次直到提交完成，否则就表现为“打完关键词还得再多按一键才弹”。
+        self._dwell_count = 6       # 连采次数
+        self._dwell_gap = 0.06      # 两次采样之间的间隔（秒）
         # 防重触发
         self._lock = threading.Lock()
         self._locked = None         # 已弹出过、暂不重复弹的情绪
@@ -184,8 +189,25 @@ class EmotionMonitor(QObject):
             if remain > 0:
                 self._stop_evt.wait(min(remain, 1.0))
                 continue
-            # 等刚敲下的字符先落进目标控件再读：keydown 瞬间读取会落后一个字符，
-            # 导致“关键词打完了还得多敲一键才弹”——这是“总要多按一键”的根因。
+            # 驻留轮询：连采几次，捕捉 IME 组字完成后的中文，
+            # 避免“打完关键词还得再多按一键才弹”。
+            self._dwell_sample()
+            # 节流：一次采样后至少间隔 _interval 再采下一次
+            self._stop_evt.wait(self._interval)
+
+    def _dwell_sample(self):
+        """一次唤醒后连采若干次：覆盖 IME 提交中文的滞后窗口。
+
+        命中情绪即停（已锁定，不再重复打扰）；未命中则继续轮询直到窗口结束。
+        """
+        for _ in range(self._dwell_count):
+            if self._stop_evt.is_set() or self._paused:
+                return
+            remain = self._quiet_until - time.time()
+            if remain > 0:
+                self._stop_evt.wait(min(remain, 1.0))
+                return
+            # 等刚敲下的字符先落进目标控件再读：keydown 瞬间读取会落后一个字符。
             self._stop_evt.wait(self._settle)
             try:
                 text = self._read_focus_text()
@@ -194,8 +216,11 @@ class EmotionMonitor(QObject):
             text = self._strip_injected(text)
             if text:
                 self._evaluate(text)
-            # 节流：一次采样后至少间隔 _interval 再采下一次
-            self._stop_evt.wait(self._interval)
+            # 已锁定（命中过情绪）则无需继续轮询
+            with self._lock:
+                if self._locked is not None:
+                    return
+            self._stop_evt.wait(self._dwell_gap)
 
     # ---------- 情绪判定 ----------
     def _evaluate(self, text):

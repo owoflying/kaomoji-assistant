@@ -5,9 +5,10 @@
     微秒级返回，绝不在钩子里做 UIA/COM 调用，否则全系统打字都会卡；
   * 采样线程被事件唤醒后，先等约 40ms 让刚敲的字符落进控件（消除“多按一键”竞态），
     再节流（默认 200ms 一次）去读「当前焦点控件的真实文本」：
-        1. UI Automation（core.uia_text）—— 覆盖浏览器 / Electron / UWP / WPF / Qt，
-           能拿到 IME 合成后的中文，这是自动弹出的主力；
-        2. WM_GETTEXT（core.win_utils）—— 老式 Win32 控件的快速路径；
+        1. WM_GETTEXT（core.win_utils）—— 老式 Win32 控件的亚毫秒级快速路径，
+           记事本 / 桌面程序等绝大多数场景走这里，应优先尝试；
+        2. UI Automation（core.uia_text）—— 覆盖浏览器 / Electron / UWP / WPF / Qt，
+           这些自绘控件不响应 WM_GETTEXT，回退到此拿到 IME 合成后的中文；
         3. 可见字符缓冲 —— 英文/拼音场景的最后兜底。
   * 只在文本尾部判定情绪，避免整段历史文字把情绪「焊死」；
   * 取「最靠右」命中的情绪（detect_last），保证推荐跟着最新输入走。
@@ -143,7 +144,18 @@ class EmotionMonitor(QObject):
 
     # ---------- 采样线程 ----------
     def _read_focus_text(self):
-        """按 UIA -> WM_GETTEXT -> 字符缓冲 的优先级读取当前输入内容。"""
+        """按 WM_GETTEXT -> UIA -> 字符缓冲 的优先级读取当前输入内容。
+
+        老式 Win32 控件（记事本、桌面程序等）走 WM_GETTEXT 是亚毫秒级快速路径，
+        应优先尝试；浏览器 / Electron / UWP / WPF / Qt 等自绘控件不响应 WM_GETTEXT，
+        才回退到 UI Automation（core.uia_text），后者是 COM 调用，耗时明显更高。
+        """
+        try:
+            t = win_utils.get_focused_text(self._max_buf)
+            if t:
+                return t
+        except Exception:
+            pass
         if uia_text is not None:
             try:
                 t = uia_text.get_focused_text(self._max_buf)
@@ -151,12 +163,6 @@ class EmotionMonitor(QObject):
                     return t
             except Exception:
                 pass
-        try:
-            t = win_utils.get_focused_text(self._max_buf)
-            if t:
-                return t
-        except Exception:
-            pass
         return self._buffer
 
     def _strip_injected(self, text):

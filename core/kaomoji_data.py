@@ -1,6 +1,5 @@
 import json
 import os
-import unicodedata
 
 from core.runtime import kaomoji_path
 

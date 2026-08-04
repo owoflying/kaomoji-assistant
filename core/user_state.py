@@ -78,6 +78,8 @@ class UserState(QObject):
         if not self._accepts(text):
             return          # 非库内条目一律不落盘，从源头挡住脏数据
         if text in self.recent:
+            if self.recent[0] == text:
+                return      # 已是最新一条，列表未变，跳过落盘与刷新
             self.recent.remove(text)
         self.recent.insert(0, text)
         if len(self.recent) > self.max_recent:

@@ -57,8 +57,13 @@ class KaomojiInjector:
             except Exception:
                 pass
         finally:
-            # 无论成败都切回用户原来的键盘布局
+            # 无论成败都切回用户原来的键盘布局。
+            # 关键：打完字后不能立刻切回——pynput.type() 只是把键事件“注入”进系统队列就返回，
+            # 前台程序还要过一会儿才从自己的消息循环里真正处理成文字。若这里马上 PostMessage 切回中文，
+            # “切回消息”可能抢在尾部键事件前面被处理，导致最后几个字符被中文 IME 吞成「哦哦」。
+            # 故先按字数留一点“落字”时间（随字数增长、封顶），确保键都被处理掉后再切回。
             if switched and saved_layout:
+                time.sleep(0.3 + min(len(text), 40) * 0.02)
                 win_utils.set_keyboard_layout(hwnd, saved_layout)
 
     def _wait_layout(self, hwnd, target, timeout=0.6):

@@ -13,6 +13,8 @@ from pynput.keyboard import Controller, Key
 from PySide6.QtCore import QTimer, QMimeData
 from PySide6.QtWidgets import QApplication
 
+from core import win_utils
+
 
 class KaomojiInjector:
     def __init__(self):
@@ -21,17 +23,28 @@ class KaomojiInjector:
     def inject(self, text, method="clipboard"):
         if not text:
             return
+        if method == "clipboard":
+            self._inject_clipboard(text)
+            return
+        # 模拟键入模式：打字前把 IME 切到“英文直接输入”，打完再切回原状态，
+        # 否则中文输入法（如微软拼音）会把逐字符键事件吞进组字缓冲区，
+        # 颜文字被当成拼音/候选转换，输出乱码（如「哦哦」）。
+        hwnd = win_utils.get_foreground_hwnd()
+        was_open = win_utils.get_ime_open(hwnd)
+        if was_open:
+            win_utils.set_ime_open(hwnd, False)
         try:
-            if method == "clipboard":
-                self._inject_clipboard(text)
-            else:
-                self._controller.type(text)
+            self._controller.type(text)
         except Exception:
             # 任意方式失败都退回直接键入
             try:
                 self._controller.type(text)
             except Exception:
                 pass
+        finally:
+            # 无论成败都切回用户原来的输入法状态，不留下“卡在英文”的副作用
+            if was_open:
+                win_utils.set_ime_open(hwnd, was_open)
 
     def _snapshot_clipboard(self, clipboard):
         """深拷贝当前剪贴板内容到一个全新的 QMimeData（由我们持有所有权）。

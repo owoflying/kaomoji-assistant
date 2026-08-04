@@ -286,6 +286,61 @@ def set_foreground(hwnd):
         pass
 
 
+# ---- IME（输入法）开/关控制：模拟键入前切英文、完成后切回 ----
+# 用 imm32 直接操作前台窗口线程的 IME 上下文：关闭(open=False) 即“英文直接输入”，
+# 打开(open=True) 即恢复中文输入。仅改变 open 状态，不切换键盘布局。
+try:
+    imm32 = ctypes.windll.imm32
+    imm32.ImmGetContext.argtypes = [wintypes.HWND]
+    imm32.ImmGetContext.restype = ctypes.c_void_p
+    imm32.ImmReleaseContext.argtypes = [wintypes.HWND, ctypes.c_void_p]
+    imm32.ImmReleaseContext.restype = wintypes.BOOL
+    imm32.ImmGetOpenStatus.argtypes = [ctypes.c_void_p]
+    imm32.ImmGetOpenStatus.restype = wintypes.BOOL
+    imm32.ImmSetOpenStatus.argtypes = [ctypes.c_void_p, wintypes.BOOL]
+    imm32.ImmSetOpenStatus.restype = wintypes.BOOL
+    _IME_AVAILABLE = True
+except Exception:  # 非 Windows 或 imm32 不可用
+    imm32 = None
+    _IME_AVAILABLE = False
+
+
+def get_ime_open(hwnd):
+    """前台窗口线程的 IME 是否处于“打开（中文输入）”状态。
+
+    无 IME / 不可用 / 取不到上下文时返回 False（视为已是英文直接输入）。
+    """
+    if not _IME_AVAILABLE or not hwnd:
+        return False
+    try:
+        himc = imm32.ImmGetContext(hwnd)
+        if not himc:
+            return False
+        try:
+            return bool(imm32.ImmGetOpenStatus(himc))
+        finally:
+            imm32.ImmReleaseContext(hwnd, himc)
+    except Exception:
+        return False
+
+
+def set_ime_open(hwnd, open_):
+    """切换前台窗口线程的 IME 开/关。open_=False 即“切到英文直接输入”，
+    open_=True 恢复中文输入。任何失败都静默忽略，绝不抛到调用方。"""
+    if not _IME_AVAILABLE or not hwnd:
+        return
+    try:
+        himc = imm32.ImmGetContext(hwnd)
+        if not himc:
+            return
+        try:
+            imm32.ImmSetOpenStatus(himc, bool(open_))
+        finally:
+            imm32.ImmReleaseContext(hwnd, himc)
+    except Exception:
+        pass
+
+
 # ---- 获取输入光标（caret）屏幕坐标，用于输入法式就近弹出 ----
 class _RECT(ctypes.Structure):
     _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),

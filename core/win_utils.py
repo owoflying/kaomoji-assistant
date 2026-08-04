@@ -370,6 +370,55 @@ def set_keyboard_layout(hwnd, hkl):
         pass
 
 
+# ---- 直接字符投递 (WM_CHAR)：绕过键盘/IME，把字符直接送进目标控件 ----
+WM_CHAR = 0x0102
+
+
+def get_focused_control_hwnd():
+    """拿到当前真正拥有焦点的控件 hwnd（用于直接投递 WM_CHAR）。
+
+    优先用 GetGUIThreadInfo 取前台线程的焦点控件（编辑框本身）；
+    取不到时退回整个前台窗口。任何失败都静默退回前台窗口，绝不抛错。
+    """
+    try:
+        fg = user32.GetForegroundWindow()
+        if not fg:
+            return None
+        tid = user32.GetWindowThreadProcessId(fg, ctypes.byref(wintypes.DWORD(0)))
+        info = _GUITHREADINFO()
+        info.cbSize = ctypes.sizeof(_GUITHREADINFO)
+        user32.GetGUIThreadInfo.restype = ctypes.c_int
+        user32.GetGUIThreadInfo.argtypes = [ctypes.c_ulong, ctypes.POINTER(_GUITHREADINFO)]
+        if tid and user32.GetGUIThreadInfo(tid, ctypes.byref(info)):
+            if info.hwndFocus:
+                return info.hwndFocus
+        return fg
+    except Exception:
+        return None
+
+
+def post_wm_char(hwnd, text):
+    """把 text 以 UTF-16 代码单元为单位，逐个 PostMessageW(WM_CHAR) 投递到 hwnd。
+
+    - 不走键盘、不走剪贴板、不经过 IME：微软拼音这类输入法根本不参与，从根上杜绝乱码。
+    - BMP 字符 = 1 个代码单元一次 WM_CHAR；四字节 emoji 等自动拆成高/低 surrogate 两次。
+    - 投递是异步的（入队即返回），同一队列内顺序天然保持。
+    返回成功投递的代码单元数；hwnd 无效或 text 为空时返回 0。
+    """
+    if not hwnd or not text:
+        return 0
+    units = text.encode("utf-16-le")
+    sent = 0
+    for i in range(0, len(units), 2):
+        unit = int.from_bytes(units[i:i + 2], "little")
+        try:
+            if user32.PostMessageW(hwnd, WM_CHAR, unit, 1):
+                sent += 1
+        except Exception:
+            break
+    return sent
+
+
 # ---- 获取输入光标（caret）屏幕坐标，用于输入法式就近弹出 ----
 class _RECT(ctypes.Structure):
     _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),

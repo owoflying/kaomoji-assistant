@@ -1,6 +1,6 @@
 """把选中的颜文字输入到之前焦点所在窗口。
 
-提供两种方式：
+提供三种方式：
   * "clipboard"：写入剪贴板后发送 Ctrl+V，默认方式。
     发送的是命令键（Ctrl+V），不会被中文输入法（如微软拼音）拦截，
     因此对颜文字兼容性最好、在中文 Windows 下最稳。用后自动恢复用户原剪贴板。
@@ -9,6 +9,10 @@
     （该布局不带 IME，IME 整体被剥离、键事件直通），打完再切回原布局。
     关键在于：切完要「轮询确认英文布局真正生效」后才开打——否则打字比切换抢先发出
     （电脑越快越容易发生），就会被中文输入法吞成乱码（电脑越卡反而越稳，正是这个竞态）。
+  * "direct"：直接字符投递。用 PostMessageW(WM_CHAR) 把字符逐个投递到当前焦点控件，
+    不走键盘、不走剪贴板、不经过 IME——微软拼音根本不参与，从根上杜绝乱码，
+    也不依赖 pynput 的 SendInput。依赖目标控件处理 WM_CHAR（记事本/浏览器输入框/
+    Office/聊天框等标准编辑控件都支持）；拿不到焦点控件或投递失败时自动退回剪贴板。
 """
 import time
 
@@ -29,6 +33,9 @@ class KaomojiInjector:
             return
         if method == "clipboard":
             self._inject_clipboard(text)
+            return
+        if method == "direct":
+            self._inject_direct(text)
             return
         # 模拟键入模式：打字前把前台线程的键盘布局切到「英文(美国)」，剥离微软拼音这类
         # IME，键事件直通；切到位（轮询确认）后再键入，打完切回原布局，不留下“卡在英文”的副作用。
@@ -69,6 +76,22 @@ class KaomojiInjector:
                 pass
             time.sleep(0.03)
         return False
+
+    def _inject_direct(self, text):
+        """直接字符投递：把字符以 WM_CHAR 送进当前焦点控件，绕过键盘与 IME。
+
+        不经过剪贴板（不污染用户剪贴板）、不切输入法、不依赖 pynput 的 SendInput，
+        因此不会有「哦哦」乱码，也不受微软拼音影响。依赖目标控件处理 WM_CHAR
+        （记事本/浏览器输入框/Office/聊天框等标准编辑控件都支持）。
+        拿不到焦点控件或投递失败时，自动退回剪贴板兜底，保证颜文字一定能落进去。
+        """
+        hwnd = win_utils.get_focused_control_hwnd()
+        if not hwnd:
+            self._inject_clipboard(text)
+            return
+        sent = win_utils.post_wm_char(hwnd, text)
+        if sent == 0:
+            self._inject_clipboard(text)
 
     def _snapshot_clipboard(self, clipboard):
         """深拷贝当前剪贴板内容到一个全新的 QMimeData（由我们持有所有权）。

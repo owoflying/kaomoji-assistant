@@ -137,10 +137,12 @@ class SettingsDialog(QDialog):
         method_row.addStretch(1)
         self.method_combo = QComboBox()
         self.method_combo.addItem("剪贴板粘贴", "clipboard")
+        self.method_combo.addItem("直接字符投递", "direct")
         self.method_combo.addItem("模拟键入", "type")
         self.method_combo.setMinimumWidth(140)
         self.method_combo.setToolTip(
-            "剪贴板粘贴（默认，推荐）：发 Ctrl+V，不被中文输入法拦截；"
+            "剪贴板粘贴（默认，推荐）：发 Ctrl+V，不被中文输入法拦截，兼容性最好；"
+            "直接字符投递：WM_CHAR 直送焦点控件，绕过输入法、无乱码、不污染剪贴板；"
             "模拟键入在微软拼音等中文输入法下可能产生乱码"
         )
         method_row.addWidget(self.method_combo)
@@ -216,7 +218,7 @@ class SettingsDialog(QDialog):
         op = int(float(cfg.get("opacity", 0.98)) * 100)
         self.opacity_slider.setValue(op)
         self.acrylic_check.setChecked(bool(cfg.get("acrylic", True)))
-        method = cfg.get("input_method", "type")
+        method = cfg.get("input_method", "clipboard")
         midx = self.method_combo.findData(method)
         self.method_combo.setCurrentIndex(midx if midx >= 0 else 0)
         self.recent_spin.setValue(int(cfg.get("max_recent", 30)))

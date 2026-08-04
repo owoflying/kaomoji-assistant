@@ -286,57 +286,89 @@ def set_foreground(hwnd):
         pass
 
 
-# ---- IME（输入法）开/关控制：模拟键入前切英文、完成后切回 ----
-# 用 imm32 直接操作前台窗口线程的 IME 上下文：关闭(open=False) 即“英文直接输入”，
-# 打开(open=True) 即恢复中文输入。仅改变 open 状态，不切换键盘布局。
-try:
-    imm32 = ctypes.windll.imm32
-    imm32.ImmGetContext.argtypes = [wintypes.HWND]
-    imm32.ImmGetContext.restype = ctypes.c_void_p
-    imm32.ImmReleaseContext.argtypes = [wintypes.HWND, ctypes.c_void_p]
-    imm32.ImmReleaseContext.restype = wintypes.BOOL
-    imm32.ImmGetOpenStatus.argtypes = [ctypes.c_void_p]
-    imm32.ImmGetOpenStatus.restype = wintypes.BOOL
-    imm32.ImmSetOpenStatus.argtypes = [ctypes.c_void_p, wintypes.BOOL]
-    imm32.ImmSetOpenStatus.restype = wintypes.BOOL
-    _IME_AVAILABLE = True
-except Exception:  # 非 Windows 或 imm32 不可用
-    imm32 = None
-    _IME_AVAILABLE = False
+# ---- 键盘布局（输入法）控制：模拟键入前切英文布局、完成后切回 ----
+#
+# 关键背景：微软拼音这类 IME 是挂在「中文(简体)键盘布局」(KLID=0804) 上的，
+# 而英文(美国)布局 (KLID=00000409) 不带任何 IME。所谓“输入法开着”本质上是
+# 当前线程的键盘布局是中文布局、且其 IME 处于中文模式。
+#
+# 之前尝试用 imm32 的 ImmSetOpenStatus(False) 关闭 IME 的“打开”状态——但微软拼音
+# 并不买账：它仍会把逐字符键事件吞进组字缓冲区，导致颜文字被转成拼音候选 / 乱码（如「哦哦」）。
+# 因此这里改用更彻底的办法：直接把前台线程的键盘布局切到「英文(美国)」，整个 IME 被剥离，
+# 键事件直通，打完再切回用户原来的布局。这才是真正规避乱码的手段。
+WM_INPUTLANGCHANGEREQUEST = 0x0050
+KLF_ACTIVATE = 0x00000001
+_ENGLISH_US_KLID = "00000409"
+_eng_hkl = None
+
+# API 参数/返回类型声明
+user32.LoadKeyboardLayoutW.argtypes = [wintypes.LPCWSTR, wintypes.UINT]
+user32.LoadKeyboardLayoutW.restype = wintypes.HKL
+user32.GetKeyboardLayout.argtypes = [wintypes.DWORD]
+user32.GetKeyboardLayout.restype = wintypes.HKL
+user32.ActivateKeyboardLayout.argtypes = [wintypes.HKL, wintypes.UINT]
+user32.ActivateKeyboardLayout.restype = wintypes.HKL
+user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+user32.PostMessageW.restype = wintypes.BOOL
 
 
-def get_ime_open(hwnd):
-    """前台窗口线程的 IME 是否处于“打开（中文输入）”状态。
-
-    无 IME / 不可用 / 取不到上下文时返回 False（视为已是英文直接输入）。
-    """
-    if not _IME_AVAILABLE or not hwnd:
-        return False
+def ensure_english_layout():
+    """加载（并缓存）英文(美国)键盘布局的 HKL，失败返回 None。"""
+    global _eng_hkl
+    if _eng_hkl:
+        return _eng_hkl
     try:
-        himc = imm32.ImmGetContext(hwnd)
-        if not himc:
-            return False
-        try:
-            return bool(imm32.ImmGetOpenStatus(himc))
-        finally:
-            imm32.ImmReleaseContext(hwnd, himc)
+        hkl = user32.LoadKeyboardLayoutW(_ENGLISH_US_KLID, KLF_ACTIVATE)
+        if hkl:
+            _eng_hkl = hkl
     except Exception:
-        return False
+        pass
+    return _eng_hkl
 
 
-def set_ime_open(hwnd, open_):
-    """切换前台窗口线程的 IME 开/关。open_=False 即“切到英文直接输入”，
-    open_=True 恢复中文输入。任何失败都静默忽略，绝不抛到调用方。"""
-    if not _IME_AVAILABLE or not hwnd:
+def get_keyboard_layout(hwnd):
+    """获取前台窗口线程当前使用的键盘布局 HKL；取不到时返回 None。"""
+    try:
+        tid = user32.GetWindowThreadProcessId(hwnd, ctypes.byref(wintypes.DWORD(0)))
+        if not tid:
+            return user32.GetKeyboardLayout(0)
+        return user32.GetKeyboardLayout(tid)
+    except Exception:
+        return None
+
+
+def set_keyboard_layout(hwnd, hkl):
+    """把前台窗口线程的键盘布局切到指定 HKL（如英文(美国)），从而剥离 IME。
+
+    主路径：AttachThreadInput 把本线程输入处理与前景线程绑定后，在本线程
+    ActivateKeyboardLayout 会同步作用于前台线程——即时生效、确定性强、无首字符竞态；
+    随后再补一条 WM_INPUTLANGCHANGEREQUEST 让目标窗口自己的消息循环也同步状态。
+    若绑定失败（跨桌面/跨进程受限）则退回纯 PostMessage。任何失败都静默忽略，
+    绝不抛到调用方。
+    """
+    if not hwnd or not hkl:
         return
     try:
-        himc = imm32.ImmGetContext(hwnd)
-        if not himc:
-            return
+        fg = user32.GetForegroundWindow()
+        ft = user32.GetWindowThreadProcessId(fg, ctypes.byref(wintypes.DWORD(0)))
+        ct = kernel32.GetCurrentThreadId()
+        attached = False
+        if ft and ft != ct and user32.AttachThreadInput(ft, ct, True):
+            attached = True
+        user32.ActivateKeyboardLayout(hkl, KLF_ACTIVATE)
+        if attached:
+            user32.AttachThreadInput(ft, ct, False)
+        # 让目标窗口自身也同步（部分自绘控件只看自己线程的状态）
         try:
-            imm32.ImmSetOpenStatus(himc, bool(open_))
-        finally:
-            imm32.ImmReleaseContext(hwnd, himc)
+            user32.PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST, 0, hkl)
+        except Exception:
+            pass
+        return
+    except Exception:
+        pass
+    # 兜底：仅 PostMessage
+    try:
+        user32.PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST, 0, hkl)
     except Exception:
         pass
 

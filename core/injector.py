@@ -5,9 +5,12 @@
     发送的是命令键（Ctrl+V），不会被中文输入法（如微软拼音）拦截，
     因此对颜文字兼容性最好、在中文 Windows 下最稳。用后自动恢复用户原剪贴板。
   * "type"：用 pynput 逐字符模拟键入。在中文输入法激活时会把字符吞进组字
-    缓冲区，导致出现乱码（如「哦哦」），故不作为默认；仅推荐输入法固定为
-    英文模式的用户使用。
+    缓冲区，导致出现乱码（如「哦哦」）。本模式下会自动把前台线程的键盘布局
+    切到「英文(美国)」再键入、打完切回原布局，从而剥离微软拼音这类 IME、
+    让键事件直通，规避乱码；即便如此，clipboard 模式仍更稳，故作为默认推荐。
 """
+import time
+
 from pynput.keyboard import Controller, Key
 
 from PySide6.QtCore import QTimer, QMimeData
@@ -26,25 +29,31 @@ class KaomojiInjector:
         if method == "clipboard":
             self._inject_clipboard(text)
             return
-        # 模拟键入模式：打字前把 IME 切到“英文直接输入”，打完再切回原状态，
-        # 否则中文输入法（如微软拼音）会把逐字符键事件吞进组字缓冲区，
-        # 颜文字被当成拼音/候选转换，输出乱码（如「哦哦」）。
+        # 模拟键入模式：打字前把前台线程的键盘布局切到「英文(美国)」，
+        # 这样微软拼音这类 IME 被整体剥离（英文布局不带 IME），键事件直通，
+        # 颜文字不会被吞进组字缓冲区变成乱码（如「哦哦」）；打完再切回原布局，
+        # 不留下“卡在英文”的副作用。
         hwnd = win_utils.get_foreground_hwnd()
-        was_open = win_utils.get_ime_open(hwnd)
-        if was_open:
-            win_utils.set_ime_open(hwnd, False)
+        saved_layout = win_utils.get_keyboard_layout(hwnd)
+        eng = win_utils.ensure_english_layout()
+        switched = bool(eng and saved_layout and saved_layout != eng)
+        if switched:
+            win_utils.set_keyboard_layout(hwnd, eng)
         try:
+            # 等前景窗口的消息循环处理完布局切换，避免首字符仍被 IME 截获
+            time.sleep(0.08)
             self._controller.type(text)
         except Exception:
             # 任意方式失败都退回直接键入
             try:
+                time.sleep(0.08)
                 self._controller.type(text)
             except Exception:
                 pass
         finally:
-            # 无论成败都切回用户原来的输入法状态，不留下“卡在英文”的副作用
-            if was_open:
-                win_utils.set_ime_open(hwnd, was_open)
+            # 无论成败都切回用户原来的键盘布局
+            if switched and saved_layout:
+                win_utils.set_keyboard_layout(hwnd, saved_layout)
 
     def _snapshot_clipboard(self, clipboard):
         """深拷贝当前剪贴板内容到一个全新的 QMimeData（由我们持有所有权）。

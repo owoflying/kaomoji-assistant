@@ -123,15 +123,40 @@ class _NavItem(QWidget):
         self._anim = None
 
     def _start_anim(self, target_width):
-        if self._anim is not None:
-            self._anim.stop()
-        self._anim = QPropertyAnimation(self.indicator, b"minimumWidth", self)
-        self._anim.setDuration(180)
-        self._anim.setEasingCurve(QEasingCurve.OutCubic)
-        self._anim.setStartValue(self.indicator.width())
-        self._anim.setEndValue(target_width)
-        self._anim.valueChanged.connect(lambda v: self.indicator.setMaximumWidth(v))
-        self._anim.start(QAbstractAnimation.DeleteWhenStopped)
+        # 停止并断开旧动画（若存在）。注意：旧动画一旦停止，无论是否仍在运行，
+        # 都不能再持有底层 C++ 对象引用 —— 这里显式置 None 释放，下一行新建的
+        # 动画才是 self._anim，避免对「已停止/已删除」对象调用 stop()。
+        old = self._anim
+        if old is not None:
+            try:
+                old.stop()
+                old.valueChanged.disconnect()
+            except Exception:
+                pass
+            self._anim = None
+
+        anim = QPropertyAnimation(self.indicator, b"minimumWidth", self)
+        anim.setDuration(180)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.setStartValue(self.indicator.width())
+        anim.setEndValue(target_width)
+        anim.valueChanged.connect(lambda v: self.indicator.setMaximumWidth(int(v)))
+
+        def _finished():
+            try:
+                anim.valueChanged.disconnect()
+            except Exception:
+                pass
+            if self._anim is anim:
+                self._anim = None
+
+        anim.finished.connect(_finished)
+        self._anim = anim
+        # 关键：用默认的 KeepWhenStopped，不要 DeleteWhenStopped。
+        # 否则动画结束后底层 C++ 对象被自动删除，但 self._anim 仍指向它，
+        # 下次切换页时对这个已删除对象调 stop() 会抛
+        # "Internal C++ object already deleted"，导致打开非主页页面必崩。
+        anim.start()
 
     def set_selected(self, selected):
         self._selected = selected

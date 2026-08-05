@@ -34,6 +34,7 @@ class Theme:
             self.input_border = "rgba(255,255,255,0.12)"
             self.divider = "rgba(255,255,255,0.08)"
             self.shadow = "0,0,0"
+            self.toggle_off = "#5e5e5e"      # 开关未选中时的轨道灰
         else:
             # 浅色：米白 Mica 底 + 纯白卡片
             self.bg = "#f3f3f3"
@@ -54,6 +55,7 @@ class Theme:
             self.input_border = "rgba(0,0,0,0.10)"
             self.divider = "rgba(0,0,0,0.06)"
             self.shadow = "0,0,0"
+            self.toggle_off = "#b6b6b6"      # 开关未选中时的轨道灰
 
     def hex(self, key):
         return getattr(self, key)
@@ -72,6 +74,16 @@ class Theme:
             font-weight: 600;
             color: {t.text};
             margin-bottom: 6px;
+        }}
+        QLabel#HomeTitle {{
+            font-size: 18px;
+            font-weight: 600;
+            color: {t.text};
+        }}
+        QLabel#StatValue {{
+            font-size: 22px;
+            font-weight: 600;
+            color: {t.accent};
         }}
         QLabel#SectionTitle {{
             font-size: 16px;
@@ -179,16 +191,20 @@ class Theme:
             background: transparent;
         }}
         QSlider::groove:horizontal {{
-            height: 4px;
+            height: 6px;
             background: {t.input_border};
-            border-radius: 2px;
+            border-radius: 3px;
         }}
         QSlider::handle:horizontal {{
-            width: 16px;
-            height: 16px;
-            margin: -6px 0;
+            width: 18px;
+            height: 18px;
+            margin: -7px 0;
             background: {t.accent};
-            border-radius: 8px;
+            border: 2px solid {t.card};
+            border-radius: 9px;
+        }}
+        QSlider::handle:horizontal:hover {{
+            background: {t.accent_hover};
         }}
         QCheckBox {{
             font-size: 13px;
@@ -212,6 +228,10 @@ class Theme:
         QFrame#Divider {{
             background: {t.divider};
             max-height: 1px;
+        }}
+        QScrollArea, QScrollArea QWidget#SettingsBody {{
+            background: transparent;
+            border: none;
         }}
         """
 

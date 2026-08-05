@@ -11,7 +11,7 @@ from PySide6.QtGui import QFont, QColor
 
 from core.kaomoji_data import KaomojiData
 from core.user_kaomoji import UserKaomoji
-from ui.win11_theme import kaomoji_font
+from ui.win11_theme import kaomoji_font, Theme
 
 
 class SearchPage(QWidget):
@@ -28,6 +28,7 @@ class SearchPage(QWidget):
 
     def _init_ui(self, theme):
         dark = theme == "dark"
+        self._theme = Theme(theme)
         self._text = "#f0f0f0" if dark else "#1f1f1f"
         self._num = "#a0a0a6" if dark else "#8a8a8e"
 
@@ -65,14 +66,21 @@ class SearchPage(QWidget):
         self._style()
 
     def _style(self):
+        t = self._theme
+        accent = t.accent
         self.setStyleSheet(
             "QLineEdit{border:1px solid rgba(128,128,128,0.4);border-radius:8px;"
             "padding:8px 12px;background:rgba(127,127,127,0.08);}"
-            "QLineEdit:focus{border:1px solid #0067c0;}"
+            "QLineEdit:focus{border:1px solid %s;}"
             "QListWidget{border:none;background:transparent;outline:none;}"
             "QListWidget::item{padding:6px 8px;border-radius:6px;}"
-            "QListWidget::item:selected{background:rgba(0,103,192,0.18);}"
+            "QListWidget::item:selected{background:%s;}"
+            % (accent, t.accent_bg)
         )
+
+    def set_theme(self, theme_obj):
+        self._theme = theme_obj
+        self._style()
 
     def _build_pool(self, q):
         q = (q or "").strip().lower()

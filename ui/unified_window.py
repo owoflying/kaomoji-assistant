@@ -208,8 +208,8 @@ class UnifiedSettingsWindow(QMainWindow):
         if animate and not self.isVisible():
             animate = False
         if animate:
-            # 平滑「上浮 + 淡入」过渡，旧页留在底层防闪烁
-            self.content.slide_to(self._pages[key], 260, rise=12)
+            # 真实交叉淡入淡出 + 轻微上浮，旧页淡出、新页淡入，无文字残留
+            self.content.slide_to(self._pages[key], 230, rise=10)
         else:
             self.content.setCurrentWidget(self._pages[key])
         if key == "home":
@@ -226,8 +226,9 @@ class UnifiedSettingsWindow(QMainWindow):
         # 导航项刷新主题
         for _, item in self._nav_items:
             item.update_theme(t)
-        # 子页搜索框单独样式需刷新
-        self.search_page._style()
+        # 子页中的自定义控件（搜索框、开关）跟随主题
+        self.search_page.set_theme(t)
+        self.settings_page.set_theme(t)
 
     def apply_config(self, config):
         """外部配置变更后刷新窗口主题与内部页。"""
@@ -236,7 +237,8 @@ class UnifiedSettingsWindow(QMainWindow):
         self._apply_theme()
         self.settings_page.config = config
         self.settings_page.refresh_from_config()
-        self.search_page._style()
+        self.settings_page.set_theme(self.theme)
+        self.search_page.set_theme(self.theme)
         self._update_backdrop()
 
     def _on_settings_applied(self, new_cfg):

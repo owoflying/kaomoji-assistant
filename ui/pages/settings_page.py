@@ -1,14 +1,20 @@
-"""设置页：热键、主题、输入方式等配置表单（Win11 Settings 风格）。"""
+"""设置页：热键、主题、输入方式等配置表单（Win11 Settings 风格，可滚动）。
+
+内容包裹在 QScrollArea 内：当窗口较短、内容高于视口时不会被压扁，
+而是出现滚动条，卡片/行保持自然高度（修复此前“被压成细线”的显示异常）。
+布尔项改用 WinUI 3 风格 ToggleSwitch，更贴近系统设置观感。
+"""
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
-    QSlider, QCheckBox, QSpinBox, QFrame, QSizePolicy,
+    QSlider, QSpinBox, QFrame, QSizePolicy, QScrollArea,
 )
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont
 
 from core import win_utils
 from core import autostart
 from core.win_utils import MOD_CONTROL, MOD_ALT, MOD_SHIFT, MOD_WIN
+from ui.win11_theme import Theme
+from ui.toggle_switch import ToggleSwitch
 
 
 def _build_hotkey_from_pynput(key, mods_set):
@@ -49,26 +55,44 @@ class SettingsPage(QWidget):
         self._cap_keys = []
         self._listener = None
         self._pynput = None
+        self._theme = Theme(config.get("theme", "light"))
         self._init_ui()
         self.refresh_from_config()
 
     def _init_ui(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(36, 28, 36, 28)
-        root.setSpacing(22)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # 可滚动内容区：内容高于视口时滚动而非压缩
+        self.scroll = QScrollArea()
+        self.scroll.setObjectName("SettingsScroll")
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.scroll.setStyleSheet("background:transparent;border:none;")
+        root.addWidget(self.scroll, 1)
+
+        body = QWidget()
+        body.setObjectName("SettingsBody")
+        body.setStyleSheet("background:transparent;")
+        v = QVBoxLayout(body)
+        v.setContentsMargins(36, 28, 36, 28)
+        v.setSpacing(22)
 
         title = QLabel("设置")
         title.setObjectName("PageTitle")
-        root.addWidget(title)
+        v.addWidget(title)
 
         # 全局热键
-        root.addWidget(self._section_title("全局热键"))
+        v.addWidget(self._section_title("全局热键"))
         card = self._card()
         croot = QVBoxLayout(card)
         croot.setContentsMargins(16, 14, 16, 14)
         croot.setSpacing(10)
         hk_row = QHBoxLayout()
-        hk_row.setContentsMargins(0, 8, 0, 8)
+        hk_row.setContentsMargins(0, 6, 0, 6)
         hk_row.setSpacing(12)
         hk_row.setAlignment(Qt.AlignVCenter)
         self.hotkey_btn = QPushButton("录制…")
@@ -86,75 +110,52 @@ class SettingsPage(QWidget):
         hk_container = QWidget()
         hk_container.setLayout(hk_row)
         hk_container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-        hk_container.setMinimumHeight(34)
+        hk_container.setMinimumHeight(36)
         croot.addWidget(hk_container)
         tip = QLabel("点「录制…」后按修饰键+单键（如 Ctrl+Shift+K）或多键序列（如 k+l）。录完点「完成」；Esc 取消。")
         tip.setObjectName("Caption")
         tip.setWordWrap(True)
         croot.addWidget(tip)
-        root.addWidget(card)
+        v.addWidget(card)
 
         # 外观
-        root.addWidget(self._section_title("外观"))
+        v.addWidget(self._section_title("外观"))
         card = self._card()
         croot = QVBoxLayout(card)
         croot.setContentsMargins(16, 14, 16, 14)
-        croot.setSpacing(14)
+        croot.setSpacing(12)
         self._add_row(croot, "主题", self._theme_combo())
         self._add_row(croot, "不透明度", self._opacity_row())
-        self._add_row(croot, "亚克力模糊", self._acrylic_check())
-        root.addWidget(card)
+        self._add_row(croot, "亚克力模糊", self._acrylic_toggle())
+        v.addWidget(card)
 
         # 输入
-        root.addWidget(self._section_title("输入"))
+        v.addWidget(self._section_title("输入"))
         card = self._card()
         croot = QVBoxLayout(card)
         croot.setContentsMargins(16, 14, 16, 14)
-        croot.setSpacing(14)
+        croot.setSpacing(12)
         self._add_row(croot, "输入方式", self._method_combo())
         self._add_row(croot, "最大最近记录", self._recent_spin())
         self._add_row(croot, "每页候选数", self._page_spin())
-        auto_row = QHBoxLayout()
-        auto_row.setContentsMargins(0, 8, 0, 8)
-        auto_row.setSpacing(12)
-        auto_row.setAlignment(Qt.AlignVCenter)
-        self.auto_check = QCheckBox("打字时自动弹出（识别情绪推荐颜文字）")
-        auto_row.addWidget(self.auto_check)
-        auto_row.addStretch(1)
-        auto_container = QWidget()
-        auto_container.setLayout(auto_row)
-        auto_container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-        auto_container.setMinimumHeight(34)
-        croot.addWidget(auto_container)
-        root.addWidget(card)
+        self._add_row(croot, "打字时自动弹出", self._auto_toggle())
+        v.addWidget(card)
 
         # 系统
-        root.addWidget(self._section_title("系统"))
+        v.addWidget(self._section_title("系统"))
         card = self._card()
         croot = QVBoxLayout(card)
         croot.setContentsMargins(16, 14, 16, 14)
-        croot.setSpacing(14)
-        auto_row = QHBoxLayout()
-        auto_row.setContentsMargins(0, 8, 0, 8)
-        auto_row.setSpacing(12)
-        auto_row.setAlignment(Qt.AlignVCenter)
-        self.autostart_check = QCheckBox("开机自动启动")
-        if not autostart.is_supported():
-            self.autostart_check.setEnabled(False)
-            self.autostart_check.setToolTip("仅打包后的 exe 版本支持")
-        auto_row.addWidget(self.autostart_check)
-        auto_row.addStretch(1)
-        auto_container = QWidget()
-        auto_container.setLayout(auto_row)
-        auto_container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-        auto_container.setMinimumHeight(34)
-        croot.addWidget(auto_container)
-        root.addWidget(card)
+        croot.setSpacing(12)
+        self._add_row(croot, "开机自动启动", self._autostart_toggle())
+        v.addWidget(card)
 
-        root.addStretch(1)
+        v.addStretch(1)
+        self.scroll.setWidget(body)
 
-        # 底部应用按钮
+        # 底部应用按钮（固定命令栏，不随内容滚动）
         btn_row = QHBoxLayout()
+        btn_row.setContentsMargins(36, 12, 36, 16)
         btn_row.addStretch(1)
         ok = QPushButton("应用并保存")
         ok.setObjectName("AccentButton")
@@ -177,7 +178,7 @@ class SettingsPage(QWidget):
     def _add_row(self, layout, label, widget_or_layout):
         """向卡片中添加一行设置项；用 QWidget 容器保证最小行高，防止被压扁。"""
         row = QHBoxLayout()
-        row.setContentsMargins(0, 8, 0, 8)
+        row.setContentsMargins(0, 6, 0, 6)
         row.setSpacing(12)
         row.setAlignment(Qt.AlignVCenter)
         lb = QLabel(label)
@@ -191,7 +192,7 @@ class SettingsPage(QWidget):
         container = QWidget()
         container.setLayout(row)
         container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-        container.setMinimumHeight(34)
+        container.setMinimumHeight(36)
         layout.addWidget(container)
 
     def _theme_combo(self):
@@ -216,8 +217,8 @@ class SettingsPage(QWidget):
         row.addWidget(self.opacity_value)
         return row
 
-    def _acrylic_check(self):
-        self.acrylic_check = QCheckBox()
+    def _acrylic_toggle(self):
+        self.acrylic_check = ToggleSwitch(self._theme)
         return self.acrylic_check
 
     def _method_combo(self):
@@ -243,7 +244,24 @@ class SettingsPage(QWidget):
         self.page_spin.setRange(1, 9)
         return self.page_spin
 
+    def _auto_toggle(self):
+        self.auto_check = ToggleSwitch(self._theme)
+        return self.auto_check
+
+    def _autostart_toggle(self):
+        self.autostart_check = ToggleSwitch(self._theme)
+        if not autostart.is_supported():
+            self.autostart_check.setEnabled(False)
+            self.autostart_check.setToolTip("仅打包后的 exe 版本支持")
+        return self.autostart_check
+
     # ---------- 读取/写入 ----------
+    def set_theme(self, theme_obj):
+        """主题切换时同步开关配色。"""
+        self._theme = theme_obj
+        for t in (self.acrylic_check, self.auto_check, self.autostart_check):
+            t.update_theme(theme_obj)
+
     def refresh_from_config(self):
         cfg = self.config
         self._captured = None

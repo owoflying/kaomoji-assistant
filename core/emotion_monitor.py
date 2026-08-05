@@ -174,7 +174,9 @@ class EmotionMonitor(QObject):
                 pass
         if uia_text is not None:
             try:
-                t = uia_text.get_focused_text(self._max_buf)
+                # 给 UIA 调用设较短超时：目标程序卡顿时绝不拖死采样线程，
+                # 超时即回退到原生 WM_GETTEXT / 字符缓冲，保证自动弹出永不“假死失效”。
+                t = uia_text.get_focused_text(self._max_buf, timeout=0.2)
                 if t:
                     return t
             except Exception:

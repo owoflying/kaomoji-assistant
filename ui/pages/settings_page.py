@@ -45,6 +45,7 @@ def _build_hotkey_from_pynput(key, mods_set):
 
 class SettingsPage(QWidget):
     config_applied = Signal(dict)
+    config_preview = Signal(dict)    # 外观实时预览（不落盘）
 
     def __init__(self, config, parent=None):
         super().__init__(parent)
@@ -129,6 +130,11 @@ class SettingsPage(QWidget):
         self._add_row(croot, "候选条透明度", self._opacity_row())
         self._add_row(croot, "亚克力模糊", self._acrylic_toggle())
         v.addWidget(card)
+
+        # 外观项改动时实时预览（主题 / 透明度 / 亚克力），不落盘，关闭或点“应用并保存”才最终提交
+        self.theme_combo.currentIndexChanged.connect(lambda *_a: self._emit_preview())
+        self.acrylic_check.toggled.connect(lambda *_a: self._emit_preview())
+        self.panel_alpha_slider.valueChanged.connect(lambda *_a: self._emit_preview())
 
         # 输入
         v.addWidget(self._section_title("输入"))
@@ -416,6 +422,15 @@ class SettingsPage(QWidget):
         pass
 
     # ---------- 应用 ----------
+    def _emit_preview(self):
+        """外观实时预览：把当前控件状态打包成临时配置发出去，由统一窗口立即重绘，
+        但不写入磁盘、不触发主程序的保存/重注册逻辑。"""
+        preview = dict(self.config)
+        preview["theme"] = self.theme_combo.currentData()
+        preview["panel_alpha"] = self.panel_alpha_slider.value() / 100.0
+        preview["acrylic"] = self.acrylic_check.isChecked()
+        self.config_preview.emit(preview)
+
     def _on_apply(self):
         new_cfg = dict(self.config)
         if self._captured is not None:

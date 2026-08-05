@@ -379,6 +379,8 @@ class UnifiedSettingsWindow(QMainWindow):
         self.library_page.selected.connect(self.output_selected.emit)
         self.search_page.selected.connect(self.output_selected.emit)
         self.settings_page.config_applied.connect(self._on_settings_applied)
+        # 外观项（主题/透明度/亚克力）改动时实时预览，不落盘、不触发主程序保存逻辑
+        self.settings_page.config_preview.connect(self._preview_appearance)
 
         self._set_page("home", animate=False)
 
@@ -441,6 +443,28 @@ class UnifiedSettingsWindow(QMainWindow):
     def _on_settings_applied(self, new_cfg):
         self.config_applied.emit(new_cfg)
 
+    def _preview_appearance(self, preview_cfg):
+        """设置页「外观」改动的实时预览：立即重绘本窗口的主题/透明度/亚克力，不落盘。
+
+        这样用户在设置里选深色、拖透明度滑块时立刻看到效果，避免“点了没反应”误以为切不了。
+        仅影响本窗口的可视状态；真正提交仍发生在「应用并保存」（走 config_applied）。
+        """
+        theme_name = preview_cfg.get("theme", self.theme.name)
+        acrylic = bool(preview_cfg.get("acrylic", self._acrylic_on))
+        changed_skin = (theme_name != self.theme.name) or (acrylic != self._acrylic_on)
+        # 软更新 config：paintEvent 读 panel_alpha 等依赖它
+        self.config = dict(preview_cfg)
+        if changed_skin:
+            self.theme = Theme(theme_name)
+            self._acrylic_on = acrylic and _has_dwm
+            self._shadow_color = _parse_color(self.theme.shadow_color)
+            self._apply_theme()
+        else:
+            # 仅透明度变化：刷新内容区表面透明度并整面板重绘，不必整体重刷样式
+            self.content.setStyleSheet(
+                "background:%s;border:none;" % self._adjusted_content_surface())
+            self.update()
+
     def _adjusted_content_surface(self):
         """根据 panel_alpha 调整内容区表面透明度。"""
         base = self.theme.content_surface
@@ -451,6 +475,21 @@ class UnifiedSettingsWindow(QMainWindow):
             r, g, b, a = int(m.group(1)), int(m.group(2)), int(m.group(3)), float(m.group(4))
             return "rgba(%d,%d,%d,%.2f)" % (r, g, b, max(0.0, min(1.0, a * alpha)))
         return base
+
+    def _adjusted_panel_base(self):
+        """面板基底色（亚克力开=window_tint，关=纯色底 bg），按 panel_alpha 缩放透明度，
+        让「面板透明度」滑块真实作用于整块面板背景。亚克力关闭时纯色底转 rgba 再缩放，
+        使透明度滑块在关亚克力时也生效。"""
+        import re
+        base = self.theme.window_tint if self._acrylic_on else self.theme.bg
+        alpha = float(self.config.get("panel_alpha", 0.92))
+        m = re.match(r"rgba?\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)", base)
+        if m:
+            r, g, b, a = int(m.group(1)), int(m.group(2)), int(m.group(3)), float(m.group(4))
+            return "rgba(%d,%d,%d,%.2f)" % (r, g, b, max(0.0, min(1.0, a * alpha)))
+        # 亚克力关闭时的纯色底（hex）：转 rgba 后再缩放
+        c = QColor(base)
+        return "rgba(%d,%d,%d,%.2f)" % (c.red(), c.green(), c.blue(), max(0.0, min(1.0, alpha)))
 
     def showEvent(self, e):
         super().showEvent(e)
@@ -602,8 +641,10 @@ class UnifiedSettingsWindow(QMainWindow):
                 sp.addRoundedRect(QRectF(panel.adjusted(-d, -d, d, d)), rr, rr)
                 p.fillPath(sp, col)
 
-        # 2) 面板基底：半透明 tint（亚克力关闭时退化为不透明纯色）
-        tint = _parse_color(t.window_tint if self._acrylic_on else t.bg)
+        # 2) 面板基底：半透明 tint（亚克力关闭时退化为纯色底）。
+        #    按 panel_alpha 缩放透明度，让「面板透明度」滑块真实作用于整块面板背景
+        #    （此前只缩放了被卡片遮挡的内容区表面，几乎看不出变化，表现为“透明度设置失效”）。
+        tint = _parse_color(self._adjusted_panel_base())
         p.fillPath(pp, tint)
 
         # 3) 细微竖向渐变叠加（顶部略亮、底部略暗）

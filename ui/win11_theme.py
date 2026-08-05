@@ -270,15 +270,32 @@ class Theme:
             background: {t.accent};
             border: 1px solid {t.accent};
         }}
+        QComboBox {{
+            background: {t.input_bg};
+            border: 1px solid {t.input_border};
+            border-radius: 6px;
+            padding: 4px 10px;
+            font-size: 13px;
+            color: {t.text};
+            min-height: 22px;
+        }}
+        QComboBox:hover {{
+            border: 1px solid {t.input_border};
+        }}
+        QComboBox:focus, QComboBox:on {{
+            border: 1px solid {t.accent};
+        }}
         QComboBox::drop-down {{
+            subcontrol-origin: padding;
+            subcontrol-position: top right;
             border: none;
-            width: 28px;
+            width: 26px;
         }}
         QComboBox::down-arrow {{
             image: none;
             border-left: 5px solid transparent;
             border-right: 5px solid transparent;
-            border-top: 5px solid {t.text_secondary};
+            border-top: 6px solid {t.text_secondary};
             width: 0px;
             height: 0px;
         }}
@@ -288,8 +305,8 @@ class Theme:
             border-radius: 8px;
             padding: 6px;
             outline: none;
-            selection-background-color: {t.accent_bg};
-            selection-color: {t.text};
+            selection-background-color: {t.accent};
+            selection-color: #ffffff;
         }}
         QComboBox QAbstractItemView::item {{
             border-radius: 6px;
@@ -300,7 +317,8 @@ class Theme:
             background: {t.nav_hover};
         }}
         QComboBox QAbstractItemView::item:selected {{
-            background: {t.accent_bg};
+            background: {t.accent};
+            color: #ffffff;
         }}
         QFrame#Divider {{
             background: {t.divider};

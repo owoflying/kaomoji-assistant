@@ -95,7 +95,15 @@ class NativeHotkeyManager(QObject):
             if vk == 0:
                 return
             hwnd = int(self._host.winId())
-            if user32.RegisterHotKey(hwnd, self._id, mods, vk):
+            # 系统卡顿 / 上一次 UnregisterHotKey 尚未完全生效时，单次 RegisterHotKey 可能
+            # 偶发失败；重试几次，避免“按了热键毫无反应”。timeout 用阻塞短 sleep，仅供兜底。
+            ok = False
+            for _ in range(3):
+                if user32.RegisterHotKey(hwnd, self._id, mods, vk):
+                    ok = True
+                    break
+                time.sleep(0.05)
+            if ok:
                 self._active = True
                 self._mode = "simple"
         elif parsed["type"] == "sequence":

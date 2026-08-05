@@ -23,6 +23,58 @@ from ctypes import (
     c_double, c_ulong,
 )
 
+# ---------- 超时保护：UIA 调用绝不能阻塞调用方线程 ----------
+class _UIAWorker:
+    """把可能阻塞的 UIA/COM 调用放到独立线程里跑，并设置超时上限。
+
+    为什么必须这么做：UI Automation 是跨进程 COM 调用，当目标程序（浏览器 / Electron /
+    VSCode / 微信……）卡死或无响应时，UIA 调用可能无限期挂起。若在主线程调用
+    （候选条定位 _position_caret / 失焦检测 _check_focus），会直接冻住整个 GUI，
+    表现为“按了热键候选条死活不弹”；若在采样线程调用，会拖死自动弹出的采样线程，
+    导致一次卡顿后自动弹出彻底失效。
+
+    设计要点：
+      * 任何时刻最多只有一个 UIA 调用在飞（_busy 守护），避免目标持续假死时线程越积越多；
+      * 调用方线程只在 join(timeout) 内等待，超时即放弃本轮、回退默认值，
+        绝不被目标程序的卡顿拖住；
+      * 跑 UIA 的线程是 daemon，即便超时返回、真正的 COM 调用仍悬着，也会在目标恢复后自行结束。
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._busy = False
+
+    def call(self, fn, timeout, default):
+        # 另一处调用正在尝试获取锁（极短窗口）-> 直接放弃本轮
+        if not self._lock.acquire(blocking=False):
+            return default
+        try:
+            if self._busy:
+                return default
+            self._busy = True
+            holder = {"v": default}
+
+            def runner():
+                try:
+                    holder["v"] = fn()
+                except Exception:
+                    holder["v"] = default
+                finally:
+                    self._busy = False
+
+            th = threading.Thread(target=runner, daemon=True)
+            th.start()
+            th.join(timeout)
+            if th.is_alive():
+                return default      # 仍卡着：放弃本轮，留给后台线程自行收尾
+            return holder.get("v", default)
+        finally:
+            self._lock.release()
+
+
+_uia_worker = _UIAWorker()
+
+
 ole32 = ctypes.windll.ole32
 oleaut32 = ctypes.windll.oleaut32
 
@@ -302,7 +354,7 @@ def _bounding_rect(elem):
             pass
 
 
-def get_focused_rect():
+def _get_focused_rect_raw():
     """返回当前键盘焦点元素的屏幕矩形 (l,t,r,b)；取不到返回 None。
 
     用于把候选条贴在输入框附近——GUIThreadInfo 的 hwndCaret 在浏览器/Electron 里
@@ -324,7 +376,7 @@ def get_focused_rect():
         _release(elem)
 
 
-def is_focused_editable():
+def _is_focused_editable_raw():
     """当前键盘焦点是否落在“可编辑文本控件”上（编辑框/文档/多行文本框等）。
 
     用于在面板可见时判断“焦点是否还在输入框”：若焦点离开了文本控件（点到按钮、
@@ -355,7 +407,7 @@ def is_focused_editable():
         _release(elem)
 
 
-def get_focused_text(max_len=60):
+def _get_focused_text_raw(max_len=60):
     """读取当前键盘焦点元素的文本（最近 max_len 个字符）；失败/密码框返回 ''。
 
     覆盖范围：Win32、WPF、UWP、Qt、Chrome/Edge 网页输入框、Electron 应用等
@@ -385,3 +437,26 @@ def get_focused_text(max_len=60):
         return ""
     finally:
         _release(elem)
+
+
+# ---------- 带超时保护的对外入口（防止目标程序卡死时 UIA 同步调用挂起） ----------
+def get_focused_rect(timeout=0.30):
+    """带超时保护的版本：目标程序卡死导致 UIA 调用挂起时，最多等 timeout 秒后放弃并返回
+    None，避免阻塞调用方线程（候选条在主线程定位时若目标进程假死，同步 UIA 会冻住整个 GUI）。
+    """
+    return _uia_worker.call(_get_focused_rect_raw, timeout, None)
+
+
+def is_focused_editable(timeout=0.30):
+    """带超时保护：见 get_focused_rect 注释。目标卡死时回退为 True（当作“仍在输入框”，
+    不主动关闭候选条），宁可保留也不冻结/误关。
+    """
+    return _uia_worker.call(_is_focused_editable_raw, timeout, True)
+
+
+def get_focused_text(max_len=60, timeout=0.35):
+    """带超时保护：目标程序卡死时，UIA 调用最多阻塞 timeout 秒后回退为 ''，
+    绝不拖死采样线程（否则自动弹出会在一次卡顿后彻底失效）。
+    """
+    return _uia_worker.call(
+        lambda: _get_focused_text_raw(max_len), timeout, "")

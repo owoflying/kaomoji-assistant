@@ -29,8 +29,10 @@ ARGS = [
     # 只读资源 data/kaomoji.json：运行时用 resource_path 还原到 data/ 子目录
     "--add-data", "%s%sdata" % (DATA, os.pathsep),
     # 内置图标字体（Fluent System Icons，MIT 许可）：随包分发，Win10 也能显示
-    # 目标路径需与 core.runtime.resource_path("ui","fonts",...) 完全对应
-    "--add-data", "%s%sui/fonts/FluentSystemIcons-Regular.ttf" % (FONT, os.pathsep),
+    # 目标路径需与 core.runtime.resource_path("ui","fonts",...) 完全对应。
+    # 注意：--add-data 的目标必须是“目录”，文件名由源自动带入；
+    # 若写成 ".../ui/fonts/FluentSystemIcons-Regular.ttf" 会建出同名子目录导致嵌套一层！
+    "--add-data", "%s%sui/fonts" % (FONT, os.pathsep),
     # 确保 Windows 平台后端被打包（否则运行到全局键盘监听时报 ImportError）
     "--hidden-import", "pynput.keyboard._win32",
     "--hidden-import", "pynput.mouse._win32",

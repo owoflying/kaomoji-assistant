@@ -31,6 +31,11 @@ ARGS = [
     "--hidden-import", "pynput.keyboard._win32",
     "--hidden-import", "pynput.mouse._win32",
     "--hidden-import", "pynput._util.win32",
+    # 强制收集项目自有包的全部子模块，避免 __init__.py 缺失/命名空间包导致被 PyInstaller 漏打包
+    "--collect-submodules", "ui",
+    "--collect-submodules", "core",
+    # 把项目根加入分析路径，确保 ui/core 等顶层包被定位
+    "--paths", HERE,
 ]
 
 if __name__ == "__main__":

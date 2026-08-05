@@ -2,7 +2,7 @@
 import json
 import os
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Signal, QTimer
 
 from core.runtime import state_path
 
@@ -26,6 +26,12 @@ class UserState(QObject):
         self.valid_items = set(valid_items) if valid_items else None
         self.recent = []
         self.favorites = []
+        # 落盘去抖：500ms 内的多次 save 合并为一次整文件写盘，
+        # 避免连续选词 / 切换收藏反复重写 user_state.json。changed 信号仍即时发出。
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(500)
+        self._save_timer.timeout.connect(self.save)
         self.load()
 
     # ---------- 自净 ----------
@@ -63,6 +69,8 @@ class UserState(QObject):
             self.save()
 
     def save(self):
+        # 任何显式 save 都取消待定的延迟写，避免重复落盘
+        self._save_timer.stop()
         try:
             os.makedirs(os.path.dirname(self.path), exist_ok=True)
             with open(self.path, "w", encoding="utf-8") as f:
@@ -72,6 +80,16 @@ class UserState(QObject):
                 )
         except Exception:
             pass
+
+    def _schedule_save(self):
+        """合并 500ms 内的多次落盘请求为一次（见 __init__ 的 _save_timer）。"""
+        if not self._save_timer.isActive():
+            self._save_timer.start()
+
+    def flush(self):
+        """立即落盘并取消待定的延迟写（应用退出前调用，防 500ms 窗口内丢数据）。"""
+        self._save_timer.stop()
+        self.save()
 
     def add_recent(self, text):
         text = str(text)
@@ -84,7 +102,7 @@ class UserState(QObject):
         self.recent.insert(0, text)
         if len(self.recent) > self.max_recent:
             self.recent = self.recent[: self.max_recent]
-        self.save()
+        self._schedule_save()
         self.changed.emit()
 
     def is_favorite(self, text):
@@ -98,5 +116,5 @@ class UserState(QObject):
             self.favorites.insert(0, text)
         else:
             return
-        self.save()
+        self._schedule_save()
         self.changed.emit()

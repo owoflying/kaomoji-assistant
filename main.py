@@ -177,6 +177,7 @@ def main():
     app.aboutToQuit.connect(hotkey.stop)
     app.aboutToQuit.connect(monitor.stop)
     app.aboutToQuit.connect(window.shutdown)
+    app.aboutToQuit.connect(state.flush)
 
     sys.exit(app.exec())
 

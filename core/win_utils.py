@@ -387,8 +387,6 @@ def get_focused_control_hwnd():
         tid = user32.GetWindowThreadProcessId(fg, ctypes.byref(wintypes.DWORD(0)))
         info = _GUITHREADINFO()
         info.cbSize = ctypes.sizeof(_GUITHREADINFO)
-        user32.GetGUIThreadInfo.restype = ctypes.c_int
-        user32.GetGUIThreadInfo.argtypes = [ctypes.c_ulong, ctypes.POINTER(_GUITHREADINFO)]
         if tid and user32.GetGUIThreadInfo(tid, ctypes.byref(info)):
             if info.hwndFocus:
                 return info.hwndFocus
@@ -409,8 +407,6 @@ def is_native_edit(hwnd):
         return False
     try:
         buf = ctypes.create_unicode_buffer(256)
-        user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
-        user32.GetClassNameW.restype = ctypes.c_int
         n = user32.GetClassNameW(hwnd, buf, 256)
         if n <= 0:
             return False
@@ -483,14 +479,10 @@ def get_caret_screen_pos():
         if not fg:
             return None
         tid = user32.GetWindowThreadProcessId(fg, ctypes.byref(wintypes.DWORD(0)))
-        user32.GetGUIThreadInfo.restype = ctypes.c_int
-        user32.GetGUIThreadInfo.argtypes = [ctypes.c_ulong, ctypes.POINTER(_GUITHREADINFO)]
         if not user32.GetGUIThreadInfo(tid, ctypes.byref(gui)):
             return None
         if gui.hwndCaret:
             pt = _POINT(gui.rcCaret.left, gui.rcCaret.top)
-            user32.ClientToScreen.argtypes = [wintypes.HWND, ctypes.POINTER(_POINT)]
-            user32.ClientToScreen.restype = ctypes.c_int
             user32.ClientToScreen(gui.hwndCaret, ctypes.byref(pt))
             return QPoint(int(pt.x), int(pt.y))
         # 兜底 1：UIA 焦点元素包围盒（浏览器/Electron/VSCode 等）
@@ -506,8 +498,6 @@ def get_caret_screen_pos():
         hwnd = gui.hwndFocus or fg
         if hwnd:
             rect = _RECT()
-            user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(_RECT)]
-            user32.GetWindowRect.restype = ctypes.c_int
             if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
                 return QPoint(int(rect.left), int(rect.bottom))
         return None
@@ -529,8 +519,6 @@ def get_focused_text(max_len=200):
         gui = _GUITHREADINFO()
         gui.cbSize = ctypes.sizeof(_GUITHREADINFO)
         tid = user32.GetWindowThreadProcessId(fg, ctypes.byref(wintypes.DWORD(0)))
-        user32.GetGUIThreadInfo.restype = ctypes.c_int
-        user32.GetGUIThreadInfo.argtypes = [ctypes.c_ulong, ctypes.POINTER(_GUITHREADINFO)]
         if not user32.GetGUIThreadInfo(tid, ctypes.byref(gui)):
             return ""
         hwnd = gui.hwndFocus or gui.hwndCaret or fg
@@ -560,4 +548,23 @@ def get_focused_text(max_len=200):
         return text
     except Exception:
         return ""
+
+
+def _init_prototypes():
+    """集中声明所有用到的 user32 API 参数/返回类型（模块加载时调用一次）。
+
+    之前这些 argtypes/restype 散落在各函数体内、每次调用都重复赋值；
+    统一到此处后既消除热路径上的重复设置，也让类型签名集中可控。
+    """
+    user32.GetGUIThreadInfo.restype = ctypes.c_int
+    user32.GetGUIThreadInfo.argtypes = [ctypes.c_ulong, ctypes.POINTER(_GUITHREADINFO)]
+    user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.GetClassNameW.restype = ctypes.c_int
+    user32.ClientToScreen.argtypes = [wintypes.HWND, ctypes.POINTER(_POINT)]
+    user32.ClientToScreen.restype = ctypes.c_int
+    user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(_RECT)]
+    user32.GetWindowRect.restype = ctypes.c_int
+
+
+_init_prototypes()
 

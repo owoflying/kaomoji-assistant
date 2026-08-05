@@ -144,7 +144,7 @@ class EmotionMonitor(QObject):
         self._typed_evt.set()
 
     # ---------- 采样线程 ----------
-    def _read_focus_text(self):
+    def _read_focus_text(self, hwnd=None, native=None):
         """按 原生编辑框(WM_GETTEXT) -> UIA -> 字符缓冲 的优先级读取当前输入内容。
 
         仅当焦点控件确为原生 Win32 编辑框（记事本等，class=Edit/RichEdit）时，
@@ -152,10 +152,17 @@ class EmotionMonitor(QObject):
         浏览器 / Electron / Qt / WPF 等自绘控件不响应 WM_GETTEXT，拿到的是窗口标题
         等无效文本，一旦被当作输入内容就会让情绪判定全盘失败（自动弹出失效），
         因此这类控件必须交给 UI Automation（core.uia_text）读取真实输入框文本。
+
+        hwnd / native 可由调用方在「一次按键的连采窗口」内缓存后传入，
+        避免每次采样都重复 GetGUIThreadInfo + GetClassNameW（见 _dwell_sample）。
         """
+        if hwnd is None:
+            hwnd = win_utils.get_focused_control_hwnd()
+            native = win_utils.is_native_edit(hwnd) if hwnd else False
+        else:
+            native = bool(native)
         # 保守判断：只有确认是原生编辑框才走 WM_GETTEXT，否则直接 UIA
-        hwnd = win_utils.get_focused_control_hwnd()
-        if hwnd and win_utils.is_native_edit(hwnd):
+        if native:
             try:
                 t = win_utils.get_focused_text(self._max_buf)
                 if t:
@@ -170,12 +177,13 @@ class EmotionMonitor(QObject):
             except Exception:
                 pass
         # 兜底：UIA 不可用（非 Windows / COM 异常）且非原生编辑框时，再试一次 WM_GETTEXT
-        try:
-            t = win_utils.get_focused_text(self._max_buf)
-            if t:
-                return t
-        except Exception:
-            pass
+        if not native:
+            try:
+                t = win_utils.get_focused_text(self._max_buf)
+                if t:
+                    return t
+            except Exception:
+                pass
         return self._buffer
 
     def _strip_injected(self, text):
@@ -217,8 +225,15 @@ class EmotionMonitor(QObject):
     def _dwell_sample(self):
         """一次唤醒后连采若干次：覆盖 IME 提交中文的滞后窗口。
 
+        进入连采前先算一次焦点 hwnd 与原生判定（一次按键内不会换窗口），
+        后续每次采样复用，避免重复 GetGUIThreadInfo + GetClassNameW；
+        IME 提交完成后文本会稳定下来，若连续两次采样文本一致说明已上屏，
+        提前结束轮询，避免浏览器/Electron 场景下反复做昂贵的 UIA COM 遍历。
         命中情绪即停（已锁定，不再重复打扰）；未命中则继续轮询直到窗口结束。
         """
+        hwnd = win_utils.get_focused_control_hwnd()
+        native = win_utils.is_native_edit(hwnd) if hwnd else False
+        last_text = None
         for _ in range(self._dwell_count):
             if self._stop_evt.is_set() or self._paused:
                 return
@@ -229,7 +244,7 @@ class EmotionMonitor(QObject):
             # 等刚敲下的字符先落进目标控件再读：keydown 瞬间读取会落后一个字符。
             self._stop_evt.wait(self._settle)
             try:
-                text = self._read_focus_text()
+                text = self._read_focus_text(hwnd, native)
             except Exception:
                 text = self._buffer
             text = self._strip_injected(text)
@@ -239,6 +254,10 @@ class EmotionMonitor(QObject):
             with self._lock:
                 if self._locked is not None:
                     return
+            # IME 已上屏、文本稳定 -> 无需再采（省去后续昂贵的 UIA 遍历）
+            if text and text == last_text:
+                return
+            last_text = text
             self._stop_evt.wait(self._dwell_gap)
 
     # ---------- 情绪判定 ----------

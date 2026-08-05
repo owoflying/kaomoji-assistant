@@ -147,7 +147,14 @@ def main():
         if window.isVisible():
             window.hide()
         dlg = CustomKaomojiDialog(user_kao)
-        dlg.finished.connect(lambda *_: (user_kao.flush(), _resume_main()))
+        # 关键：把对话框挂到长生命周期对象上，避免 open_* 返回后局部变量被 GC、
+        # C++ 对象随之销毁导致窗口「闪退」（设置对话框之所以正常，正因它存在
+        # 持久变量里）。finished 时再释放引用。
+        window._open_dlg = dlg
+        dlg.finished.connect(
+            lambda *_: (window.__setattr__("_open_dlg", None),
+                        user_kao.flush(), _resume_main())
+        )
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
@@ -158,7 +165,11 @@ def main():
         if window.isVisible():
             window.hide()
         dlg = TriggerDialog(triggers)
-        dlg.finished.connect(lambda *_: (triggers.flush(), _resume_main()))
+        window._open_dlg = dlg
+        dlg.finished.connect(
+            lambda *_: (window.__setattr__("_open_dlg", None),
+                        triggers.flush(), _resume_main())
+        )
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
@@ -169,8 +180,11 @@ def main():
         if window.isVisible():
             window.hide()
         dlg = SearchDialog(data, user_kao, config.get("theme", "light"))
+        window._open_dlg = dlg
         dlg.selected.connect(on_selected)
-        dlg.finished.connect(lambda *_: _resume_main())
+        dlg.finished.connect(
+            lambda *_: (window.__setattr__("_open_dlg", None), _resume_main())
+        )
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()

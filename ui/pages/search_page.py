@@ -11,6 +11,7 @@ from PySide6.QtGui import QFont, QColor
 
 from core.kaomoji_data import KaomojiData
 from core.user_kaomoji import UserKaomoji
+from ui.win11_theme import kaomoji_font
 
 
 class SearchPage(QWidget):
@@ -51,7 +52,7 @@ class SearchPage(QWidget):
         croot.addWidget(self.query)
 
         self.results = QListWidget()
-        self.results.setFont(QFont("Segoe UI Symbol", 13))
+        self.results.setFont(kaomoji_font(14))
         self.results.itemDoubleClicked.connect(self._choose)
         self.results.setFocusProxy(self.query)
         croot.addWidget(self.results, 1)

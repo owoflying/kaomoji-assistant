@@ -6,6 +6,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 
+from ui.win11_theme import kaomoji_font
+
 
 class LibraryPage(QWidget):
     selected = Signal(str)
@@ -47,7 +49,7 @@ class LibraryPage(QWidget):
         list_root.setContentsMargins(12, 12, 12, 12)
         list_root.setSpacing(8)
         self.list_w = QListWidget()
-        self.list_w.setFont(QFont("Segoe UI Symbol", 13))
+        self.list_w.setFont(kaomoji_font(14))
         self.list_w.itemDoubleClicked.connect(self._choose)
         list_root.addWidget(self.list_w, 1)
 

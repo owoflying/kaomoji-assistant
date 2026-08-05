@@ -5,6 +5,7 @@
 """
 from PySide6.QtCore import Qt, QEasingCurve, QPropertyAnimation, QAbstractAnimation
 from PySide6.QtWidgets import QGraphicsOpacityEffect
+from PySide6.QtGui import QFont
 
 
 class Theme:
@@ -24,7 +25,9 @@ class Theme:
             self.text_secondary = "#9ca3af"
             self.text_tertiary = "#6b7280"
             self.accent = "#60cdff"            # Win11 强调蓝（深色模式）
+            self.accent_hover = "#7bd4ff"
             self.accent_bg = "rgba(96,205,255,0.15)"
+            self.content_surface = "#242424"   # 右侧内容区表面（比侧栏 mica 略深）
             self.nav_hover = "rgba(255,255,255,0.06)"
             self.nav_selected = "rgba(255,255,255,0.08)"
             self.input_bg = "rgba(255,255,255,0.06)"
@@ -42,7 +45,9 @@ class Theme:
             self.text_secondary = "#5f5f5f"
             self.text_tertiary = "#9ca3af"
             self.accent = "#0067c0"            # Win11 强调蓝（浅色模式）
+            self.accent_hover = "#0a72cf"
             self.accent_bg = "rgba(0,103,192,0.10)"
+            self.content_surface = "#fbfbfb"   # 右侧内容区表面（比侧栏 mica 略亮）
             self.nav_hover = "rgba(0,0,0,0.04)"
             self.nav_selected = "rgba(0,0,0,0.06)"
             self.input_bg = "rgba(255,255,255,0.7)"
@@ -66,6 +71,7 @@ class Theme:
             font-size: 28px;
             font-weight: 600;
             color: {t.text};
+            margin-bottom: 6px;
         }}
         QLabel#SectionTitle {{
             font-size: 16px;
@@ -114,8 +120,13 @@ class Theme:
             border: none;
         }}
         QPushButton#AccentButton:hover {{
+            background: {t.accent_hover};
+        }}
+        QPushButton#AccentButton:pressed {{
             background: {t.accent};
-            opacity: 0.9;
+        }}
+        QDialog {{
+            background: {t.bg};
         }}
         QLineEdit, QComboBox, QSpinBox {{
             background: {t.input_bg};
@@ -136,7 +147,8 @@ class Theme:
         QListWidget::item {{
             background: transparent;
             border-radius: 6px;
-            padding: 6px 8px;
+            padding: 7px 10px;
+            min-height: 30px;
             color: {t.text};
         }}
         QListWidget::item:selected {{
@@ -144,6 +156,27 @@ class Theme:
         }}
         QListWidget::item:hover {{
             background: {t.nav_hover};
+        }}
+        QScrollBar:vertical {{
+            background: transparent;
+            width: 10px;
+            margin: 4px 2px;
+        }}
+        QScrollBar::handle:vertical {{
+            background: {t.card_border};
+            border-radius: 5px;
+            min-height: 40px;
+        }}
+        QScrollBar::handle:vertical:hover {{
+            background: {t.text_tertiary};
+        }}
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+            height: 0;
+            border: none;
+            background: transparent;
+        }}
+        QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+            background: transparent;
         }}
         QSlider::groove:horizontal {{
             height: 4px;
@@ -205,3 +238,23 @@ def nav_icon(char):
     """返回导航图标字符；优先尝试 Segoe Fluent Icons，否则用 emoji。"""
     # 这里用 emoji 作为稳妥 fallback，保证跨字体可见
     return char
+
+
+def kaomoji_font(size=14):
+    """返回适合渲染颜文字（含全角括号、片假名、特殊符号、emoji）的字体栈。
+
+    关键：用 setFamilies 给出「按字形逐字回退」的字体链，而不是强制单一
+    “Segoe UI Symbol”——后者覆盖不全，缺失字形会变成豆腐块或基线错位。
+    顺序：彩色 emoji -> 符号字体 -> 中文/UI 字体兜底，确保绝大多数颜文字正确显示。
+    """
+    f = QFont()
+    f.setFamilies([
+        "Segoe UI Emoji",
+        "Segoe UI Symbol",
+        "Microsoft YaHei UI",
+        "Segoe UI Variable",
+        "Segoe UI",
+        "Arial Unicode MS",
+    ])
+    f.setPointSize(size)
+    return f

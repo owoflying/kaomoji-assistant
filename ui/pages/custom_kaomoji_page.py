@@ -7,6 +7,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 
+from ui.win11_theme import kaomoji_font
+
 
 class _ItemEditDialog(QDialog):
     def __init__(self, groups, text="", group="默认", tags="", parent=None):
@@ -20,7 +22,7 @@ class _ItemEditDialog(QDialog):
         root.addWidget(QLabel("颜文字"))
         self.text_edit = QLineEdit(text)
         self.text_edit.setPlaceholderText("例如 (｡•̀ᴗ-)✧")
-        self.text_edit.setFont(QFont("Segoe UI Symbol", 13))
+        self.text_edit.setFont(kaomoji_font(14))
         root.addWidget(self.text_edit)
 
         grp_row = QHBoxLayout()
@@ -127,7 +129,7 @@ class CustomKaomojiPage(QWidget):
             tags = self.user_kao.tags_of(text)
             item = QListWidgetItem(text if not tags else "%s    [%s]" % (text, ", ".join(tags)))
             item.setData(Qt.UserRole, text)
-            item.setFont(QFont("Segoe UI Symbol", 13))
+            item.setFont(kaomoji_font(14))
             self.list_w.addItem(item)
 
     def _new_group(self):

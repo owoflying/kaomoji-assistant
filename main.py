@@ -23,6 +23,7 @@ from core import autostart
 from core.app_icon import make_icon
 from ui.picker_window import PickerWindow
 from ui.unified_window import UnifiedSettingsWindow
+from ui.win11_theme import Theme
 
 # 配置项的默认值；load_config 会把磁盘值合并进来，缺失项自动补默认，
 # 这样新增配置项时旧配置不会因缺字段而报错。
@@ -66,6 +67,8 @@ def main():
     app.setApplicationName("颜文字输入辅助器")
 
     config = load_config()
+    # 应用级样式：让所有独立对话框（新增/编辑颜文字等）与统一面板视觉一致
+    app.setStyleSheet(Theme(config.get("theme", "light")).style_sheet())
     # 让「配置里的 autostart」与注册表实际状态保持一致
     if autostart.is_supported():
         if bool(config.get("autostart", False)) != autostart.is_enabled():

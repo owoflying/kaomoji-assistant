@@ -7,13 +7,14 @@ import ctypes
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QStackedWidget,
-    QSizePolicy,
+    QSizePolicy, QFrame,
 )
 from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve, QPoint, QSize, QRect
 from PySide6.QtGui import QFont, QColor, QPainter, QPainterPath
 
 from ui.win_style import apply_backdrop, apply_dark_mode, DWMSBT_MAINWINDOW
-from ui.win11_theme import Theme, fade_in
+from ui.win11_theme import Theme
+from ui.animated_stack import AnimatedStackedWidget
 from ui.pages import (
     HomePage, LibraryPage, CustomKaomojiPage, TriggerPage,
     SearchPage, SettingsPage, AboutPage,
@@ -59,7 +60,8 @@ class _NavItem(QWidget):
     def _apply_style(self):
         t = self.theme
         bg = t.nav_selected if self._selected else "transparent"
-        hover = t.nav_hover
+        # 选中态悬停时保持选中底色，避免悬停把选中项“洗白”
+        hover = t.nav_selected if self._selected else t.nav_hover
         color = t.text if self._selected else t.text_secondary
         self.setStyleSheet(
             "_NavItem{background:%s;border-radius:6px;}"
@@ -153,8 +155,14 @@ class UnifiedSettingsWindow(QMainWindow):
 
         root.addWidget(self.sidebar)
 
-        # 右侧内容区
-        self.content = QStackedWidget()
+        # 1px 分隔线：左侧 mica 侧栏 与 右侧内容区表面 之间，增强层次
+        divider = QFrame()
+        divider.setObjectName("Divider")
+        divider.setFixedWidth(1)
+        root.addWidget(divider)
+
+        # 右侧内容区（带平滑过渡的栈式容器）
+        self.content = AnimatedStackedWidget()
         self.content.setObjectName("ContentArea")
         root.addWidget(self.content, 1)
 
@@ -196,9 +204,11 @@ class UnifiedSettingsWindow(QMainWindow):
                 target = i
         if target is None:
             return
-        self.content.setCurrentWidget(self._pages[key])
         if animate:
-            fade_in(self.content.currentWidget(), 180)
+            # 平滑「上浮 + 淡入」过渡，旧页留在底层防闪烁
+            self.content.slide_to(self._pages[key], 260, rise=12)
+        else:
+            self.content.setCurrentWidget(self._pages[key])
         if key == "home":
             self.home_page.refresh_stats()
         if key == "search":
@@ -208,6 +218,8 @@ class UnifiedSettingsWindow(QMainWindow):
         t = self.theme
         self.setStyleSheet(t.style_sheet())
         self.sidebar.setStyleSheet("background:transparent;")
+        # 内容区表面较侧栏略亮/略深，形成 Win11 设置式层次
+        self.content.setStyleSheet("background:%s;border:none;" % t.content_surface)
         # 导航项刷新主题
         for _, item in self._nav_items:
             item.update_theme(t)

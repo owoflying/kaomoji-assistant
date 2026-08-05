@@ -6,6 +6,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 
+from ui.win11_theme import kaomoji_font
+
 
 class _TriggerEditDialog(QDialog):
     def __init__(self, trigger="", output="", parent=None):
@@ -24,7 +26,7 @@ class _TriggerEditDialog(QDialog):
         root.addWidget(QLabel("输出（弹出的内容）"))
         self.output_edit = QLineEdit(output)
         self.output_edit.setPlaceholderText("例如 (๑•̀ㅂ•́)و✧")
-        self.output_edit.setFont(QFont("Segoe UI Symbol", 13))
+        self.output_edit.setFont(kaomoji_font(14))
         root.addWidget(self.output_edit)
 
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -86,7 +88,7 @@ class TriggerPage(QWidget):
         for it in self.triggers.get_all():
             item = QListWidgetItem("%s  →  %s" % (it["trigger"], it["output"]))
             item.setData(Qt.UserRole, it["trigger"])
-            item.setFont(QFont("Segoe UI Symbol", 12))
+            item.setFont(kaomoji_font(14))
             self.list_w.addItem(item)
 
     def _add(self):

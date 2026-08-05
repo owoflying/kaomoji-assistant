@@ -74,7 +74,7 @@ def _style(p):
     QLabel#page {{ color: {num}; font-size: 11px; padding-left: 2px; }}
     QPushButton#nav {{
         border: none; background: transparent; color: {nav};
-        font-size: 15px; border-radius: 5px;
+        font-size: 15px; border-radius: 5px; padding: 0;
         min-width: 18px; max-width: 18px; min-height: 24px; max-height: 24px;
     }}
     QPushButton#nav:hover {{ background: {hover_bg}; color: {accent}; }}

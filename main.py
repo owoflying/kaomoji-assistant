@@ -1,6 +1,8 @@
 import os
 import sys
 import json
+import time
+import traceback
 
 # 确保项目根目录在 sys.path，方便以脚本方式直接运行
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -25,6 +27,23 @@ from ui.picker_window import PickerWindow
 from ui.unified_window import UnifiedSettingsWindow
 from ui.win11_theme import Theme
 from ui.fluent_icons import ensure_icon_font
+from ui.log_viewer import show_log_viewer
+
+# 运行时日志环形缓冲：收集 Qt 消息 + 未捕获异常，供「查看日志」对话框读取。
+LOG_BUFFER = []
+LOG_BUFFER_MAX = 2000
+
+
+def _append_log(level, source, message):
+    """把一条日志写入环形缓冲（超过上限丢弃最旧的）。"""
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    if source:
+        line = "[%s] [%s] (%s) %s" % (ts, level, source, message)
+    else:
+        line = "[%s] [%s] %s" % (ts, level, message)
+    LOG_BUFFER.append(line)
+    if len(LOG_BUFFER) > LOG_BUFFER_MAX:
+        del LOG_BUFFER[:len(LOG_BUFFER) - LOG_BUFFER_MAX]
 
 # 配置项的默认值；load_config 会把磁盘值合并进来，缺失项自动补默认，
 # 这样新增配置项时旧配置不会因缺字段而报错。
@@ -231,11 +250,15 @@ def _install_qt_log_filter():
             if category == cat and msg.startswith(prefix):
                 _MUTED_LOG_COUNT["n"] += 1
                 return
-        # 其余原样放行，格式尽量贴近 Qt 默认：带类别的打 "类别: 内容"，
+        # 收集到运行时日志缓冲（供「查看日志」对话框读取）
+        level = level_name.get(mode, "qt")
+        src = category if category and category != "default" else ""
+        _append_log(level, src, msg)
+        # 其余原样放行到 stderr，格式尽量贴近 Qt 默认：带类别的打 "类别: 内容"，
         # 无类别（Qt 记作 default）的直接打内容；critical/fatal 额外标出级别。
         parts = []
         if mode in (QtMsgType.QtCriticalMsg, QtMsgType.QtFatalMsg):
-            parts.append("[%s]" % level_name.get(mode, "qt"))
+            parts.append("[%s]" % level)
         if category and category != "default":
             parts.append("%s:" % category)
         parts.append(msg)
@@ -248,11 +271,21 @@ def _install_qt_log_filter():
     qInstallMessageHandler(handler)
 
 
+def _install_excepthook():
+    """把未捕获的 Python 异常也收进日志缓冲（含 Qt 信号槽里抛出的异常）。"""
+    def hook(exc_type, exc_value, exc_tb):
+        text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb)).rstrip()
+        _append_log("exception", "", text)
+    sys.excepthook = hook
+
+
 def main():
     _install_qt_log_filter()
+    _install_excepthook()
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     app.setApplicationName("颜文字输入辅助器")
+    _append_log("info", "app", "日志开始记录。")
     # 注册内置图标字体（Fluent System Icons，随包分发，Win10 也能正常显示）
     ensure_icon_font()
 
@@ -391,6 +424,12 @@ def main():
     menu.addAction(show_action)
     menu.addAction(panel_action)
     menu.addAction(settings_action)
+    log_action = QAction("查看日志", app)
+    log_action.triggered.connect(
+        lambda: show_log_viewer(LOG_BUFFER, parent=unified,
+                                theme_name=config.get("theme", "light"))
+    )
+    menu.addAction(log_action)
     menu.addSeparator()
     menu.addAction(quit_action)
     tray.setContextMenu(menu)
@@ -407,6 +446,7 @@ def main():
     app.aboutToQuit.connect(state.flush)
     app.aboutToQuit.connect(user_kao.flush)
     app.aboutToQuit.connect(triggers.flush)
+    app.aboutToQuit.connect(lambda: _append_log("info", "app", "应用程序退出。"))
 
     sys.exit(app.exec())
 

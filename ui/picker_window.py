@@ -131,11 +131,12 @@ class PickerWindow(QWidget):
     # 故在 showEvent/hideEvent 中手动 emit，供 main.py 暂停/恢复自动弹出监听使用。
     isVisibleChanged = Signal(bool)
 
-    def __init__(self, data: KaomojiData, config: dict, state: UserState):
+    def __init__(self, data: KaomojiData, config: dict, state: UserState, user_kao=None):
         super().__init__()
         self.data = data
         self.config = config
         self.state = state
+        self.user_kao = user_kao
         self.items = []
         self.page = 0
         self.active = 0                # 当前高亮的候选在本页内的下标
@@ -152,6 +153,7 @@ class PickerWindow(QWidget):
         self._hiding = False           # 正在播放淡出动画
         self._dismiss_at = 0.0         # 上次因“继续打字”自动关闭的时间戳
         self._had_editable = False     # 本次显示期间是否曾检测到可编辑焦点
+        self._caret = False            # True=贴着光标定位；False=居中偏上定位
         self._init_window()
         self._init_ui()
         self._apply_config_visuals()
@@ -328,10 +330,14 @@ class PickerWindow(QWidget):
 
     # ---------- 数据 ----------
     def _manual_items(self):
-        """手动唤起：最近用过的排前面，其余按原顺序跟上（去重）。"""
+        """手动唤起：最近用过的排前面，其次「我的颜文字」，其余按原顺序跟上（去重）。"""
         seen = set()
         out = []
-        for k in list(self.state.recent) + list(self.data.get_items()):
+        src = list(self.state.recent)
+        if self.user_kao is not None:
+            src = src + self.user_kao.get_all()
+        src = src + list(self.data.get_items())
+        for k in src:
             if k not in seen:
                 seen.add(k)
                 out.append(k)
@@ -494,6 +500,7 @@ class PickerWindow(QWidget):
         self._anim.stop()
         self._hiding = False
         self._emotion = None
+        self._caret = False
         self._closing_enabled = False
         super().hide()
 
@@ -507,25 +514,42 @@ class PickerWindow(QWidget):
             return
         self._finish_hide_now()
         self._emotion = None
+        self._caret = False
         self.set_candidates(self._manual_items())
         self._saved_foreground = win_utils.get_foreground_hwnd()
         self.show()
 
     def show_for_emotion(self, emotion):
         items = self.data.get_items(emotion)
+        if self.user_kao is not None:
+            items = items + self.user_kao.items_for_emotion(emotion)
+        seen = set()
+        items = [x for x in items if not (x in seen or seen.add(x))]
         if not items:
             return
         items = list(items)
         random.shuffle(items)
         self._finish_hide_now()
         self._emotion = emotion
+        self._caret = True
         self.set_candidates(items)
         self._saved_foreground = win_utils.get_foreground_hwnd()
         self.show()
         self.emotion_shown.emit(emotion)
 
+    def show_for_output(self, text):
+        """触发词片段：在候选条给出「特定输出」单一候选（贴光标定位）。"""
+        if not text:
+            return
+        self._finish_hide_now()
+        self._emotion = None
+        self._caret = True
+        self.set_candidates([text])
+        self._saved_foreground = win_utils.get_foreground_hwnd()
+        self.show()
+
     def showEvent(self, e):
-        if self._emotion:
+        if self._caret:
             self._position_caret()
         else:
             self._position_center()

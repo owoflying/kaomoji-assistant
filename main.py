@@ -16,11 +16,16 @@ from core.hotkey import NativeHotkeyManager
 from core.emotion_monitor import EmotionMonitor
 from core.injector import KaomojiInjector
 from core.user_state import UserState
+from core.user_kaomoji import UserKaomoji
+from core.user_triggers import UserTriggers
 from core import runtime
 from core import autostart
 from core.app_icon import make_icon
 from ui.picker_window import PickerWindow
 from ui.settings_dialog import SettingsDialog
+from ui.custom_dialog import CustomKaomojiDialog
+from ui.trigger_dialog import TriggerDialog
+from ui.search_dialog import SearchDialog
 
 # 配置项的默认值；load_config 会把磁盘值合并进来，缺失项自动补默认，
 # 这样新增配置项时旧配置不会因缺字段而报错。
@@ -69,22 +74,31 @@ def main():
         if bool(config.get("autostart", False)) != autostart.is_enabled():
             autostart.set_enabled(bool(config.get("autostart", False)))
     data = KaomojiData()
+    # 用户自定义颜文字 / 快捷短语（可写，独立于只读库）
+    user_kao = UserKaomoji()
+    triggers = UserTriggers()
     # 传入颜文字库作为白名单：最近/收藏只保留库中真实存在的条目，
     # 任何脏数据（测试残留、手改 JSON 出错）都会在载入时被自动清掉
     state = UserState(
         max_recent=int(config.get("max_recent", 30)),
-        valid_items=data.get_items(),
+        valid_items=data.get_items() + user_kao.get_all(),
     )
+    # 用户新增/编辑自定义颜文字后，同步刷新最近记录的白名单
+    def _refresh_valid():
+        state.valid_items = set(data.get_items() + user_kao.get_all())
+    user_kao.changed.connect(_refresh_valid)
+
     injector = KaomojiInjector()
 
-    window = PickerWindow(data, config, state)
+    window = PickerWindow(data, config, state, user_kao)
 
     hotkey = NativeHotkeyManager()
     hotkey.hotkey_pressed.connect(window.toggle)
 
     # 自动弹出监听（打字识别情绪 -> 就近弹出候选条）
-    monitor = EmotionMonitor()
+    monitor = EmotionMonitor(triggers=triggers)
     monitor.emotion_detected.connect(window.show_for_emotion)
+    monitor.trigger_detected.connect(window.show_for_output)
     window.isVisibleChanged.connect(
         lambda v: monitor.pause() if v else monitor.resume()
     )
@@ -120,6 +134,46 @@ def main():
         settings.activateWindow()
 
     window.settings_requested.connect(open_settings)
+
+    # 自定义颜文字 / 快捷短语 / 搜索 的「暂停监听 + 打开 + 关闭后恢复」封装
+    def _resume_main():
+        hotkey.start(config.get("hotkey", "<ctrl>+<shift>+k"))
+        if config.get("auto_popup", True):
+            monitor.resume()
+
+    def open_user_kao():
+        hotkey.stop()
+        monitor.pause()
+        if window.isVisible():
+            window.hide()
+        dlg = CustomKaomojiDialog(user_kao)
+        dlg.finished.connect(lambda *_: (user_kao.flush(), _resume_main()))
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+    def open_triggers():
+        hotkey.stop()
+        monitor.pause()
+        if window.isVisible():
+            window.hide()
+        dlg = TriggerDialog(triggers)
+        dlg.finished.connect(lambda *_: (triggers.flush(), _resume_main()))
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+    def open_search():
+        hotkey.stop()
+        monitor.pause()
+        if window.isVisible():
+            window.hide()
+        dlg = SearchDialog(data, user_kao, config.get("theme", "light"))
+        dlg.selected.connect(on_selected)
+        dlg.finished.connect(lambda *_: _resume_main())
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
 
     def close_settings():
         # 设置关闭后恢复全局热键（使用最新配置；取消则仍是原热键）
@@ -158,11 +212,20 @@ def main():
     menu = QMenu()
     show_action = QAction("唤起面板", app)
     show_action.triggered.connect(window.toggle)
+    my_kao_action = QAction("我的颜文字", app)
+    my_kao_action.triggered.connect(open_user_kao)
+    trigger_action = QAction("快捷短语", app)
+    trigger_action.triggered.connect(open_triggers)
+    search_action = QAction("搜索颜文字", app)
+    search_action.triggered.connect(open_search)
     settings_action = QAction("设置", app)
     settings_action.triggered.connect(open_settings)
     quit_action = QAction("退出", app)
     quit_action.triggered.connect(app.quit)
     menu.addAction(show_action)
+    menu.addAction(my_kao_action)
+    menu.addAction(trigger_action)
+    menu.addAction(search_action)
     menu.addAction(settings_action)
     menu.addSeparator()
     menu.addAction(quit_action)
@@ -178,6 +241,8 @@ def main():
     app.aboutToQuit.connect(monitor.stop)
     app.aboutToQuit.connect(window.shutdown)
     app.aboutToQuit.connect(state.flush)
+    app.aboutToQuit.connect(user_kao.flush)
+    app.aboutToQuit.connect(triggers.flush)
 
     sys.exit(app.exec())
 

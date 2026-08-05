@@ -39,13 +39,16 @@ except Exception:  # pragma: no cover - 非 Windows 或 COM 不可用
 
 class EmotionMonitor(QObject):
     emotion_detected = Signal(str)
+    trigger_detected = Signal(str)  # 用户快捷短语：尾部命中触发词 -> 给出特定输出
 
-    def __init__(self):
+    def __init__(self, triggers=None):
         super().__init__()
         self._listener = None
         self._buffer = ""           # 可见字符缓冲（中文捕获失败时的兜底）
         self._paused = True
         self._max_buf = 60
+        self._triggers = triggers   # UserTriggers 实例（可为 None）
+        self._trigger_locked = None # 已触发过、暂不重复触发的触发词
         self._scan_tail = 30        # 只在文本尾部这段长度内做情绪判定（取最近输入）
         # 采样线程
         self._thread = None
@@ -262,7 +265,23 @@ class EmotionMonitor(QObject):
 
     # ---------- 情绪判定 ----------
     def _evaluate(self, text):
-        hit = detect_last(text[-self._scan_tail:])
+        tail = text[-self._scan_tail:]
+        # 触发词片段优先：打字尾部命中用户定义的触发词，直接给出特定输出
+        if self._triggers is not None:
+            m = self._triggers.match(tail)
+            if m is not None:
+                with self._lock:
+                    if self._trigger_locked == m:
+                        return      # 同一个输出刚弹过，不重复打扰
+                    self._trigger_locked = m
+                    self._locked = None   # 触发片段不兼带情绪弹出
+                self.trigger_detected.emit(m)
+                return
+            else:
+                with self._lock:
+                    self._trigger_locked = None
+
+        hit = detect_last(tail)
         if hit is None:
             # 扫描窗口里已经没有任何情绪词 -> 解锁，下次命中可以重新弹
             with self._lock:

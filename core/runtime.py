@@ -73,3 +73,17 @@ def state_path():
 
 def kaomoji_path():
     return resource_path("data", "kaomoji.json")
+
+
+def user_kaomoji_path():
+    """用户自定义颜文字（可写，与只读 kaomoji.json 分离）。"""
+    if is_frozen():
+        return os.path.join(app_data_dir(), "user_kaomoji.json")
+    return os.path.join(source_base_dir(), "data", "user_kaomoji.json")
+
+
+def user_triggers_path():
+    """用户快捷短语（触发词 -> 输出，可写）。"""
+    if is_frozen():
+        return os.path.join(app_data_dir(), "user_triggers.json")
+    return os.path.join(source_base_dir(), "data", "user_triggers.json")

@@ -22,11 +22,15 @@ class AnimatedStackedWidget(QStackedWidget):
         cur = self.currentWidget()
         if widget is cur or self._busy:
             return
-        self._busy = True
 
-        # 让目标页成为当前页（置顶显示）并锁定到正常位置
+        # 窗口未显示时 geometry 为无效/零尺寸，此时运行动画会导致后续布局压缩错乱，
+        # 直接切页更安全。
         self.setCurrentWidget(widget)
         target_geo = widget.geometry()
+        if target_geo.width() <= 0 or target_geo.height() <= 0:
+            return
+
+        self._busy = True
         widget.setGraphicsEffect(None)
 
         # 旧页保持在底层可见，弥补切换瞬间的背景空洞（防闪烁）

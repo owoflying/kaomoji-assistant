@@ -204,6 +204,9 @@ class UnifiedSettingsWindow(QMainWindow):
                 target = i
         if target is None:
             return
+        # 窗口未显示时没有有效 geometry，动画会导致布局错乱，强制走静态切换
+        if animate and not self.isVisible():
+            animate = False
         if animate:
             # 平滑「上浮 + 淡入」过渡，旧页留在底层防闪烁
             self.content.slide_to(self._pages[key], 260, rise=12)

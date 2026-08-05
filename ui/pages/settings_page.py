@@ -68,6 +68,9 @@ class SettingsPage(QWidget):
         croot.setContentsMargins(16, 14, 16, 14)
         croot.setSpacing(10)
         hk_row = QHBoxLayout()
+        hk_row.setContentsMargins(0, 8, 0, 8)
+        hk_row.setSpacing(12)
+        hk_row.setAlignment(Qt.AlignVCenter)
         self.hotkey_btn = QPushButton("录制…")
         self.hotkey_btn.setMinimumWidth(110)
         self.hotkey_btn.clicked.connect(self._start_capture)
@@ -80,7 +83,11 @@ class SettingsPage(QWidget):
         hk_row.addWidget(self.hotkey_btn)
         hk_row.addWidget(self.finish_btn)
         hk_row.addWidget(self.hotkey_label, 1)
-        croot.addLayout(hk_row)
+        hk_container = QWidget()
+        hk_container.setLayout(hk_row)
+        hk_container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        hk_container.setMinimumHeight(34)
+        croot.addWidget(hk_container)
         tip = QLabel("点「录制…」后按修饰键+单键（如 Ctrl+Shift+K）或多键序列（如 k+l）。录完点「完成」；Esc 取消。")
         tip.setObjectName("Caption")
         tip.setWordWrap(True)
@@ -108,10 +115,17 @@ class SettingsPage(QWidget):
         self._add_row(croot, "最大最近记录", self._recent_spin())
         self._add_row(croot, "每页候选数", self._page_spin())
         auto_row = QHBoxLayout()
+        auto_row.setContentsMargins(0, 8, 0, 8)
+        auto_row.setSpacing(12)
+        auto_row.setAlignment(Qt.AlignVCenter)
         self.auto_check = QCheckBox("打字时自动弹出（识别情绪推荐颜文字）")
         auto_row.addWidget(self.auto_check)
         auto_row.addStretch(1)
-        croot.addLayout(auto_row)
+        auto_container = QWidget()
+        auto_container.setLayout(auto_row)
+        auto_container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        auto_container.setMinimumHeight(34)
+        croot.addWidget(auto_container)
         root.addWidget(card)
 
         # 系统
@@ -121,13 +135,20 @@ class SettingsPage(QWidget):
         croot.setContentsMargins(16, 14, 16, 14)
         croot.setSpacing(14)
         auto_row = QHBoxLayout()
+        auto_row.setContentsMargins(0, 8, 0, 8)
+        auto_row.setSpacing(12)
+        auto_row.setAlignment(Qt.AlignVCenter)
         self.autostart_check = QCheckBox("开机自动启动")
         if not autostart.is_supported():
             self.autostart_check.setEnabled(False)
             self.autostart_check.setToolTip("仅打包后的 exe 版本支持")
         auto_row.addWidget(self.autostart_check)
         auto_row.addStretch(1)
-        croot.addLayout(auto_row)
+        auto_container = QWidget()
+        auto_container.setLayout(auto_row)
+        auto_container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        auto_container.setMinimumHeight(34)
+        croot.addWidget(auto_container)
         root.addWidget(card)
 
         root.addStretch(1)
@@ -154,8 +175,11 @@ class SettingsPage(QWidget):
         return card
 
     def _add_row(self, layout, label, widget_or_layout):
+        """向卡片中添加一行设置项；用 QWidget 容器保证最小行高，防止被压扁。"""
         row = QHBoxLayout()
+        row.setContentsMargins(0, 8, 0, 8)
         row.setSpacing(12)
+        row.setAlignment(Qt.AlignVCenter)
         lb = QLabel(label)
         lb.setObjectName("BodyText")
         row.addWidget(lb)
@@ -164,7 +188,11 @@ class SettingsPage(QWidget):
             row.addWidget(widget_or_layout)
         else:
             row.addLayout(widget_or_layout)
-        layout.addLayout(row)
+        container = QWidget()
+        container.setLayout(row)
+        container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        container.setMinimumHeight(34)
+        layout.addWidget(container)
 
     def _theme_combo(self):
         self.theme_combo = QComboBox()

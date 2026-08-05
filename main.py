@@ -62,12 +62,78 @@ def save_config(config):
         json.dump(config, f, ensure_ascii=False, indent=2)
 
 
+def _write_diag():
+    """把图标字体加载情况写到 diag.txt（exe 同目录 / 源码根目录）。"""
+    from ui.fluent_icons import font_status, FONT_FILE, GLYPHS, char
+    from PySide6.QtGui import QFont, QFontInfo, QImage, QPainter, QColor
+    from PySide6.QtCore import Qt
+
+    family, err = font_status()
+    path = runtime.resource_path("ui", "fonts", FONT_FILE)
+    lines = [
+        "frozen        = %s" % runtime.is_frozen(),
+        "font path     = %s" % path,
+        "  isfile      = %s" % os.path.isfile(path),
+        "  isdir       = %s" % os.path.isdir(path),
+        "registered    = %r" % family,
+        "error         = %r" % err,
+    ]
+
+    # 逐个图标「真的画一遍」：豆腐块/缺字形的表现是——要么一片空白，
+    # 要么所有图标画出来长得一模一样。这比 supportsCharacter 可靠。
+    f = QFont(family)
+    f.setPixelSize(24)
+    lines.append("resolved      = %r" % QFontInfo(f).family())
+
+    def render(ch):
+        img = QImage(32, 32, QImage.Format_ARGB32)
+        img.fill(QColor(255, 255, 255))
+        p = QPainter(img)
+        p.setFont(f)
+        p.setPen(QColor(0, 0, 0))
+        p.drawText(img.rect(), Qt.AlignCenter, ch)
+        p.end()
+        data = img.constBits().tobytes()
+        ink = sum(1 for y in range(32) for x in range(32)
+                  if img.pixelColor(x, y).lightness() < 200)
+        return data, ink
+
+    shapes, blank = {}, []
+    for n in GLYPHS:
+        data, ink = render(char(n))
+        if ink < 6:
+            blank.append(n)
+        shapes.setdefault(data, []).append(n)
+    identical = [v for v in shapes.values() if len(v) > 1]
+
+    lines.append("blank glyphs  = %s" % (blank or "none"))
+    lines.append("identical sets= %s" % (identical or "none"))
+    ok = (not blank) and (not identical) and not err
+    lines.append("RESULT        = %s" % ("OK" if ok else "FAIL"))
+
+    base = os.path.dirname(sys.executable) if runtime.is_frozen() else runtime.source_base_dir()
+    out = os.path.join(base, "diag.txt")
+    text = "\n".join(lines) + "\n"
+    try:
+        with open(out, "w", encoding="utf-8") as fp:
+            fp.write(text)
+    except Exception:
+        pass
+    sys.stdout.write(text)
+
+
 def main():
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     app.setApplicationName("颜文字输入辅助器")
     # 注册内置图标字体（Fluent System Icons，随包分发，Win10 也能正常显示）
     ensure_icon_font()
+
+    # 自检模式：KaomojiAssistant.exe --diag 会在 exe 同目录写 diag.txt 后退出，
+    # 用来排查“图标显示成豆腐块”这类打包资源问题（窗口程序看不到控制台输出）。
+    if "--diag" in sys.argv:
+        _write_diag()
+        return
 
     config = load_config()
     # 应用级样式：让所有独立对话框（新增/编辑颜文字等）与统一面板视觉一致

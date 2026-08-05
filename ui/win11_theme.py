@@ -77,9 +77,18 @@ class Theme:
     def style_sheet(self):
         """返回应用到统一窗口根 widget 的全局 QSS。"""
         t = self
+        # 把内置图标字体追加到全局字体回退链「末尾」：正文仍由前面的界面字体渲染，
+        # 而 PUA 区的图标码点在前面字体都缺字形时能回退到它。
+        # 这是兜底——图标 QLabel 自身样式表里已显式指定该字体（见 ui/fluent_icons.py），
+        # 因为 QSS 的 font-family 优先级高于 setFont()，只靠 setFont 会被这条规则覆盖。
+        try:
+            from ui.fluent_icons import ensure_icon_font
+            icon_family = ', "%s"' % ensure_icon_font()
+        except Exception:
+            icon_family = ""
         return f"""
         QWidget {{
-            font-family: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+            font-family: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif{icon_family};
             color: {t.text};
             outline: none;
         }}

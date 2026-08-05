@@ -1,25 +1,14 @@
 """全局鼠标钩子：面板可见时，在界面“外部”按下任意鼠标键即关闭面板。
 
-⚠️ 默认不再启用！见 PickerWindow.__init__ 里的 use_global_mouse_hook 开关
-（默认 False）。原因：
-
-  * 系统级 WH_MOUSE_LL 低层鼠标钩子是 Windows 上“外接蓝牙鼠标被卡死/失灵”的
-    已知诱因之一，部分蓝牙协议栈+驱动组合下，挂上全局低层鼠标钩子后蓝牙 HID
-    鼠标就不再上报移动/点击；
-  * 本程序是常驻托盘进程，关掉窗口不会退出、也不会卸载钩子，于是会出现
-    “关掉程序蓝牙鼠标还是用不了，只剩触摸板能用”的现象；
-  * 因此默认不装这个钩子，改由 PickerWindow._check_focus 用“前台窗口是否变化”
-    轮询来兜底“点界面外部关闭”，完全不需要系统级钩子。
-
-动机（历史）：
+动机：
   * 面板用 FramelessWindowHint + WindowDoesNotAcceptFocus + WA_ShowWithoutActivating，
     永不抢焦点，所以系统不会给它发 WindowDeactivate（点击别处时焦点仍在原窗口），
     也就无法靠 Qt 原生“点击外部关闭”来收起面板；
   * 失焦自动关闭（_check_focus）只在“曾经检测到可编辑焦点”后武装，
     手动（托盘）唤起、且当前没有输入框聚焦时该标志恒为 False，同样关不掉；
-  * 于是早期版本用一个系统级低层鼠标钩子（WH_MOUSE_LL）来感知“点到了面板之外”。
+  * 因此需要一个系统级低层鼠标钩子（WH_MOUSE_LL）来感知“点到了面板之外”。
 
-行为（仅当 use_global_mouse_hook=True 时才生效）：
+行为：
   * 仅在 is_active_cb() 为真（面板可见）时才参与，空闲时近乎零开销；
   * 命中任意鼠标键按下时发 outside_click 信号，真正的“是否界外”判定交给面板
     （在 Qt 主线程里安全地用 self.geometry().contains(QCursor.pos()) 判断），

@@ -162,16 +162,11 @@ class PickerWindow(QWidget):
         self._interceptor.action.connect(self._on_hk_action)
         self._interceptor.dismiss.connect(self._on_hk_dismiss)
         self._interceptor.start()
-        # 全局鼠标钩子：面板可见时，点在“界面外”即关闭（见 core/global_mouse.py）。
-        # 默认“不安装”：系统级 WH_MOUSE_LL 低层鼠标钩子在部分蓝牙鼠标/驱动组合下
-        # 会把外接鼠标卡死；而且本程序是常驻托盘进程，光关窗口并不会卸载钩子，
-        # 于是“关掉程序鼠标还是不能用”。缺失的“点界面外关闭”改由 _check_focus
-        # 的前台窗口变化检测兜底（无需系统级钩子）。若设备无此兼容问题、确需钩子，
-        # 可在配置里打开 use_global_mouse_hook（默认 False）。
+        # 全局鼠标钩子：面板可见时，点在“界面外”即关闭（见 core/global_mouse.py）；
+        # 内部点击交给各自控件处理，不会误伤。
         self._mouse_watch = GlobalMouseInterceptor(lambda: self._hk_active)
         self._mouse_watch.outside_click.connect(self._on_outside_click)
-        if self.config.get("use_global_mouse_hook", False):
-            self._mouse_watch.start()
+        self._mouse_watch.start()
 
     # ---------- 窗口与材质 ----------
     def _init_window(self):
@@ -638,20 +633,6 @@ class PickerWindow(QWidget):
             return
         if not self.config.get("auto_hide_on_blur", True):
             return
-        try:
-            fg = int(win_utils.get_foreground_hwnd())
-        except Exception:
-            return
-        # 情形 B：手动（托盘）唤起、从未见过可编辑焦点时，用“前台窗口是否变了”
-        # 代替全局鼠标钩子判断“点到界面之外”。点开其它窗口会让前台切换，此时收起；
-        # 这样无需系统级 WH_MOUSE_LL 钩子即可获得“点界面外关闭”，规避蓝牙鼠标被卡死。
-        # （自动弹出情形也会落到这里：打字时前台=已记录的输入框，不会误关；切走才关。）
-        saved = self._saved_foreground
-        if saved is not None and fg not in (int(saved), int(self.winId())):
-            self._closing_enabled = False
-            self.hide()
-            return
-        # 情形 A：曾经在输入框里（自动弹出），焦点离开可编辑控件 -> 收起
         try:
             from core import uia_text
             if uia_text is None or not uia_text.available():

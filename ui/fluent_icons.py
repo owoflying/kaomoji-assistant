@@ -46,6 +46,7 @@ GLYPHS = {
 
 _font_family = None
 _font_registered = False
+_font_error = None
 
 
 def _resolve_path():
@@ -55,27 +56,65 @@ def _resolve_path():
 
 
 def ensure_icon_font():
-    """注册内置图标字体（幂等）。需在 QApplication 创建之后调用。"""
-    global _font_family, _font_registered
+    """注册内置图标字体（幂等）。需在 QApplication 创建之后调用。
+
+    注意用 os.path.isfile 而非 os.path.exists：PyInstaller 的 --add-data 若把目标
+    写成文件名而不是目录，会建出一个同名「目录」，此时 exists() 为真但
+    addApplicationFont() 必然失败，导致静默回退到系统字体（Win10 上就是豆腐块）。
+    """
+    global _font_family, _font_registered, _font_error
     if _font_registered:
         return _font_family
     try:
         path = _resolve_path()
-        if os.path.exists(path):
+        if os.path.isfile(path):
             fid = QFontDatabase.addApplicationFont(path)
             fams = QFontDatabase.applicationFontFamilies(fid) if fid >= 0 else []
-            _font_family = fams[0] if fams else FONT_FALLBACK
+            if fams:
+                _font_family = fams[0]
+            else:
+                _font_family = FONT_FALLBACK
+                _font_error = "addApplicationFont failed (id=%s): %s" % (fid, path)
         else:
             _font_family = FONT_FALLBACK
-    except Exception:
+            _font_error = "font file not found: %s" % path
+    except Exception as e:  # pragma: no cover - 防御性
         _font_family = FONT_FALLBACK
+        _font_error = "exception: %r" % (e,)
     _font_registered = True
     return _font_family
+
+
+def font_status():
+    """返回 (family, error)，用于诊断图标是否正常加载。"""
+    ensure_icon_font()
+    return _font_family, _font_error
 
 
 def char(name):
     """返回某个图标名对应的字形字符（PUA codepoint）。"""
     return chr(GLYPHS.get(name, GLYPHS["home"]))
+
+
+def _icon_qss(size, color=None):
+    """图标 QLabel 的内联样式。
+
+    ⚠️ 关键：字体必须写进「控件自身的样式表」里，不能只靠 setFont()。
+    Qt 的样式表字体属性优先级高于 QWidget::setFont()，而本项目在
+    ui/win11_theme.py 里有一条全局 `QWidget { font-family: "Segoe UI Variable", ... }`，
+    会把 setFont() 设的图标字体整个覆盖掉 —— Win11 上系统自带 Segoe Fluent Icons
+    还能靠字体回退兜住，Win10 上没有该字体就直接变豆腐块。
+    控件自身的样式表优先级高于祖先的样式表，所以在这里写 font-family 才稳。
+    """
+    parts = [
+        'font-family:"%s";' % ensure_icon_font(),
+        "font-size:%dpx;" % int(size),
+        "font-weight:400;",
+        "background:transparent;",
+    ]
+    if color is not None:
+        parts.append("color:%s;" % color)
+    return "".join(parts)
 
 
 def icon_label(name, size=16, color=None, parent=None):
@@ -92,15 +131,18 @@ def icon_label(name, size=16, color=None, parent=None):
     f.setWeight(QFont.Weight.Normal)
     lb.setFont(f)
     lb.setAlignment(Qt.AlignCenter)
-    if color is not None:
-        lb.setStyleSheet("color:%s;background:transparent;" % color)
-    else:
-        lb.setStyleSheet("background:transparent;")
+    # 记住字号，recolor 时要连字体一起重写（否则会被全局 QSS 抢回去）
+    lb.setProperty("_icon_px", int(size))
+    lb.setStyleSheet(_icon_qss(size, color))
     return lb
 
 
 def recolor(label, color):
-    """重设已有图标 QLabel 的颜色（用于主题切换 / 选中态）。"""
+    """重设已有图标 QLabel 的颜色（用于主题切换 / 选中态）。
+
+    注意必须重写完整样式（含 font-family），只写 color 会把图标字体丢掉。
+    """
     if label is None:
         return
-    label.setStyleSheet("color:%s;background:transparent;" % color)
+    size = label.property("_icon_px") or 16
+    label.setStyleSheet(_icon_qss(size, color))

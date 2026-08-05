@@ -108,7 +108,63 @@ def _write_diag():
 
     lines.append("blank glyphs  = %s" % (blank or "none"))
     lines.append("identical sets= %s" % (identical or "none"))
-    ok = (not blank) and (not identical) and not err
+
+    # 颜文字字体链：库里混着印度语系字符（ಠ 卡纳达 / દ 古吉拉特），
+    # 检查它们能不能真的画出字形——注意不要用 QRawFont.supportsCharacter 判断，
+    # 它在 Windows 上会顺着 DirectWrite 的隐式回退返回假阳性（会说 YaHei 支持 ಠ，
+    # 其实 YaHei 的 cmap 里根本没有这个字形）。还是实际画一遍比像素最可靠。
+    from PySide6.QtGui import QFontDatabase
+    from ui.win11_theme import kaomoji_font
+
+    kf = kaomoji_font(14)
+    kf.setPixelSize(24)
+    installed = set(QFontDatabase.families())
+    lines.append("")
+    lines.append("kaomoji font chain:")
+    # 无头/offscreen 环境枚举不到系统字体，此时该项无意义，跳过判定。
+    # 注意不能用 len(installed)==0 判断：ensure_icon_font() 已注册了内置图标
+    # 字体，字体库永远至少有 1 个。改判「回退链里一个系统字体都没装上」。
+    degenerate = not any(fam in installed for fam in kf.families())
+    if degenerate:
+        lines.append("  (枚举不到任何系统字体——offscreen/无头环境，跳过此项检查)")
+    lines.append("  families    = %s" % ", ".join(kf.families()))
+
+    def render_with(font, ch):
+        img = QImage(48, 48, QImage.Format_ARGB32)
+        img.fill(QColor(255, 255, 255))
+        p = QPainter(img)
+        p.setFont(font)
+        p.setPen(QColor(0, 0, 0))
+        p.drawText(img.rect(), Qt.AlignCenter, ch)
+        p.end()
+        ink = sum(1 for y in range(48) for x in range(48)
+                  if img.pixelColor(x, y).lightness() < 200)
+        return img.constBits().tobytes(), ink
+
+    missing_kao = []
+    if not degenerate:
+        tofu, _ = render_with(kf, "\uffff")   # 一定是 .notdef 豆腐块，用作参照
+        # 标签只用 ASCII：诊断结果要往 stdout 打，Windows 控制台是 GBK 代码页，
+        # 直接把 ಠ/દ 写进去会 UnicodeEncodeError。
+        for label, ch in (("Kannada  U+0CA0", "\u0ca0"),
+                          ("Gujarati U+0AA6", "\u0aa6")):
+            data, ink = render_with(kf, ch)
+            if data == tofu:
+                state = "TOFU 豆腐块"
+            elif ink < 6:
+                state = "BLANK 空白"
+            else:
+                state = "OK"
+            lines.append("  %-16s ink=%-5d %s" % (label, ink, state))
+            if state != "OK":
+                missing_kao.append(label)
+
+    # 上面这几笔渲染必然会触发 qt.text.font.db 的噪声告警，正好用来验证过滤器。
+    lines.append("  噪声告警过滤    = 已拦下 %d 条 qt.text.font.db"
+                 % _MUTED_LOG_COUNT["n"])
+
+    ok = (not blank) and (not identical) and not err and not missing_kao
+    lines.append("")
     lines.append("RESULT        = %s" % ("OK" if ok else "FAIL"))
 
     base = os.path.dirname(sys.executable) if runtime.is_frozen() else runtime.source_base_dir()
@@ -119,10 +175,80 @@ def _write_diag():
             fp.write(text)
     except Exception:
         pass
-    sys.stdout.write(text)
+    # 控制台可能是 GBK 代码页，写不进去的字符降级处理，别让自检自己崩掉。
+    try:
+        sys.stdout.write(text)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+        sys.stdout.write(text.encode(enc, "replace").decode(enc, "replace"))
+
+
+# 需要静音的 Qt 噪声日志：(日志类别, 消息前缀)
+_MUTED_QT_LOGS = (
+    ("qt.text.font.db", "OpenType support missing for"),
+)
+_MUTED_LOG_COUNT = {"n": 0}   # 供 --diag 自检用
+
+
+def _install_qt_log_filter():
+    """过滤掉 Qt 字体库的「文种探测」噪声告警。
+
+    现象（每次渲染颜文字列表都会刷屏）：
+      qt.text.font.db: OpenType support missing for "Segoe UI Emoji", script 18
+      qt.text.font.db: OpenType support missing for "Segoe UI Symbol", script 14
+      ...
+    成因：颜文字库里混着印度语系字符——ಠ(U+0CA0 卡纳达, script 18) 与
+    દ(U+0AA6 古吉拉特, script 14)，见 (╬ಠ益ಠ) / ♡(˃͈ દ ˂͈ ༶ )。
+    kaomoji_font() 是一条「逐字回退」的多字体链，Qt 排版时会挨个探测链里的字体
+    有没有该文种的 OpenType(GSUB) 表，Emoji/Symbol/YaHei 本来就不含这些文种，
+    于是 3 字体 × 2 文种 = 6 条告警。字符最终由系统回退字体（Nirmala UI）正常
+    渲染出来，**显示是好的**，纯粹是日志噪声。
+
+    为什么不用 QLoggingCategory.setFilterRules("qt.text.font.db.warning=false")：
+    实测无效。该类别的 isWarningEnabled() 确实会变成 False，但这条告警在 Qt 内部
+    并没有走 category 的开关检查，消息照样发出来（已用 qInstallMessageHandler
+    抓到 6 条验证）。所以只能在消息处理器这一层拦。
+
+    也不能靠把 Nirmala UI 显式塞进字体链来消除：实测加与不加，告警都是 6 条，
+    且 ಠ/દ 渲染出来的像素完全一致（系统隐式回退早就找到它了）。
+
+    过滤只针对上面白名单里的固定前缀，其它 Qt 日志一律照常输出，不影响排查问题。
+    """
+    from PySide6.QtCore import qInstallMessageHandler, QtMsgType
+
+    level_name = {
+        QtMsgType.QtDebugMsg: "debug",
+        QtMsgType.QtInfoMsg: "info",
+        QtMsgType.QtWarningMsg: "warning",
+        QtMsgType.QtCriticalMsg: "critical",
+        QtMsgType.QtFatalMsg: "fatal",
+    }
+
+    def handler(mode, ctx, msg):
+        category = getattr(ctx, "category", "") or ""
+        for cat, prefix in _MUTED_QT_LOGS:
+            if category == cat and msg.startswith(prefix):
+                _MUTED_LOG_COUNT["n"] += 1
+                return
+        # 其余原样放行，格式尽量贴近 Qt 默认：带类别的打 "类别: 内容"，
+        # 无类别（Qt 记作 default）的直接打内容；critical/fatal 额外标出级别。
+        parts = []
+        if mode in (QtMsgType.QtCriticalMsg, QtMsgType.QtFatalMsg):
+            parts.append("[%s]" % level_name.get(mode, "qt"))
+        if category and category != "default":
+            parts.append("%s:" % category)
+        parts.append(msg)
+        try:
+            sys.stderr.write(" ".join(parts) + "\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
+
+    qInstallMessageHandler(handler)
 
 
 def main():
+    _install_qt_log_filter()
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     app.setApplicationName("颜文字输入辅助器")

@@ -24,6 +24,7 @@ from core.app_icon import make_icon
 from ui.picker_window import PickerWindow
 from ui.unified_window import UnifiedSettingsWindow
 from ui.win11_theme import Theme
+from ui.fluent_icons import ensure_icon_font
 
 # 配置项的默认值；load_config 会把磁盘值合并进来，缺失项自动补默认，
 # 这样新增配置项时旧配置不会因缺字段而报错。
@@ -65,6 +66,8 @@ def main():
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     app.setApplicationName("颜文字输入辅助器")
+    # 注册内置图标字体（Fluent System Icons，随包分发，Win10 也能正常显示）
+    ensure_icon_font()
 
     config = load_config()
     # 应用级样式：让所有独立对话框（新增/编辑颜文字等）与统一面板视觉一致

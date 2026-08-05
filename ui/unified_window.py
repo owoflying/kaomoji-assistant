@@ -1,4 +1,4 @@
-"""统一主窗口：左侧导航 + 右侧内容区，Win11 Settings 风格。
+"""统一主窗口：左侧导航 + 右侧内容区，WinUI 3 Settings 风格。
 
 整合 主页 / 颜文字库 / 我的颜文字 / 快捷短语 / 搜索 / 设置 / 关于，
 替代原先独立的 settings/custom/trigger/search 对话框。
@@ -7,10 +7,12 @@
   * 无边框窗口（FramelessWindowHint）+ 圆角边框，调用 DWM 系统亚克力（acrylic）
     材质，并叠加一层细微的竖向渐变；
   * 自定义标题栏（应用名 + 关闭按钮），通过 WM_NCHITTEST 实现原生拖拽与八向缩放；
-  * 导航与快捷入口全部使用 Segoe Fluent Icons 官方图标，不再使用 emoji。
+  * 导航与快捷入口全部使用内置的 Fluent System Icons 官方图标字体（随包分发，
+    Win10 也能正常显示，不再依赖系统自带的 Segoe Fluent Icons）。
+  * 最大化时自动隐藏圆角、阴影与留白，让面板贴合屏幕工作区（不含任务栏）。
 """
 import ctypes
-from ctypes.wintypes import MSG
+from ctypes.wintypes import MSG, POINT, RECT, DWORD
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QStackedWidget,
@@ -21,6 +23,36 @@ from PySide6.QtGui import (
     QFont, QColor, QPainter, QPainterPath, QPen, QLinearGradient,
     QRegion, QTransform,
 )
+
+
+# ---- 最大化贴合工作区所需的 Windows 结构（仅 Windows 平台用到） ----
+class _MINMAXINFO(ctypes.Structure):
+    _fields_ = [
+        ("ptReserved", POINT),
+        ("ptMaxSize", POINT),
+        ("ptMaxPosition", POINT),
+        ("ptMinTrackSize", POINT),
+        ("ptMaxTrackSize", POINT),
+    ]
+
+
+class _MONITORINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", DWORD),
+        ("rcMonitor", RECT),
+        ("rcWork", RECT),
+        ("dwFlags", DWORD),
+    ]
+
+
+def _ui_font(size, weight=QFont.Weight.Normal):
+    """标题 / 导航文字字体：优先微软雅黑（Win10 自带、中文清晰），
+    Segoe UI 作英文回退，整体比 Segoe UI Variable 更稳、更干净。"""
+    f = QFont()
+    f.setFamilies(["Microsoft YaHei UI", "Segoe UI", "Segoe UI Variable"])
+    f.setPointSize(size)
+    f.setWeight(weight)
+    return f
 
 from ui.win_style import (
     apply_backdrop, apply_dark_mode, _has_dwm,
@@ -34,8 +66,9 @@ from ui.pages import (
     SearchPage, SettingsPage, AboutPage,
 )
 
-# WM_NCHITTEST 命中测试返回值
+# WM 消息与 NCHITTEST 命中测试返回值
 WM_NCHITTEST = 0x0084
+WM_GETMINMAXINFO = 0x0024
 HTCLIENT, HTCAPTION = 1, 2
 HTLEFT, HTRIGHT, HTTOP = 10, 11, 12
 HTTOPLEFT, HTTOPRIGHT = 13, 14
@@ -81,7 +114,7 @@ class _NavItem(QWidget):
         self.ico.setFixedWidth(26)
 
         self.txt = QLabel(text)
-        self.txt.setFont(QFont("Segoe UI Variable", 13))
+        self.txt.setFont(_ui_font(13))
         root.addWidget(self.indicator)
         root.addWidget(self.ico)
         root.addWidget(self.txt, 1)
@@ -170,23 +203,38 @@ class UnifiedSettingsWindow(QMainWindow):
         self._update_mask()
 
     def _update_mask(self):
-        """把内容区裁剪到圆角矩形内，使子控件四角随窗口一起圆角化。"""
+        """把内容区裁剪到圆角矩形内，使子控件四角随窗口一起圆角化。
+
+        最大化时取消遮罩（全矩形，方角），让面板贴合屏幕工作区。
+        """
+        if getattr(self, "central", None) is None:
+            return
+        w, h = self.width(), self.height()
+        if w <= 0 or h <= 0:
+            return
+        if self.isMaximized():
+            self.central.clearMask()
+            return
         P = self._PAD
         r = self._RADIUS
-        w, h = self.width(), self.height()
-        if w <= 0 or h <= 0 or getattr(self, "central", None) is None:
-            return
         rect = QRect(P, P, w - 2 * P, h - 2 * P)
         pp = QPainterPath()
         pp.addRoundedRect(QRectF(rect), r, r)
         poly = pp.toFillPolygon(QTransform())
         self.central.setMask(QRegion(poly.toPolygon()))
 
+    def _apply_window_chrome_state(self):
+        """根据是否最大化调整留白：最大化时留白归零、面板贴合屏幕工作区。"""
+        pad = 0 if self.isMaximized() else self._PAD
+        if getattr(self, "_root_layout", None) is not None:
+            self._root_layout.setContentsMargins(pad, pad, pad, pad)
+
     def _init_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
         self.central = central
         root = QVBoxLayout(central)
+        self._root_layout = root
         root.setContentsMargins(self._PAD, self._PAD, self._PAD, self._PAD)
         root.setSpacing(0)
 
@@ -199,7 +247,7 @@ class UnifiedSettingsWindow(QMainWindow):
 
         brand = QLabel("颜文字助手")
         brand.setObjectName("BrandTitle")
-        brand.setFont(QFont("Segoe UI Variable", 13, QFont.Weight.Medium))
+        brand.setFont(_ui_font(13, QFont.Weight.Medium))
         troot.addWidget(brand)
         troot.addStretch(1)
 
@@ -343,6 +391,7 @@ class UnifiedSettingsWindow(QMainWindow):
 
     def showEvent(self, e):
         super().showEvent(e)
+        self._apply_window_chrome_state()
         self._update_mask()
         self._update_backdrop()
         self.home_page.refresh_stats()
@@ -353,6 +402,7 @@ class UnifiedSettingsWindow(QMainWindow):
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
+        self._apply_window_chrome_state()
         self._update_mask()
 
     def _update_backdrop(self):
@@ -369,10 +419,33 @@ class UnifiedSettingsWindow(QMainWindow):
         return QRect(top_left, self._close_btn.size())
 
     def nativeEvent(self, eventType, message):
-        """通过 WM_NCHITTEST 实现：标题栏原生拖拽、窗口八向缩放。"""
+        """处理原生消息：
+        * WM_GETMINMAXINFO：让最大化贴合显示器工作区（不含任务栏），
+          避免无边框窗口最大化时盖住任务栏 / 边缘留白；
+        * WM_NCHITTEST：标题栏原生拖拽、窗口八向缩放（最大化时禁用缩放热区）。
+        """
         if eventType != "windows_generic_MSG":
             return super().nativeEvent(eventType, message)
         msg = MSG.from_address(int(message))
+
+        # 1) 最大化贴合工作区
+        if msg.message == WM_GETMINMAXINFO:
+            try:
+                hwnd = int(self.winId())
+                monitor = ctypes.windll.user32.MonitorFromWindow(hwnd, 2)  # MONITOR_DEFAULTTONEAREST
+                mi = _MONITORINFO()
+                mi.cbSize = ctypes.sizeof(_MONITORINFO)
+                if ctypes.windll.user32.GetMonitorInfoW(monitor, ctypes.byref(mi)):
+                    wa = mi.rcWork
+                    mmi = _MINMAXINFO.from_address(int(msg.lParam))
+                    mmi.ptMaxPosition.x = wa.left
+                    mmi.ptMaxPosition.y = wa.top
+                    mmi.ptMaxSize.x = wa.right - wa.left
+                    mmi.ptMaxSize.y = wa.bottom - wa.top
+            except Exception:
+                pass
+            return True, 0
+
         if msg.message != WM_NCHITTEST:
             return super().nativeEvent(eventType, message)
 
@@ -382,27 +455,30 @@ class UnifiedSettingsWindow(QMainWindow):
         lx = x - g.x()
         ly = y - g.y()
         w, h = self.width(), self.height()
-        P = self._PAD
-        R = P  # 缩放热区覆盖整圈留白
+        maximized = self.isMaximized()
+        P = 0 if maximized else self._PAD
         TH = self._TITLEBAR_H
 
-        if lx <= R and ly <= R:
-            return True, HTTOPLEFT
-        if lx >= w - R and ly <= R:
-            return True, HTTOPRIGHT
-        if lx <= R and ly >= h - R:
-            return True, HTBOTTOMLEFT
-        if lx >= w - R and ly >= h - R:
-            return True, HTBOTTOMRIGHT
-        if lx <= R:
-            return True, HTLEFT
-        if lx >= w - R:
-            return True, HTRIGHT
-        if ly >= h - R:
-            return True, HTBOTTOM
-        if ly <= R:
-            return True, HTTOP
-        # 标题栏区域：拖动移动（关闭按钮除外，保证可点击）
+        # 2) 缩放热区（仅非最大化时有留白时才生效）
+        if not maximized and P > 0:
+            R = P  # 缩放热区覆盖整圈留白
+            if lx <= R and ly <= R:
+                return True, HTTOPLEFT
+            if lx >= w - R and ly <= R:
+                return True, HTTOPRIGHT
+            if lx <= R and ly >= h - R:
+                return True, HTBOTTOMLEFT
+            if lx >= w - R and ly >= h - R:
+                return True, HTBOTTOMRIGHT
+            if lx <= R:
+                return True, HTLEFT
+            if lx >= w - R:
+                return True, HTRIGHT
+            if ly >= h - R:
+                return True, HTBOTTOM
+            if ly <= R:
+                return True, HTTOP
+        # 3) 标题栏区域：拖动移动（关闭按钮除外，保证可点击）
         if P <= ly <= P + TH:
             if self._close_btn_rect_window().contains(lx, ly):
                 return True, HTCLIENT
@@ -410,28 +486,38 @@ class UnifiedSettingsWindow(QMainWindow):
         return True, HTCLIENT
 
     def paintEvent(self, e):
-        """自绘：亚克力基底（由 DWM 提供模糊）+ 细微竖向渐变 + 1px 圆角边框 + 柔和外阴影。"""
+        """自绘：亚克力基底（由 DWM 提供模糊）+ 细微竖向渐变 + 1px 圆角边框 + 柔和外阴影。
+
+        最大化时取消阴影、圆角与边框，让面板贴合屏幕工作区。
+        """
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        P = self._PAD
-        r = self._RADIUS
-        panel = QRect(P, P, self.width() - 2 * P, self.height() - 2 * P)
+        maximized = self.isMaximized()
+        P = 0 if maximized else self._PAD
+        r = 0 if maximized else self._RADIUS
         t = self.theme
 
-        # 1) 柔和外阴影（多层圆角矩形，落在窗口矩形内侧留白内）
-        base = self._shadow_color.alpha()
-        for d in range(P, 0, -1):
-            a = max(1, int(base * (1 - (d - 1) / P) * 0.35))
-            col = QColor(self._shadow_color.red(), self._shadow_color.green(),
-                         self._shadow_color.blue(), a)
-            rr = r + d * 0.5
+        if maximized:
+            panel = QRect(0, 0, self.width(), self.height())
             pp = QPainterPath()
-            pp.addRoundedRect(QRectF(panel.adjusted(-d, -d, d, d)), rr, rr)
-            p.fillPath(pp, col)
+            pp.addRect(QRectF(panel))
+        else:
+            panel = QRect(P, P, self.width() - 2 * P, self.height() - 2 * P)
+            pp = QPainterPath()
+            pp.addRoundedRect(QRectF(panel), r, r)
+
+            # 1) 柔和外阴影（多层圆角矩形，落在窗口矩形内侧留白内）
+            base = self._shadow_color.alpha()
+            for d in range(P, 0, -1):
+                a = max(1, int(base * (1 - (d - 1) / P) * 0.35))
+                col = QColor(self._shadow_color.red(), self._shadow_color.green(),
+                             self._shadow_color.blue(), a)
+                rr = r + d * 0.5
+                sp = QPainterPath()
+                sp.addRoundedRect(QRectF(panel.adjusted(-d, -d, d, d)), rr, rr)
+                p.fillPath(sp, col)
 
         # 2) 面板基底：半透明 tint（亚克力关闭时退化为不透明纯色）
-        pp = QPainterPath()
-        pp.addRoundedRect(QRectF(panel), r, r)
         tint = _parse_color(t.window_tint if self._acrylic_on else t.bg)
         p.fillPath(pp, tint)
 
@@ -441,9 +527,10 @@ class UnifiedSettingsWindow(QMainWindow):
         grad.setColorAt(1, _parse_color(t.window_grad_bottom))
         p.fillPath(pp, grad)
 
-        # 4) 1px 圆角边框
-        pen = QPen(_parse_color(t.window_border))
-        pen.setWidth(1)
-        p.strokePath(pp, pen)
+        # 4) 1px 圆角边框（最大化时不画，避免边缘被裁切出细线）
+        if not maximized:
+            pen = QPen(_parse_color(t.window_border))
+            pen.setWidth(1)
+            p.strokePath(pp, pen)
 
         super().paintEvent(e)

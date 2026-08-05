@@ -14,6 +14,7 @@ from core.app_icon import save_ico
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "data", "kaomoji.json")
+FONT = os.path.join(HERE, "ui", "fonts", "FluentSystemIcons-Regular.ttf")
 # 应用图标：与系统托盘同款（白底圆角 + 颜文字），构建时自动生成 .ico
 ICO = os.path.join(HERE, "app.ico")
 
@@ -27,6 +28,9 @@ ARGS = [
     "--clean",
     # 只读资源 data/kaomoji.json：运行时用 resource_path 还原到 data/ 子目录
     "--add-data", "%s%sdata" % (DATA, os.pathsep),
+    # 内置图标字体（Fluent System Icons，MIT 许可）：随包分发，Win10 也能显示
+    # 目标路径需与 core.runtime.resource_path("ui","fonts",...) 完全对应
+    "--add-data", "%s%sui/fonts/FluentSystemIcons-Regular.ttf" % (FONT, os.pathsep),
     # 确保 Windows 平台后端被打包（否则运行到全局键盘监听时报 ImportError）
     "--hidden-import", "pynput.keyboard._win32",
     "--hidden-import", "pynput.mouse._win32",

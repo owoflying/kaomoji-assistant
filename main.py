@@ -31,6 +31,7 @@ from ui.fluent_icons import ensure_icon_font
 DEFAULT_CONFIG = {
     "hotkey": "<ctrl>+<shift>+k",
     "theme": "light",
+    "panel_alpha": 0.92,
     "opacity": 0.98,
     "acrylic": True,
     "input_method": "clipboard",
@@ -357,6 +358,8 @@ def main():
         if autostart.is_supported():
             autostart.set_enabled(bool(config.get("autostart", False)))
         # 实时应用：换肤等；热键的实际重新注册放到统一窗口关闭时统一处理
+        # 应用级样式表也要随主题刷新，否则独立对话框（新增/编辑等）不会跟随新主题
+        app.setStyleSheet(Theme(config.get("theme", "light")).style_sheet())
         window.apply_config(config)
         unified.apply_config(config)
         state.max_recent = int(config.get("max_recent", 30))

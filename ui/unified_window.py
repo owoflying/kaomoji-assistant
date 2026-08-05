@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QStackedWidget,
     QSizePolicy, QFrame, QPushButton,
 )
-from PySide6.QtCore import Qt, Signal, QPoint, QRect, QRectF, QEvent
+from PySide6.QtCore import Qt, Signal, QPoint, QRect, QRectF, QEvent, QPropertyAnimation, QEasingCurve, QAbstractAnimation
 from PySide6.QtGui import (
     QFont, QColor, QPainter, QPainterPath, QPen, QLinearGradient,
     QRegion, QTransform,
@@ -106,7 +106,7 @@ class _NavItem(QWidget):
         root.setSpacing(10)
 
         self.indicator = QLabel()
-        self.indicator.setFixedWidth(3)
+        self.indicator.setFixedWidth(0)
         self.indicator.setFixedHeight(18)
         self.indicator.setStyleSheet("background:transparent;border-radius:2px;")
 
@@ -120,10 +120,23 @@ class _NavItem(QWidget):
         root.addWidget(self.txt, 1)
         root.addStretch(0)
         self._apply_style()
+        self._anim = None
+
+    def _start_anim(self, target_width):
+        if self._anim is not None:
+            self._anim.stop()
+        self._anim = QPropertyAnimation(self.indicator, b"minimumWidth", self)
+        self._anim.setDuration(180)
+        self._anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._anim.setStartValue(self.indicator.width())
+        self._anim.setEndValue(target_width)
+        self._anim.valueChanged.connect(lambda v: self.indicator.setMaximumWidth(v))
+        self._anim.start(QAbstractAnimation.DeleteWhenStopped)
 
     def set_selected(self, selected):
         self._selected = selected
         self._apply_style()
+        self._start_anim(3 if selected else 0)
 
     def _apply_style(self):
         t = self.theme
@@ -245,11 +258,20 @@ class UnifiedSettingsWindow(QMainWindow):
         troot.setContentsMargins(8, 0, 8, 0)
         troot.setSpacing(8)
 
-        brand = QLabel("颜文字助手")
-        brand.setObjectName("BrandTitle")
-        brand.setFont(_ui_font(13, QFont.Weight.Medium))
-        troot.addWidget(brand)
         troot.addStretch(1)
+
+        # 最小化、最大化/恢复、关闭按钮
+        self._min_btn = QPushButton("\u2212")          # −
+        self._min_btn.setObjectName("TitleButton")
+        self._min_btn.setFixedSize(40, 30)
+        self._min_btn.setCursor(Qt.PointingHandCursor)
+        self._min_btn.clicked.connect(self.showMinimized)
+
+        self._max_btn = QPushButton("\u25a1")          # □
+        self._max_btn.setObjectName("TitleButton")
+        self._max_btn.setFixedSize(40, 30)
+        self._max_btn.setCursor(Qt.PointingHandCursor)
+        self._max_btn.clicked.connect(self._toggle_maximize)
 
         # 关闭按钮（Segoe Fluent Icons 叉号）
         self._close_btn = QPushButton()
@@ -263,6 +285,8 @@ class UnifiedSettingsWindow(QMainWindow):
         cb_layout.addWidget(self._close_ico)
         cb_layout.addStretch(1)
         self._close_btn.clicked.connect(self.close)
+        troot.addWidget(self._min_btn)
+        troot.addWidget(self._max_btn)
         troot.addWidget(self._close_btn)
         root.addWidget(self.titlebar)
 
@@ -360,8 +384,11 @@ class UnifiedSettingsWindow(QMainWindow):
         self.setStyleSheet(t.style_sheet())
         self.sidebar.setStyleSheet("background:transparent;")
         # 内容区表面较侧栏略实，形成 Win11 设置式层次（半透明以透出亚克力）
-        self.content.setStyleSheet("background:%s;border:none;" % t.content_surface)
+        self.content.setStyleSheet("background:%s;border:none;" % self._adjusted_content_surface())
         recolor(self._close_ico, t.text)
+        # 标题栏按钮颜色刷新
+        for btn in (self._min_btn, self._max_btn):
+            btn.setStyleSheet("color:%s;" % t.text_secondary)
         # 导航项刷新主题
         for _, item in self._nav_items:
             item.update_theme(t)
@@ -389,11 +416,23 @@ class UnifiedSettingsWindow(QMainWindow):
     def _on_settings_applied(self, new_cfg):
         self.config_applied.emit(new_cfg)
 
+    def _adjusted_content_surface(self):
+        """根据 panel_alpha 调整内容区表面透明度。"""
+        base = self.theme.content_surface
+        alpha = float(self.config.get("panel_alpha", 0.92))
+        import re
+        m = re.match(r"rgba?\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)", base)
+        if m:
+            r, g, b, a = int(m.group(1)), int(m.group(2)), int(m.group(3)), float(m.group(4))
+            return "rgba(%d,%d,%d,%.2f)" % (r, g, b, max(0.0, min(1.0, a * alpha)))
+        return base
+
     def showEvent(self, e):
         super().showEvent(e)
         self._apply_window_chrome_state()
         self._update_mask()
         self._update_backdrop()
+        self._update_max_btn_glyph()
         self.home_page.refresh_stats()
 
     def closeEvent(self, e):
@@ -413,10 +452,30 @@ class UnifiedSettingsWindow(QMainWindow):
             apply_backdrop(hwnd, DWMSBT_NONE)
         apply_dark_mode(hwnd, self.theme.dark)
 
-    def _close_btn_rect_window(self):
-        """关闭按钮在窗口坐标系中的矩形（用于 WM_NCHITTEST 排除点击）。"""
-        top_left = self._close_btn.mapTo(self, QPoint(0, 0))
-        return QRect(top_left, self._close_btn.size())
+    def _toggle_maximize(self):
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
+
+    def _update_max_btn_glyph(self):
+        self._max_btn.setText("\u25a1" if not self.isMaximized() else "\u25d9")
+
+    def changeEvent(self, e):
+        super().changeEvent(e)
+        if e.type() == QEvent.WindowStateChange:
+            self._update_max_btn_glyph()
+            self._apply_window_chrome_state()
+            self._update_mask()
+            self.update()
+
+    def _title_btn_rects_window(self):
+        """三个标题栏按钮在窗口坐标系中的矩形（用于 WM_NCHITTEST 排除点击）。"""
+        rects = []
+        for btn in (self._min_btn, self._max_btn, self._close_btn):
+            top_left = btn.mapTo(self, QPoint(0, 0))
+            rects.append(QRect(top_left, btn.size()))
+        return rects
 
     def nativeEvent(self, eventType, message):
         """处理原生消息：
@@ -478,10 +537,11 @@ class UnifiedSettingsWindow(QMainWindow):
                 return True, HTBOTTOM
             if ly <= R:
                 return True, HTTOP
-        # 3) 标题栏区域：拖动移动（关闭按钮除外，保证可点击）
+        # 3) 标题栏区域：拖动移动（标题按钮除外，保证可点击）
         if P <= ly <= P + TH:
-            if self._close_btn_rect_window().contains(lx, ly):
-                return True, HTCLIENT
+            for rect in self._title_btn_rects_window():
+                if rect.contains(lx, ly):
+                    return True, HTCLIENT
             return True, HTCAPTION
         return True, HTCLIENT
 

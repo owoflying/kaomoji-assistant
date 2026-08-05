@@ -125,7 +125,8 @@ class SettingsPage(QWidget):
         croot.setContentsMargins(16, 14, 16, 14)
         croot.setSpacing(12)
         self._add_row(croot, "主题", self._theme_combo())
-        self._add_row(croot, "不透明度", self._opacity_row())
+        self._add_row(croot, "面板透明度", self._panel_alpha_row())
+        self._add_row(croot, "候选条透明度", self._opacity_row())
         self._add_row(croot, "亚克力模糊", self._acrylic_toggle())
         v.addWidget(card)
 
@@ -202,6 +203,21 @@ class SettingsPage(QWidget):
         self.theme_combo.setMinimumWidth(120)
         return self.theme_combo
 
+    def _panel_alpha_row(self):
+        row = QHBoxLayout()
+        self.panel_alpha_slider = QSlider(Qt.Horizontal)
+        self.panel_alpha_slider.setRange(50, 100)
+        self.panel_alpha_slider.setTickInterval(5)
+        self.panel_alpha_value = QLabel("92%")
+        self.panel_alpha_value.setFixedWidth(44)
+        self.panel_alpha_value.setObjectName("BodyText")
+        self.panel_alpha_slider.valueChanged.connect(
+            lambda v: self.panel_alpha_value.setText("%d%%" % v)
+        )
+        row.addWidget(self.panel_alpha_slider, 1)
+        row.addWidget(self.panel_alpha_value)
+        return row
+
     def _opacity_row(self):
         row = QHBoxLayout()
         self.opacity_slider = QSlider(Qt.Horizontal)
@@ -257,10 +273,14 @@ class SettingsPage(QWidget):
 
     # ---------- 读取/写入 ----------
     def set_theme(self, theme_obj):
-        """主题切换时同步开关配色。"""
+        """主题切换时同步开关配色，并强制刷新样式表。"""
         self._theme = theme_obj
         for t in (self.acrylic_check, self.auto_check, self.autostart_check):
             t.update_theme(theme_obj)
+        # 强制 Qt 重新评估该分支的样式，解决部分控件换主题后未刷新外观的问题
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.update()
 
     def refresh_from_config(self):
         cfg = self.config
@@ -269,6 +289,8 @@ class SettingsPage(QWidget):
         theme = cfg.get("theme", "light")
         idx = self.theme_combo.findData(theme)
         self.theme_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        pa = int(float(cfg.get("panel_alpha", 0.92)) * 100)
+        self.panel_alpha_slider.setValue(pa)
         op = int(float(cfg.get("opacity", 0.98)) * 100)
         self.opacity_slider.setValue(op)
         self.acrylic_check.setChecked(bool(cfg.get("acrylic", True)))
@@ -399,6 +421,7 @@ class SettingsPage(QWidget):
         if self._captured is not None:
             new_cfg["hotkey"] = win_utils.format_hotkey(self._captured)
         new_cfg["theme"] = self.theme_combo.currentData()
+        new_cfg["panel_alpha"] = self.panel_alpha_slider.value() / 100.0
         new_cfg["opacity"] = self.opacity_slider.value() / 100.0
         new_cfg["acrylic"] = self.acrylic_check.isChecked()
         new_cfg["input_method"] = self.method_combo.currentData()

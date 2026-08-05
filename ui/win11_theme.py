@@ -15,19 +15,18 @@ class Theme:
         self.name = name
         self.dark = name == "dark"
         if self.dark:
-            # 深色：Mica 暗底 + 稍亮的卡片表面
-            self.bg = "#202020"                # 内容区底色
+            # 深色：纯净暗色石英风格 —— 减淡灰度、提升质感
+            self.bg = "#1a1a1a"                # 内容区底色
             self.sidebar = "transparent"       # 侧边栏跟随窗口 Mica 底
-            self.card = "#2c2c2c"              # 卡片背景
-            self.card_hover = "#323232"
-            self.card_border = "#3a3a3a"
+            self.card = "#2a2a2a"              # 卡片背景
+            self.card_hover = "#303030"
+            self.card_border = "#3d3d3d"
             self.text = "#ffffff"
             self.text_secondary = "#9ca3af"
             self.text_tertiary = "#6b7280"
             self.accent = "#60cdff"            # Win11 强调蓝（深色模式）
             self.accent_hover = "#7bd4ff"
             self.accent_bg = "rgba(96,205,255,0.15)"
-            self.content_surface = "#242424"   # 右侧内容区表面（比侧栏 mica 略深）
             self.nav_hover = "rgba(255,255,255,0.06)"
             self.nav_selected = "rgba(255,255,255,0.08)"
             self.input_bg = "rgba(255,255,255,0.06)"
@@ -36,40 +35,39 @@ class Theme:
             self.shadow = "0,0,0"
             self.toggle_off = "#5e5e5e"      # 开关未选中时的轨道灰
             # 无边框窗口：亚克力基底（半透明 tint，让 DWM 亚克力模糊透出）
-            self.window_tint = "rgba(28,28,28,0.80)"
-            self.window_grad_top = "rgba(255,255,255,0.05)"
-            self.window_grad_bottom = "rgba(0,0,0,0.14)"
-            self.window_border = "rgba(255,255,255,0.12)"
-            self.shadow_color = "rgba(0,0,0,0.35)"
-            self.content_surface = "rgba(40,40,40,0.55)"   # 内容区表面（比侧栏亚克力略实）
+            self.window_tint = "rgba(30,30,30,0.85)"
+            self.window_grad_top = "rgba(255,255,255,0.04)"
+            self.window_grad_bottom = "rgba(0,0,0,0.10)"
+            self.window_border = "rgba(255,255,255,0.10)"
+            self.shadow_color = "rgba(0,0,0,0.30)"
+            self.content_surface = "rgba(40,40,40,0.60)"   # 内容区表面（比侧栏亚克力略实）
         else:
-            # 浅色：米白 Mica 底 + 纯白卡片
-            self.bg = "#f3f3f3"
+            # 浅色：纯白石英风格 —— 更纯净的白色、柔和阴影、细腻质感
+            self.bg = "#ffffff"
             self.sidebar = "transparent"
             self.card = "#ffffff"
-            self.card_hover = "#f9f9f9"
-            self.card_border = "#e5e5e5"
+            self.card_hover = "#f7f7f7"
+            self.card_border = "#e8e8e8"
             self.text = "#1f1f1f"
             self.text_secondary = "#5f5f5f"
             self.text_tertiary = "#9ca3af"
             self.accent = "#0067c0"            # Win11 强调蓝（浅色模式）
             self.accent_hover = "#0a72cf"
             self.accent_bg = "rgba(0,103,192,0.10)"
-            self.content_surface = "#fbfbfb"   # 右侧内容区表面（比侧栏 mica 略亮）
             self.nav_hover = "rgba(0,0,0,0.04)"
             self.nav_selected = "rgba(0,0,0,0.06)"
-            self.input_bg = "rgba(255,255,255,0.7)"
+            self.input_bg = "rgba(255,255,255,0.85)"
             self.input_border = "rgba(0,0,0,0.10)"
             self.divider = "rgba(0,0,0,0.06)"
             self.shadow = "0,0,0"
             self.toggle_off = "#b6b6b6"      # 开关未选中时的轨道灰
-            # 无边框窗口：亚克力基底（半透明 tint，让 DWM 亚克力模糊透出）
-            self.window_tint = "rgba(250,250,250,0.72)"
-            self.window_grad_top = "rgba(255,255,255,0.14)"
-            self.window_grad_bottom = "rgba(0,0,0,0.05)"
-            self.window_border = "rgba(0,0,0,0.10)"
-            self.shadow_color = "rgba(0,0,0,0.18)"
-            self.content_surface = "rgba(255,255,255,0.55)"   # 内容区表面（比侧栏亚克力略实）
+            # 无边框窗口：亚克力基底（更白的 tint，让 DWM 亚克力模糊透出）
+            self.window_tint = "rgba(255,255,255,0.88)"
+            self.window_grad_top = "rgba(255,255,255,0.08)"
+            self.window_grad_bottom = "rgba(0,0,0,0.03)"
+            self.window_border = "rgba(0,0,0,0.08)"
+            self.shadow_color = "rgba(0,0,0,0.12)"
+            self.content_surface = "rgba(255,255,255,0.70)"   # 内容区表面（比侧栏亚克力略实）
 
     def hex(self, key):
         return getattr(self, key)
@@ -130,7 +128,7 @@ class Theme:
         QFrame#Card {{
             background: {t.card};
             border: 1px solid {t.card_border};
-            border-radius: 8px;
+            border-radius: 12px;
         }}
         QFrame#CardHover:hover {{
             background: {t.card_hover};
@@ -160,17 +158,25 @@ class Theme:
         QPushButton#AccentButton:pressed {{
             background: {t.accent};
         }}
-        QPushButton#TitleClose {{
+        QPushButton#TitleButton, QPushButton#TitleClose {{
             background: transparent;
             border: none;
             border-radius: 6px;
             padding: 0;
+            color: {t.text_secondary};
+            font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+            font-size: 14px;
+        }}
+        QPushButton#TitleButton:hover, QPushButton#TitleClose:hover {{
+            background: {t.nav_hover};
+            color: {t.text};
+        }}
+        QPushButton#TitleButton:pressed, QPushButton#TitleClose:pressed {{
+            background: {t.nav_selected};
         }}
         QPushButton#TitleClose:hover {{
-            background: {t.nav_hover};
-        }}
-        QPushButton#TitleClose:pressed {{
-            background: {t.nav_selected};
+            background: #e81123;
+            color: white;
         }}
         QDialog {{
             background: {t.bg};
@@ -192,17 +198,25 @@ class Theme:
             outline: none;
         }}
         QListWidget::item {{
-            background: transparent;
-            border-radius: 6px;
-            padding: 7px 10px;
+            background: {t.card};
+            border: 1px solid {t.card_border};
+            border-radius: 10px;
+            margin: 4px 6px;
+            padding: 10px 12px;
             min-height: 30px;
             color: {t.text};
         }}
         QListWidget::item:selected {{
             background: {t.accent_bg};
+            border: 1px solid {t.accent};
         }}
         QListWidget::item:hover {{
             background: {t.nav_hover};
+            border: 1px solid {t.input_border};
+        }}
+        QListWidget::item:selected:hover {{
+            background: {t.accent_bg};
+            border: 1px solid {t.accent};
         }}
         QScrollBar:vertical {{
             background: transparent;
@@ -258,7 +272,35 @@ class Theme:
         }}
         QComboBox::drop-down {{
             border: none;
-            width: 24px;
+            width: 28px;
+        }}
+        QComboBox::down-arrow {{
+            image: none;
+            border-left: 5px solid transparent;
+            border-right: 5px solid transparent;
+            border-top: 5px solid {t.text_secondary};
+            width: 0px;
+            height: 0px;
+        }}
+        QComboBox QAbstractItemView {{
+            background: {t.card};
+            border: 1px solid {t.card_border};
+            border-radius: 8px;
+            padding: 6px;
+            outline: none;
+            selection-background-color: {t.accent_bg};
+            selection-color: {t.text};
+        }}
+        QComboBox QAbstractItemView::item {{
+            border-radius: 6px;
+            padding: 6px 10px;
+            min-height: 24px;
+        }}
+        QComboBox QAbstractItemView::item:hover {{
+            background: {t.nav_hover};
+        }}
+        QComboBox QAbstractItemView::item:selected {{
+            background: {t.accent_bg};
         }}
         QFrame#Divider {{
             background: {t.divider};

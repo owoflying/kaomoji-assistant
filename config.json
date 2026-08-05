@@ -7,6 +7,7 @@
   "input_method": "direct",
   "max_recent": 30,
   "max_visible_items": 8,
+  "panel_alpha": 0.92,
   "opacity": 1.0,
   "page_size": 3,
   "theme": "light",

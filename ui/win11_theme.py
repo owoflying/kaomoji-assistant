@@ -35,6 +35,13 @@ class Theme:
             self.divider = "rgba(255,255,255,0.08)"
             self.shadow = "0,0,0"
             self.toggle_off = "#5e5e5e"      # 开关未选中时的轨道灰
+            # 无边框窗口：亚克力基底（半透明 tint，让 DWM 亚克力模糊透出）
+            self.window_tint = "rgba(28,28,28,0.80)"
+            self.window_grad_top = "rgba(255,255,255,0.05)"
+            self.window_grad_bottom = "rgba(0,0,0,0.14)"
+            self.window_border = "rgba(255,255,255,0.12)"
+            self.shadow_color = "rgba(0,0,0,0.35)"
+            self.content_surface = "rgba(40,40,40,0.55)"   # 内容区表面（比侧栏亚克力略实）
         else:
             # 浅色：米白 Mica 底 + 纯白卡片
             self.bg = "#f3f3f3"
@@ -56,6 +63,13 @@ class Theme:
             self.divider = "rgba(0,0,0,0.06)"
             self.shadow = "0,0,0"
             self.toggle_off = "#b6b6b6"      # 开关未选中时的轨道灰
+            # 无边框窗口：亚克力基底（半透明 tint，让 DWM 亚克力模糊透出）
+            self.window_tint = "rgba(250,250,250,0.72)"
+            self.window_grad_top = "rgba(255,255,255,0.14)"
+            self.window_grad_bottom = "rgba(0,0,0,0.05)"
+            self.window_border = "rgba(0,0,0,0.10)"
+            self.shadow_color = "rgba(0,0,0,0.18)"
+            self.content_surface = "rgba(255,255,255,0.55)"   # 内容区表面（比侧栏亚克力略实）
 
     def hex(self, key):
         return getattr(self, key)
@@ -136,6 +150,18 @@ class Theme:
         }}
         QPushButton#AccentButton:pressed {{
             background: {t.accent};
+        }}
+        QPushButton#TitleClose {{
+            background: transparent;
+            border: none;
+            border-radius: 6px;
+            padding: 0;
+        }}
+        QPushButton#TitleClose:hover {{
+            background: {t.nav_hover};
+        }}
+        QPushButton#TitleClose:pressed {{
+            background: {t.nav_selected};
         }}
         QDialog {{
             background: {t.bg};
@@ -252,12 +278,6 @@ def fade_in(widget, duration=180):
     anim.setEasingCurve(QEasingCurve.OutQuad)
     anim.start(QAbstractAnimation.DeleteWhenStopped)
     return anim
-
-
-def nav_icon(char):
-    """返回导航图标字符；优先尝试 Segoe Fluent Icons，否则用 emoji。"""
-    # 这里用 emoji 作为稳妥 fallback，保证跨字体可见
-    return char
 
 
 def kaomoji_font(size=14):

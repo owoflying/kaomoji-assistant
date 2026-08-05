@@ -1,9 +1,12 @@
 """主页：仪表盘，展示快速统计与常用入口卡片。"""
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QPushButton, QSizePolicy
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QPushButton
 )
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont, QCursor
+from PySide6.QtGui import QCursor
+
+from ui.win11_theme import Theme
+from ui.fluent_icons import icon_label, recolor
 
 
 class HomePage(QWidget):
@@ -16,6 +19,8 @@ class HomePage(QWidget):
         self.user_kao = user_kao
         self.triggers = triggers
         self.data = data
+        self.theme = Theme(config.get("theme", "light"))
+        self._action_icons = []
         self._init_ui()
 
     def _init_ui(self):
@@ -58,10 +63,10 @@ class HomePage(QWidget):
         root.addWidget(self._section_title("快捷入口"))
         grid = QHBoxLayout()
         grid.setSpacing(16)
-        grid.addWidget(self._action_card("🔍", "搜索颜文字", "search"))
-        grid.addWidget(self._action_card("✏️", "我的颜文字", "custom"))
-        grid.addWidget(self._action_card("⚡", "快捷短语", "triggers"))
-        grid.addWidget(self._action_card("⚙️", "设置", "settings"))
+        grid.addWidget(self._action_card("search", "搜索颜文字", "search"))
+        grid.addWidget(self._action_card("edit", "我的颜文字", "custom"))
+        grid.addWidget(self._action_card("flash", "快捷短语", "triggers"))
+        grid.addWidget(self._action_card("settings", "设置", "settings"))
         root.addLayout(grid)
 
         # 提示卡片
@@ -105,15 +110,16 @@ class HomePage(QWidget):
         root.addWidget(lb)
         return card, val
 
-    def _action_card(self, icon, text, target):
+    def _action_card(self, icon_name, text, target):
         card = self._card()
         card.setCursor(QCursor(Qt.PointingHandCursor))
         root = QVBoxLayout(card)
         root.setContentsMargins(16, 18, 16, 18)
         root.setSpacing(6)
-        ico = QLabel(icon)
-        ico.setFont(QFont("Segoe UI", 22))
+        ico = icon_label(icon_name, 22, self.theme.accent)
+        ico.setFixedHeight(28)
         ico.setAlignment(Qt.AlignCenter)
+        self._action_icons.append(ico)
         lb = QLabel(text)
         lb.setAlignment(Qt.AlignCenter)
         lb.setObjectName("CardTitle")
@@ -121,6 +127,12 @@ class HomePage(QWidget):
         root.addWidget(lb)
         card.mouseReleaseEvent = lambda *_: self.nav_request.emit(target)
         return card
+
+    def set_theme(self, theme_obj):
+        """主题切换时更新快捷入口图标颜色（主页图标用强调色）。"""
+        self.theme = theme_obj
+        for ico in self._action_icons:
+            recolor(ico, theme_obj.accent)
 
     def refresh_stats(self):
         self.stat_recent_val.setText(str(len(self.state.recent)))

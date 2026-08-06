@@ -379,6 +379,7 @@ def main():
         dev_refs={
             "hotkey": hotkey, "monitor": monitor, "injector": injector,
             "data": data, "config": config, "window": window, "bus": bus,
+            "log_buffer": LOG_BUFFER,
         },
     )
 

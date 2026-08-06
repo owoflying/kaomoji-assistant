@@ -490,24 +490,32 @@ class UnifiedSettingsWindow(QMainWindow):
         if dev is not None:
             dev.set_active(False)
         self.config["developer_mode"] = False
-        if self.save_config:
-            self.save_config(self.config)
         # 同步清空关于页的开发者模式状态，否则其仍记着 developer_mode=True，
         # 再次连点版本号会被短路、不再发出 developer_mode_enabled，导致无法二次进入。
         self.about_page.reset_developer_mode()
         # 移除导航项（保留其他项顺序）
+        nav_layout = self._nav_container.layout()
         for i, (k, item) in enumerate(self._nav_items):
             if k == "developer":
                 self._nav_items.pop(i)
+                nav_layout.removeWidget(item)
                 item.setParent(None)
                 item.deleteLater()
                 break
+        nav_layout.update()
+        self.sidebar.update()
         # 从栈与页面表中移除开发者页
         if "developer" in self._pages:
             self.content.removeWidget(self._pages["developer"])
             del self._pages["developer"]
         # 跳回设置页（保留与进入一致的淡入动画体验）
         self._set_page("settings")
+        # 保存放到 UI 更新之后：即使落盘异常，也不能让页签继续显示在界面上。
+        if self.save_config:
+            try:
+                self.save_config(self.config)
+            except Exception:
+                pass
 
     def _apply_theme(self):
         t = self.theme

@@ -278,6 +278,9 @@ class DevPage(QWidget):
         sub.setWordWrap(True)
         body.addWidget(sub)
 
+        # 把「开发者模式控制」放在最上方：这是危险/高频操作，进入标签页就要看到，
+        # 避免用户滚动到长页面底部才能找到关闭入口。
+        body.addWidget(self._build_control_card())
         body.addWidget(self._build_event_card())
         body.addWidget(self._build_diag_card())
         body.addWidget(self._build_emotion_card())
@@ -287,7 +290,6 @@ class DevPage(QWidget):
         body.addWidget(self._build_experiment_card())
         body.addWidget(self._build_data_card())
         body.addWidget(self._build_hotkey_card())
-        body.addWidget(self._build_control_card())
         body.addStretch(1)
 
     def _card(self, title):
@@ -497,6 +499,15 @@ class DevPage(QWidget):
         h = QHBoxLayout()
         b = QPushButton("关闭开发者模式")
         b.setObjectName("DangerButton")
+        # 内联兜底样式：确保即便主题 QSS 在滚动子树中未级联到本按钮，关闭入口也足够醒目、可点击。
+        b.setStyleSheet(
+            "QPushButton { background:#d13438; color:#ffffff; border:1px solid rgba(0,0,0,0.12); "
+            "border-radius:6px; padding:8px 20px; font-weight:600; font-size:13px; }"
+            "QPushButton:hover { background:#b62a2e; }"
+            "QPushButton:pressed { background:#d13438; }"
+        )
+        b.setCursor(Qt.PointingHandCursor)
+        b.setMinimumHeight(34)
         b.clicked.connect(self._on_disable)
         h.addWidget(b)
         h.addStretch(1)

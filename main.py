@@ -22,6 +22,11 @@ from core.user_kaomoji import UserKaomoji
 from core.user_triggers import UserTriggers
 from core import runtime
 from core import autostart
+from core import win_utils
+try:
+    from core import uia_text   # 浏览器/Electron 读取真实焦点文本；非 Windows 下为 None
+except Exception:               # pragma: no cover - COM 不可用
+    uia_text = None
 from core.app_icon import make_icon
 from ui.picker_window import PickerWindow
 from ui.unified_window import UnifiedSettingsWindow
@@ -351,21 +356,77 @@ def main():
     bus = DevEventBus()
     hotkey.hotkey_pressed.connect(lambda: bus.log("事件", "热键", "热键触发"))
     monitor.emotion_detected.connect(lambda e: bus.log("情绪", "监听", "命中情绪：%s" % e))
-    monitor.trigger_detected.connect(lambda m: bus.log("触发", "监听", "命中短语：%s" % m))
+    monitor.trigger_detected.connect(
+        lambda out, tw, dt: bus.log("触发", "监听",
+                                    "命中短语：%s（触发词=%s，应用后删除=%s）" % (out, tw, dt)))
     monitor.diagnostic.connect(lambda d: bus.log("诊断", "监听", d))
     window.emotion_shown.connect(lambda e: bus.log("弹出", "面板", "候选条弹出（情绪=%s）" % e))
 
-    def on_selected(text):
+    def on_selected(text, ctx=None):
         method = config.get("input_method", "clipboard")
         # 先告知监听器「这段文本是我们自己送进去的」：
         # 进入静默期 + 后续采样时把它剔除，否则颜文字里的 "?"「哇」等字符
         # 会被当成用户新输入的情绪词，导致上屏后又弹一次。
         monitor.notify_injected(text)
         bus.log("注入", "主程序", "注入颜文字：%s（方式=%s）" % (text, method))
-        # 延迟一点，确保面板隐藏、焦点已回到原窗口后再注入文本
-        QTimer.singleShot(
-            0, lambda: injector.inject(text, method)
-        )
+        # 快捷短语选项：应用后删除用户刚输入的触发词本身。
+        # 仅当该短语显式开启 delete_trigger 且能拿到触发词时才处理；
+        # 其它来源（情绪 / 手动 / 库页 / 搜索）一律不删，保持原有逻辑。
+        trigger_word = (ctx or {}).get("trigger_word") or ""
+        delete_trigger = bool((ctx or {}).get("delete_trigger"))
+        if delete_trigger and trigger_word:
+            _apply_trigger_with_delete(text, method, trigger_word)
+        else:
+            # 延迟一点，确保面板隐藏、焦点已回到原窗口后再注入文本
+            QTimer.singleShot(0, lambda: injector.inject(text, method))
+
+
+    def _cursor_tail_equals(word):
+        """最佳努力确认光标左侧「恰好是触发词」，避免误删其它内容。
+
+        原生编辑框走 WM_GETTEXT（亚毫秒）；浏览器 / Electron 走 UI Automation（带超时）。
+        任一读取失败或结尾不匹配都返回 False —— 此时保守地不删除、只注入，
+        宁可保留触发词，也绝不误删用户已写下的其它文字。
+        """
+        if not word:
+            return False
+        n = len(word)
+        try:
+            t = win_utils.get_focused_text(n)
+            if t and t[-n:] == word:
+                return True
+        except Exception:
+            pass
+        if uia_text is not None:
+            try:
+                t = uia_text.get_focused_text(n, timeout=0.15)
+                if t and t[-n:] == word:
+                    return True
+            except Exception:
+                pass
+        return False
+
+
+    def _apply_trigger_with_delete(text, method, trigger_word):
+        """先安全删掉触发词，再注入颜文字；任何不确定都只注入不删除。"""
+        n = len(trigger_word)
+
+        def _do():
+            if _cursor_tail_equals(trigger_word):
+                # 必须在「注入颜文字之前」删除：删完后光标回到触发词起点，
+                # 再注入颜文字，最终文本里只留下颜文字本身。若反过来先注入再退格，
+                # 退格会删掉颜文字的尾部字符，造成乱码。
+                injector.delete_chars(n)
+                QTimer.singleShot(
+                    max(80, n * 12),
+                    lambda: injector.inject(text, method),
+                )
+            else:
+                # 结尾已变化 / 无法确认：保守只注入，不删除（保持原有逻辑，绝不误删）
+                injector.inject(text, method)
+
+        # 等面板完全隐藏、焦点回到原窗口后再操作
+        QTimer.singleShot(0, _do)
 
     window.selected.connect(on_selected)
 

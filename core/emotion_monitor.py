@@ -39,7 +39,7 @@ except Exception:  # pragma: no cover - 非 Windows 或 COM 不可用
 
 class EmotionMonitor(QObject):
     emotion_detected = Signal(str)
-    trigger_detected = Signal(str)  # 用户快捷短语：尾部命中触发词 -> 给出特定输出
+    trigger_detected = Signal(str, str, bool)  # (output, trigger_word, delete_trigger)
     diagnostic = Signal(str)        # 开发者模式诊断：防重触发/命中原因（仅 DevPage 订阅）
 
     def __init__(self, triggers=None):
@@ -279,15 +279,17 @@ class EmotionMonitor(QObject):
         if self._triggers is not None:
             m = self._triggers.match(tail)
             if m is not None:
+                out = m["output"]
                 with self._lock:
-                    if self._trigger_locked == m:
-                        self.diagnostic.emit("触发词已锁定，跳过重复弹出：%s" % m)
-                        self.last_suppress = "触发词已锁定：%s" % m
+                    if self._trigger_locked == out:
+                        self.diagnostic.emit("触发词已锁定，跳过重复弹出：%s" % out)
+                        self.last_suppress = "触发词已锁定：%s" % out
                         return      # 同一个输出刚弹过，不重复打扰
-                    self._trigger_locked = m
+                    self._trigger_locked = out
                     self._locked = None   # 触发片段不兼带情绪弹出
-                self.last_trigger = m
-                self.trigger_detected.emit(m)
+                self.last_trigger = out
+                self.trigger_detected.emit(
+                    out, m["trigger"], m["delete_trigger"])
                 return
             else:
                 with self._lock:

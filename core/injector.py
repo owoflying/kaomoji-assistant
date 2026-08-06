@@ -85,6 +85,22 @@ class KaomojiInjector:
             time.sleep(0.03)
         return False
 
+    def delete_chars(self, n):
+        """向当前焦点控件发送 n 次退格，删去光标左侧 n 个字符。
+
+        用于「快捷短语应用后删除触发词」：在注入颜文字之前调用，把用户刚打出来的
+        触发词抹掉，使最终只留下颜文字。退格只删除已上屏（committed）的字符、
+        不触碰 IME 组字缓冲区，故对中文触发词也按字符数精确删除。
+        """
+        if n <= 0:
+            return
+        c = self._controller
+        for _ in range(n):
+            c.press(Key.backspace)
+            c.release(Key.backspace)
+            # 微间隔：确保目标控件逐个处理，避免连发被合并/吞掉导致少删。
+            time.sleep(0.012)
+
     def _inject_direct(self, text):
         """直接字符投递：把字符以 WM_CHAR 送进当前焦点控件，绕过键盘与 IME。
 

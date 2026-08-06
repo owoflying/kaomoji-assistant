@@ -1,7 +1,7 @@
 """快捷短语页：触发词 -> 输出管理。"""
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QListWidget,
-    QListWidgetItem, QLineEdit, QDialogButtonBox, QDialog, QFrame,
+    QListWidgetItem, QLineEdit, QDialogButtonBox, QDialog, QFrame, QCheckBox,
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
@@ -10,7 +10,7 @@ from ui.win11_theme import kaomoji_font
 
 
 class _TriggerEditDialog(QDialog):
-    def __init__(self, trigger="", output="", parent=None):
+    def __init__(self, trigger="", output="", delete_trigger=False, parent=None):
         super().__init__(parent)
         self.setWindowTitle("编辑快捷短语" if trigger else "新增快捷短语")
         self.setMinimumWidth(380)
@@ -29,13 +29,22 @@ class _TriggerEditDialog(QDialog):
         self.output_edit.setFont(kaomoji_font(14))
         root.addWidget(self.output_edit)
 
+        self.delete_chk = QCheckBox(
+            "应用后删除触发词（上屏颜文字时一并清掉你刚输入的这个词）")
+        self.delete_chk.setChecked(bool(delete_trigger))
+        root.addWidget(self.delete_chk)
+
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
         root.addWidget(btns)
 
     def data(self):
-        return self.trigger_edit.text().strip(), self.output_edit.text().strip()
+        return (
+            self.trigger_edit.text().strip(),
+            self.output_edit.text().strip(),
+            self.delete_chk.isChecked(),
+        )
 
 
 class TriggerPage(QWidget):
@@ -86,7 +95,10 @@ class TriggerPage(QWidget):
     def _refresh(self):
         self.list_w.clear()
         for it in self.triggers.get_all():
-            item = QListWidgetItem("%s  →  %s" % (it["trigger"], it["output"]))
+            label = "%s  →  %s" % (it["trigger"], it["output"])
+            if it.get("delete_trigger", False):
+                label += "  [应用后删除]"
+            item = QListWidgetItem(label)
             item.setData(Qt.UserRole, it["trigger"])
             item.setFont(kaomoji_font(14))
             self.list_w.addItem(item)
@@ -94,9 +106,9 @@ class TriggerPage(QWidget):
     def _add(self):
         dlg = _TriggerEditDialog()
         if dlg.exec() == QDialog.Accepted:
-            trig, out = dlg.data()
+            trig, out, delete = dlg.data()
             if trig and out:
-                self.triggers.add(trig, out)
+                self.triggers.add(trig, out, delete)
                 self._refresh()
 
     def _edit(self, *args):
@@ -105,17 +117,19 @@ class TriggerPage(QWidget):
             return
         trig = self.list_w.item(row).data(Qt.UserRole)
         out = ""
+        delete = False
         for it in self.triggers.get_all():
             if it["trigger"] == trig:
                 out = it["output"]
+                delete = it.get("delete_trigger", False)
                 break
-        dlg = _TriggerEditDialog(trig, out)
+        dlg = _TriggerEditDialog(trig, out, delete)
         if dlg.exec() == QDialog.Accepted:
-            new_trig, new_out = dlg.data()
+            new_trig, new_out, new_delete = dlg.data()
             if new_trig and new_out:
                 if new_trig != trig:
                     self.triggers.remove(trig)
-                self.triggers.add(new_trig, new_out)
+                self.triggers.add(new_trig, new_out, new_delete)
                 self._refresh()
 
     def _del(self):

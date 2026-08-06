@@ -124,7 +124,7 @@ class CandidateChip(QWidget):
 
 
 class PickerWindow(QWidget):
-    selected = Signal(str)
+    selected = Signal(str, object)   # (text, ctx) —— ctx 为触发词上下文 dict 或 None
     emotion_shown = Signal(str)        # 因某情绪自动弹出时发出，供监听器锁定该情绪
     settings_requested = Signal()      # 保留信号：托盘菜单走这条路
     # 自定义可见性信号：本版本 Qt6 的 QWidget 未提供 isVisibleChanged/visibilityChanged，
@@ -142,6 +142,8 @@ class PickerWindow(QWidget):
         self.active = 0                # 当前高亮的候选在本页内的下标
         self.page_size = int(config.get("page_size", 3))
         self._emotion = None
+        self._trigger_word = ""        # 当前候选若来自触发词，记下触发词待上屏时清理
+        self._delete_trigger = False   # 该触发词是否开启「应用后删除」
         self._chips = []
         self._saved_foreground = None
         self._closing_enabled = False
@@ -154,6 +156,8 @@ class PickerWindow(QWidget):
         self._dismiss_at = 0.0         # 上次因“继续打字”自动关闭的时间戳
         self._had_editable = False     # 本次显示期间是否曾检测到可编辑焦点
         self._caret = False            # True=贴着光标定位；False=居中偏上定位
+        self._pending = None
+        self._pending_ctx = None
         self._init_window()
         self._init_ui()
         self._apply_config_visuals()
@@ -362,13 +366,24 @@ class PickerWindow(QWidget):
         if self._saved_foreground:
             win_utils.set_foreground(self._saved_foreground)
         self._pending = text
+        # 若本次候选来自触发词，把「触发词 + 是否删除」上下文随选中事件带回，
+        # 供主程序决定上屏颜文字前是否先把用户刚输入的触发词清掉。
+        self._pending_ctx = {
+            "trigger_word": self._trigger_word,
+            "delete_trigger": self._delete_trigger,
+        }
+        # 清空，避免影响下一次（情绪 / 手动）选择
+        self._trigger_word = ""
+        self._delete_trigger = False
         QTimer.singleShot(40, self._emit_selected)
 
     def _emit_selected(self):
         if self._pending is not None:
             text = self._pending
+            ctx = self._pending_ctx
             self._pending = None
-            self.selected.emit(text)
+            self._pending_ctx = None
+            self.selected.emit(text, ctx)
 
     # ---------- 全局键盘钩子动作 ----------
     def _on_hk_action(self, action):
@@ -515,6 +530,8 @@ class PickerWindow(QWidget):
         self._finish_hide_now()
         self._emotion = None
         self._caret = False
+        self._trigger_word = ""
+        self._delete_trigger = False
         self.set_candidates(self._manual_items())
         self._saved_foreground = win_utils.get_foreground_hwnd()
         self.show()
@@ -532,18 +549,26 @@ class PickerWindow(QWidget):
         self._finish_hide_now()
         self._emotion = emotion
         self._caret = True
+        self._trigger_word = ""
+        self._delete_trigger = False
         self.set_candidates(items)
         self._saved_foreground = win_utils.get_foreground_hwnd()
         self.show()
         self.emotion_shown.emit(emotion)
 
-    def show_for_output(self, text):
-        """触发词片段：在候选条给出「特定输出」单一候选（贴光标定位）。"""
+    def show_for_output(self, text, trigger_word="", delete_after=False):
+        """触发词片段：在候选条给出「特定输出」单一候选（贴光标定位）。
+
+        trigger_word / delete_after 来自快捷短语的「应用后删除触发词」开关：
+        若 delete_after 为真，上屏该候选时会先把用户刚输入的触发词一并清掉。
+        """
         if not text:
             return
         self._finish_hide_now()
         self._emotion = None
         self._caret = True
+        self._trigger_word = trigger_word
+        self._delete_trigger = delete_after
         self.set_candidates([text])
         self._saved_foreground = win_utils.get_foreground_hwnd()
         self.show()

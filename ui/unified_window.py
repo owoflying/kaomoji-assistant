@@ -413,6 +413,10 @@ class UnifiedSettingsWindow(QMainWindow):
         # 窗口未显示时没有有效 geometry，动画会导致布局错乱，强制走静态切换
         if animate and not self.isVisible():
             animate = False
+        # 开发者页含大量控件 + QScrollArea，交叉淡入动画与 DWM 亚克力/透明背景叠加
+        # 容易引发整窗短暂透明闪烁，关闭该页动画以保证稳定。
+        if animate and key == "developer":
+            animate = False
         if animate:
             # 真实交叉淡入淡出 + 轻微上浮，旧页淡出、新页淡入，无文字残留
             self.content.slide_to(self._pages[key], 230, rise=10)

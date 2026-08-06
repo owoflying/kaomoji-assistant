@@ -14,9 +14,10 @@ from collections import Counter
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QPushButton,
     QPlainTextEdit, QComboBox, QCheckBox, QLineEdit, QGridLayout, QScrollArea,
+    QSizePolicy, QStyle, QStyleOptionButton,
 )
-from PySide6.QtCore import Qt, Signal, QTimer, QElapsedTimer
-from PySide6.QtGui import QFont, QFontDatabase
+from PySide6.QtCore import Qt, Signal, QTimer, QElapsedTimer, QPoint
+from PySide6.QtGui import QFont, QFontDatabase, QPainter, QPen, QColor
 
 from ui.win11_theme import Theme
 from core import win_utils
@@ -24,6 +25,60 @@ from core import win_utils
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _KAOMOJI_PATH = os.path.join(_ROOT, "data", "kaomoji.json")
+
+
+# ---------------------------------------------------------------------------
+# Fluent 风格复选框（显式绘制对勾，避免 Qt 样式在自定义 indicator 后丢失勾号）
+# ---------------------------------------------------------------------------
+class FluentCheckBox(QCheckBox):
+    def __init__(self, text, theme=None, parent=None):
+        super().__init__(text, parent)
+        self._theme = theme
+
+    def set_theme(self, theme):
+        self._theme = theme
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        t = self._theme
+        if t is None:
+            t = Theme("light")
+
+        opt = QStyleOptionButton()
+        self.initStyleOption(opt)
+
+        # 自定义 indicator：圆角方框 + 对勾
+        ir = self.style().subElementRect(QStyle.SE_CheckBoxIndicator, opt, self)
+        checked = bool(opt.state & QStyle.State_On)
+        hovered = bool(opt.state & QStyle.State_MouseOver)
+
+        bg = QColor(t.accent) if checked else QColor(t.input_bg)
+        border = QColor(t.accent) if checked else (
+            QColor(t.accent) if hovered else QColor(t.input_border)
+        )
+        pen = QPen(border)
+        pen.setWidth(1)
+        painter.setPen(pen)
+        painter.setBrush(bg)
+        painter.drawRoundedRect(ir, 4, 4)
+
+        if checked:
+            # 手绘白色对勾
+            check_pen = QPen(QColor("#ffffff"), 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+            painter.setPen(check_pen)
+            points = [
+                QPoint(ir.x() + 4, ir.y() + ir.height() // 2),
+                QPoint(ir.x() + ir.width() // 2 - 1, ir.y() + ir.height() - 5),
+                QPoint(ir.x() + ir.width() - 4, ir.y() + 4),
+            ]
+            painter.drawPolyline(points)
+
+        # 文本使用当前 QSS 字体/颜色绘制
+        painter.setPen(QColor(t.text))
+        cr = self.style().subElementRect(QStyle.SE_CheckBoxContents, opt, self)
+        painter.drawText(cr, Qt.AlignLeft | Qt.AlignVCenter, self.text())
 
 
 # ---------------------------------------------------------------------------
@@ -43,6 +98,8 @@ class LogPanel(QWidget):
 
     def set_theme(self, theme):
         self._theme = theme
+        if hasattr(self, "_auto"):
+            self._auto.set_theme(theme)
         self._apply_style()
 
     def _init_ui(self):
@@ -50,7 +107,7 @@ class LogPanel(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(6)
         bar = QHBoxLayout()
-        self._auto = QCheckBox("自动刷新")
+        self._auto = FluentCheckBox("自动刷新", self._theme)
         self._auto.setChecked(True)
         self._auto.stateChanged.connect(self._on_auto)
         self._btn_refresh = QPushButton("刷新")
@@ -191,7 +248,9 @@ class DevPage(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         inner = QWidget()
+        inner.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         body = QVBoxLayout(inner)
         body.setContentsMargins(28, 22, 28, 28)
         body.setSpacing(16)
@@ -220,6 +279,7 @@ class DevPage(QWidget):
     def _card(self, title):
         card = QFrame()
         card.setObjectName("Card")
+        card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         v = QVBoxLayout(card)
         v.setContentsMargins(20, 18, 20, 18)
         v.setSpacing(12)
@@ -232,12 +292,14 @@ class DevPage(QWidget):
     def _build_event_card(self):
         card, v = self._card("实时事件流 / 运行日志")
         self._stream = EventStream(self._refs.get("bus"))
-        self._stream.setMinimumHeight(150)
+        self._stream.setMinimumHeight(80)
+        self._stream.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         v.addWidget(self._stream)
 
         self._log_panel = LogPanel(self._refs.get("log_buffer") or [],
                                    self._theme.name)
-        self._log_panel.setMinimumHeight(150)
+        self._log_panel.setMinimumHeight(80)
+        self._log_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         v.addWidget(self._log_panel)
         return card
 
@@ -367,8 +429,8 @@ class DevPage(QWidget):
         h.addWidget(QLabel("主题")); h.addWidget(self._exp_theme)
         v.addLayout(h)
         h2 = QHBoxLayout()
-        self._exp_auto_popup = QCheckBox("自动弹出")
-        self._exp_blur = QCheckBox("失焦隐藏")
+        self._exp_auto_popup = FluentCheckBox("自动弹出", self._theme)
+        self._exp_blur = FluentCheckBox("失焦隐藏", self._theme)
         h2.addWidget(self._exp_auto_popup)
         h2.addWidget(self._exp_blur)
         h2.addStretch(1)
@@ -423,6 +485,10 @@ class DevPage(QWidget):
             self._log_panel.set_theme(theme)
         if hasattr(self, "_stream"):
             self._stream.set_theme(theme)
+        if hasattr(self, "_exp_auto_popup"):
+            self._exp_auto_popup.set_theme(theme)
+        if hasattr(self, "_exp_blur"):
+            self._exp_blur.set_theme(theme)
 
     def _tick(self):
         mon = self._refs.get("monitor")

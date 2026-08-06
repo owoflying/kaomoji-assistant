@@ -270,6 +270,7 @@ class Theme:
         QCheckBox::indicator:checked {{
             background: {t.accent};
             border: 1px solid {t.accent};
+            color: #ffffff;  /* 帮助某些 Qt 样式在自定义 indicator 后仍能绘制白色对勾 */
         }}
         QComboBox {{
             background: {t.input_bg};

@@ -225,6 +225,7 @@ class UnifiedSettingsWindow(QMainWindow):
         self._pending_index = 0
         self._acrylic_on = bool(config.get("acrylic", True)) and _has_dwm
         self._shadow_color = _parse_color(self.theme.shadow_color)
+        self._theme_ss = ""          # 缓存当前主题的完整 QSS，供 _refresh_content_sheet 复用
 
         self._init_window()
         self._init_ui()
@@ -409,9 +410,13 @@ class UnifiedSettingsWindow(QMainWindow):
     def _apply_theme(self):
         t = self.theme
         self.setStyleSheet(t.style_sheet())
+        self._theme_ss = t.style_sheet()
         self.sidebar.setStyleSheet("background:transparent;")
-        # 内容区表面较侧栏略实，形成 Win11 设置式层次（半透明以透出亚克力）
-        self.content.setStyleSheet("background:%s;border:none;" % self._adjusted_content_surface())
+        # 内容区表面较侧栏略实，形成 Win11 设置式层次（半透明以透出亚克力）。
+        # 关键：content 必须应用「完整」主题 QSS，否则它的 setStyleSheet 会切断主窗口全局
+        # QSS 的级联，导致其内部子页（设置/库/我的颜文字…）的 QPushButton#AccentButton、滑块、
+        # 开关等收不到样式（典型表现：浅色模式下“应用并保存”白底白字不可见）。
+        self._refresh_content_sheet()
         recolor(self._close_ico, t.text)
         # 标题栏按钮颜色刷新
         for btn in (self._min_btn, self._max_btn):
@@ -465,9 +470,10 @@ class UnifiedSettingsWindow(QMainWindow):
             self._shadow_color = _parse_color(self.theme.shadow_color)
             self._apply_theme()
         else:
-            # 仅透明度变化：刷新内容区表面透明度并整面板重绘，不必整体重刷样式
-            self.content.setStyleSheet(
-                "background:%s;border:none;" % self._adjusted_content_surface())
+            # 仅透明度变化：刷新内容区表面透明度并整面板重绘，不必整体重刷样式。
+            # 用 _refresh_content_sheet（完整 QSS + 表面背景）而非只设 background，
+            # 否则会再次切断主窗口 QSS 级联、让子页控件样式丢失。
+            self._refresh_content_sheet()
             self.update()
 
     def _adjusted_content_surface(self):
@@ -480,6 +486,23 @@ class UnifiedSettingsWindow(QMainWindow):
             r, g, b, a = int(m.group(1)), int(m.group(2)), int(m.group(3)), float(m.group(4))
             return "rgba(%d,%d,%d,%.2f)" % (r, g, b, max(0.0, min(1.0, a * alpha)))
         return base
+
+    def _refresh_content_sheet(self):
+        """刷新内容区（self.content）样式表：在完整主题 QSS 基础上追加其内容区表面背景。
+
+        关键点：self.content 自身 setStyleSheet 会切断主窗口全局 QSS 的级联（Qt 行为——
+        带自身样式表的控件，其派生控件不再继承更上层祖先的样式表规则），因此这里必须把完整
+        style_sheet() 一并设给它，其内部所有子页（设置/库/我的颜文字…）的 QPushButton#AccentButton、
+        滑块、开关等规则才能生效；否则仅设 background 会让派生控件“降级”为原生样式
+        （浅色模式下 AccentButton 白底白字、与卡片融为一体不可见，正是此因）。
+        """
+        if not getattr(self, "_theme_ss", ""):
+            return
+        surface = self._adjusted_content_surface()
+        self.content.setStyleSheet(
+            self._theme_ss
+            + "\nQStackedWidget#ContentArea { background: %s; border: none; }" % surface
+        )
 
     def _adjusted_panel_base(self):
         """面板基底色，按 panel_alpha（语义=不透明度，值越大越实）缩放。

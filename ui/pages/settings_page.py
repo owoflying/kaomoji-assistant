@@ -56,13 +56,16 @@ class SettingsPage(QWidget):
         self._cap_keys = []
         self._listener = None
         self._pynput = None
-        self._theme = Theme(config.get("theme", "light"))
-        self._init_ui()
-        self.refresh_from_config()
-        # 透明度预览节流定时器（单喷）
+        # 透明度预览节流定时器（单喷）必须在 _init_ui / refresh_from_config 之前创建：
+        # 否则 refresh_from_config 里 slider.setValue 触发的 valueChanged 会调用
+        # _schedule_preview -> self._preview_timer.start()，而此时属性尚不存在，
+        # 导致构造期 AttributeError，进而使设置页半初始化、保存按钮等渲染异常。
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
         self._preview_timer.timeout.connect(self._emit_preview)
+        self._theme = Theme(config.get("theme", "light"))
+        self._init_ui()
+        self.refresh_from_config()
 
     def _init_ui(self):
         root = QVBoxLayout(self)

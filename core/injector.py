@@ -27,6 +27,7 @@ from core import win_utils
 class KaomojiInjector:
     def __init__(self):
         self._controller = Controller()
+        self._restore_ctx = None   # 剪贴板恢复上下文（见 _schedule_restore）
 
     def inject(self, text, method="clipboard"):
         if not text:
@@ -51,20 +52,22 @@ class KaomojiInjector:
         try:
             self._controller.type(text)
         except Exception:
-            # 任意方式失败都退回直接键入
-            try:
-                self._controller.type(text)
-            except Exception:
-                pass
+            # 模拟键入失败（多为输入法/布局问题），退回直接字符投递兜底，
+            # 确保颜文字一定能上屏；_inject_direct 若仍失败会再退回剪贴板。
+            self._inject_direct(text)
         finally:
             # 无论成败都切回用户原来的键盘布局。
             # 关键：打完字后不能立刻切回——pynput.type() 只是把键事件“注入”进系统队列就返回，
             # 前台程序还要过一会儿才从自己的消息循环里真正处理成文字。若这里马上 PostMessage 切回中文，
             # “切回消息”可能抢在尾部键事件前面被处理，导致最后几个字符被中文 IME 吞成「哦哦」。
             # 故先按字数留一点“落字”时间（随字数增长、封顶），确保键都被处理掉后再切回。
+            # 注意：用 QTimer 异步推迟“切回”，绝不在主线程 sleep，否则会冻结 UI/候选条。
             if switched and saved_layout:
-                time.sleep(0.3 + min(len(text), 40) * 0.02)
-                win_utils.set_keyboard_layout(hwnd, saved_layout)
+                delay = int((0.3 + min(len(text), 40) * 0.02) * 1000)
+                QTimer.singleShot(
+                    delay, lambda h=hwnd, sl=saved_layout:
+                    win_utils.set_keyboard_layout(h, sl)
+                )
 
     def _wait_layout(self, hwnd, target, timeout=0.6):
         """轮询前台线程的键盘布局，直到切到 target（英文）或超时。
@@ -127,7 +130,34 @@ class KaomojiInjector:
         c.press("v")
         c.release("v")
         c.release(Key.ctrl)
-        # 粘贴完成后恢复原剪贴板，避免覆盖用户内容
-        QTimer.singleShot(
-            250, lambda s=saved: clipboard.setMimeData(s)
-        )
+        # 粘贴完成后恢复原剪贴板，避免覆盖用户内容。
+        # 不用固定延时：监听“下一次剪贴板变化”（用户/程序已自行复制，说明之前的
+        # 粘贴必然完成）立即恢复；否则 1.2s 超时兜底，避免过早写回打断慢程序粘贴。
+        self._schedule_restore(clipboard, saved)
+
+    def _schedule_restore(self, clipboard, saved):
+        self._restore_ctx = {"saved": saved}
+        try:
+            clipboard.dataChanged.connect(self._on_clipboard_changed)
+        except Exception:
+            pass
+        QTimer.singleShot(1200, lambda: self._do_restore(clipboard))
+
+    def _on_clipboard_changed(self):
+        self._do_restore(QApplication.clipboard())
+
+    def _do_restore(self, clipboard):
+        ctx = getattr(self, "_restore_ctx", None)
+        if ctx is None:
+            return
+        self._restore_ctx = None
+        try:
+            clipboard.dataChanged.disconnect(self._on_clipboard_changed)
+        except Exception:
+            pass
+        saved = ctx.get("saved")
+        if saved is not None:
+            try:
+                clipboard.setMimeData(saved)
+            except Exception:
+                pass

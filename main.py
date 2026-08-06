@@ -359,9 +359,12 @@ def main():
     def _pause_main():
         """打开统一窗口前暂停热键与监听，避免操作冲突。"""
         hotkey.stop()
-        monitor.pause()
         if window.isVisible():
             window.hide()
+        # 注意：window.hide() 会经 isVisibleChanged(False) -> monitor.resume() 把监听重新打开，
+        # 因此 monitor.pause() 必须放在 hide 之后，否则暂停会被刚才的 resume 抵消
+        # （仅在候选条当时正显示时触发），导致统一窗口打开期间自动弹出监听仍在跑。
+        monitor.pause()
 
     def open_unified(page_key=None):
         _pause_main()

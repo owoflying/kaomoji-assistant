@@ -395,6 +395,24 @@ def get_focused_control_hwnd():
         return None
 
 
+def get_focused_control_class():
+    """返回当前焦点控件的窗口类名（如 Edit / RichEdit50W / Chrome_RenderWidgetHostHWND）。
+
+    取不到时返回 ''。开发者模式用于展示“焦点原始流”，确认焦点判定是否正确。
+    """
+    hwnd = get_focused_control_hwnd()
+    if not hwnd:
+        return ""
+    try:
+        buf = ctypes.create_unicode_buffer(256)
+        n = user32.GetClassNameW(hwnd, buf, 256)
+        if n <= 0:
+            return ""
+        return buf.value or ""
+    except Exception:
+        return ""
+
+
 def is_native_edit(hwnd):
     """判断 hwnd 是否为原生 Win32 编辑框（Edit / RichEdit 类）。
 

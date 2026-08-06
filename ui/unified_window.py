@@ -65,6 +65,7 @@ from ui.pages import (
     HomePage, LibraryPage, CustomKaomojiPage, TriggerPage,
     SearchPage, SettingsPage, AboutPage,
 )
+from ui.dev import DevPage  # 开发者模式标签页（仅 developer_mode 时显示）
 
 # WM 消息与 NCHITTEST 命中测试返回值
 WM_NCHITTEST = 0x0084
@@ -212,7 +213,7 @@ class UnifiedSettingsWindow(QMainWindow):
     _TITLEBAR_H = 40
 
     def __init__(self, data, config, state, user_kao, triggers,
-                 save_config=None, open_log=None, parent=None):
+                 save_config=None, open_log=None, dev_refs=None, parent=None):
         super().__init__(parent)
         self.data = data
         self.config = config
@@ -221,6 +222,7 @@ class UnifiedSettingsWindow(QMainWindow):
         self.triggers = triggers
         self.save_config = save_config
         self.open_log = open_log
+        self.dev_refs = dev_refs or {}
 
         self.theme = Theme(config.get("theme", "light"))
         self._nav_items = []
@@ -339,6 +341,9 @@ class UnifiedSettingsWindow(QMainWindow):
             item.clicked.connect(lambda k=key: self._set_page(k))
             nvbox.addWidget(item)
             self._nav_items.append((key, item))
+        # 开发者模式专属导航项：仅当已解锁才出现（插入到末尾的 stretch 之前）
+        if self.config.get("developer_mode", False):
+            self._add_dev_nav_item(nvbox)
         nvbox.addStretch(1)
         sroot.addWidget(self._nav_container, 1)
 
@@ -375,6 +380,12 @@ class UnifiedSettingsWindow(QMainWindow):
             "settings": self.settings_page,
             "about": self.about_page,
         }
+        # 开发者模式标签页：仅当已解锁时创建并加入栈
+        if self.config.get("developer_mode", False):
+            self.dev_page = DevPage(
+                self.dev_refs, self.config, self.save_config, self.theme.name)
+            self.dev_page.config_applied.connect(self._on_settings_applied)
+            self._pages["developer"] = self.dev_page
         for p in self._pages.values():
             self.content.addWidget(p)
 
@@ -385,6 +396,8 @@ class UnifiedSettingsWindow(QMainWindow):
         self.settings_page.config_applied.connect(self._on_settings_applied)
         # 外观项（主题/透明度/亚克力）改动时实时预览，不落盘、不触发主程序保存逻辑
         self.settings_page.config_preview.connect(self._preview_appearance)
+        # 关于页连点版本号解锁开发者模式后，实时添加「开发者」标签（无需重开窗口）
+        self.about_page.developer_mode_enabled.connect(self._enable_dev_tab)
 
         self._set_page("home", animate=False)
 
@@ -410,6 +423,31 @@ class UnifiedSettingsWindow(QMainWindow):
         if key == "search":
             self.search_page.focus_query()
 
+    # ---------- 开发者标签 ----------
+    def _add_dev_nav_item(self, nav_layout):
+        """在导航栏末尾（stretch 之前）插入「开发者」项。"""
+        item = _NavItem("code", "开发者", self.theme)
+        item.clicked.connect(lambda: self._set_page("developer"))
+        # nav_layout 末尾是 addStretch(1)，插入到它之前，保持「开发者」在列表底部
+        nav_layout.insertWidget(nav_layout.count() - 1, item)
+        self._nav_items.append(("developer", item))
+
+    def _enable_dev_tab(self):
+        """关于页解锁开发者模式后实时添加「开发者」标签（无需重开窗口）。"""
+        if "developer" in self._pages:
+            return
+        if not self.config.get("developer_mode", False):
+            return
+        self._add_dev_nav_item(self._nav_container.layout())
+        self.dev_page = DevPage(
+            self.dev_refs, self.config, self.save_config, self.theme.name)
+        self.dev_page.config_applied.connect(self._on_settings_applied)
+        self._pages["developer"] = self.dev_page
+        self.content.addWidget(self.dev_page)
+        self.dev_page.set_theme(self.theme)
+        # 若当前停在关于页，自动跳到开发者页，让用户立刻看到入口
+        self._set_page("developer")
+
     def _apply_theme(self):
         t = self.theme
         self.setStyleSheet(t.style_sheet())
@@ -431,6 +469,8 @@ class UnifiedSettingsWindow(QMainWindow):
         self.search_page.set_theme(t)
         self.settings_page.set_theme(t)
         self.home_page.set_theme(t)
+        if "developer" in self._pages:
+            self.dev_page.set_theme(t)
         self._update_backdrop()
         self.update()
 
@@ -446,6 +486,8 @@ class UnifiedSettingsWindow(QMainWindow):
         self.settings_page.set_theme(self.theme)
         self.search_page.set_theme(self.theme)
         self.home_page.set_theme(self.theme)
+        if "developer" in self._pages:
+            self.dev_page.set_theme(self.theme)
         self._update_backdrop()
         # 记录已提交状态，供“仅预览未保存就关闭”时回滚（见 _preview_appearance / closeEvent）
         self._last_committed = dict(self.config)

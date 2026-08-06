@@ -8,7 +8,7 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QFrame, QPushButton, QHBoxLayout,
 )
-from PySide6.QtCore import Qt, QUrl, QTimer, QEvent
+from PySide6.QtCore import Qt, QUrl, QTimer, QEvent, Signal
 from PySide6.QtGui import QFont, QDesktopServices
 
 
@@ -17,6 +17,8 @@ _CLICK_TIMEOUT_MS = 2500    # 两次点击间隔超过该值则计数清零
 
 
 class AboutPage(QWidget):
+    developer_mode_enabled = Signal()  # 解锁开发者模式后实时通知主窗口添加标签
+
     def __init__(self, config=None, save_config=None, open_log=None, parent=None):
         super().__init__(parent)
         self.config = config or {}
@@ -132,6 +134,7 @@ class AboutPage(QWidget):
         self._click_timer.stop()
         self._dev_badge.setVisible(True)
         self._log_btn.setVisible(True)
+        self.developer_mode_enabled.emit()
         if announce:
             self._dev_hint.setText("已启用开发者模式，可在关于页查看运行日志")
         else:

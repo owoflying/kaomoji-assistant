@@ -11,7 +11,7 @@ if BASE_DIR not in sys.path:
 
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
 from PySide6.QtGui import QIcon, QAction
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, QObject, Signal
 
 from core.kaomoji_data import KaomojiData
 from core.hotkey import NativeHotkeyManager
@@ -47,6 +47,17 @@ def _append_log(level, source, message):
 
 # 配置项的默认值；load_config 会把磁盘值合并进来，缺失项自动补默认，
 # 这样新增配置项时旧配置不会因缺字段而报错。
+class DevEventBus(QObject):
+    """开发者模式事件总线：把核心组件的关键事件聚合为统一信号，供开发者标签页订阅。
+
+    event: (level, source, message)
+    """
+    event = Signal(str, str, str)
+
+    def log(self, level, source, message):
+        self.event.emit(level, source, message)
+
+
 DEFAULT_CONFIG = {
     "hotkey": "<ctrl>+<shift>+k",
     "theme": "light",
@@ -336,14 +347,24 @@ def main():
     # 面板因某情绪弹出后立即锁定该情绪，避免同一句话被反复推荐
     window.emotion_shown.connect(monitor.notify_shown)
 
+    # 开发者模式事件总线：聚合核心事件，供开发者标签页实时展示
+    bus = DevEventBus()
+    hotkey.hotkey_pressed.connect(lambda: bus.log("事件", "热键", "热键触发"))
+    monitor.emotion_detected.connect(lambda e: bus.log("情绪", "监听", "命中情绪：%s" % e))
+    monitor.trigger_detected.connect(lambda m: bus.log("触发", "监听", "命中短语：%s" % m))
+    monitor.diagnostic.connect(lambda d: bus.log("诊断", "监听", d))
+    window.emotion_shown.connect(lambda e: bus.log("弹出", "面板", "候选条弹出（情绪=%s）" % e))
+
     def on_selected(text):
+        method = config.get("input_method", "clipboard")
         # 先告知监听器「这段文本是我们自己送进去的」：
         # 进入静默期 + 后续采样时把它剔除，否则颜文字里的 "?"「哇」等字符
         # 会被当成用户新输入的情绪词，导致上屏后又弹一次。
         monitor.notify_injected(text)
+        bus.log("注入", "主程序", "注入颜文字：%s（方式=%s）" % (text, method))
         # 延迟一点，确保面板隐藏、焦点已回到原窗口后再注入文本
         QTimer.singleShot(
-            0, lambda: injector.inject(text, config.get("input_method", "clipboard"))
+            0, lambda: injector.inject(text, method)
         )
 
     window.selected.connect(on_selected)
@@ -355,6 +376,10 @@ def main():
         open_log=lambda: show_log_viewer(
             LOG_BUFFER, parent=unified,
             theme_name=config.get("theme", "light")),
+        dev_refs={
+            "hotkey": hotkey, "monitor": monitor, "injector": injector,
+            "data": data, "config": config, "window": window, "bus": bus,
+        },
     )
 
     def _resume_main():

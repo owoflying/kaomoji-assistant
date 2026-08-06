@@ -40,6 +40,7 @@ except Exception:  # pragma: no cover - 非 Windows 或 COM 不可用
 class EmotionMonitor(QObject):
     emotion_detected = Signal(str)
     trigger_detected = Signal(str)  # 用户快捷短语：尾部命中触发词 -> 给出特定输出
+    diagnostic = Signal(str)        # 开发者模式诊断：防重触发/命中原因（仅 DevPage 订阅）
 
     def __init__(self, triggers=None):
         super().__init__()
@@ -67,6 +68,11 @@ class EmotionMonitor(QObject):
         self._injected = deque(maxlen=8)   # 最近上屏过的颜文字
         self._inject_quiet = 1.5    # 上屏后的静默秒数
         self._quiet_until = 0.0
+        # 开发者模式可视化所需的“最近状态”快照（仅读取，不影响主流程）
+        self.last_text = ""
+        self.last_emotion = ""
+        self.last_trigger = ""
+        self.last_suppress = ""
 
     # ---------- 生命周期 ----------
     def start(self):
@@ -267,6 +273,7 @@ class EmotionMonitor(QObject):
 
     # ---------- 情绪判定 ----------
     def _evaluate(self, text):
+        self.last_text = text
         tail = text[-self._scan_tail:]
         # 触发词片段优先：打字尾部命中用户定义的触发词，直接给出特定输出
         if self._triggers is not None:
@@ -274,9 +281,12 @@ class EmotionMonitor(QObject):
             if m is not None:
                 with self._lock:
                     if self._trigger_locked == m:
+                        self.diagnostic.emit("触发词已锁定，跳过重复弹出：%s" % m)
+                        self.last_suppress = "触发词已锁定：%s" % m
                         return      # 同一个输出刚弹过，不重复打扰
                     self._trigger_locked = m
                     self._locked = None   # 触发片段不兼带情绪弹出
+                self.last_trigger = m
                 self.trigger_detected.emit(m)
                 return
             else:
@@ -287,13 +297,18 @@ class EmotionMonitor(QObject):
         if hit is None:
             # 扫描窗口里已经没有任何情绪词 -> 解锁，下次命中可以重新弹
             with self._lock:
+                if self._locked is not None:
+                    self.diagnostic.emit("扫描窗口无情绪词，已解锁情绪")
                 self._locked = None
             return
         emotion = hit[0]
         with self._lock:
             if emotion == self._locked:
+                self.diagnostic.emit("情绪已锁定，跳过重复弹出：%s" % emotion)
+                self.last_suppress = "情绪已锁定：%s" % emotion
                 return          # 这个情绪刚弹过且还挂在尾部，不重复打扰
             self._locked = emotion
             self._buffer = ""
         # 直接 emit：跨线程时 Qt 自动排队到主线程，已实测可正确投递
+        self.last_emotion = emotion
         self.emotion_detected.emit(emotion)

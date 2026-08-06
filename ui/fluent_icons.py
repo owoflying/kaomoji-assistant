@@ -42,6 +42,7 @@ GLYPHS = {
     "mail":          62727,  # ic_fluent_mail_24_regular
     "people":        62889,  # ic_fluent_people_24_regular
     "pin":           62978,  # ic_fluent_pin_24_regular
+    "code":          62192,  # ic_fluent_code_24_regular（开发者模式标签）
 }
 
 _font_family = None

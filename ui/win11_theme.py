@@ -149,8 +149,9 @@ class Theme:
         }}
         QPushButton#AccentButton {{
             background: {t.accent};
-            color: white;
-            border: none;
+            color: #ffffff;
+            border: 1px solid rgba(0,0,0,0.12);
+            font-weight: 600;
         }}
         QPushButton#AccentButton:hover {{
             background: {t.accent_hover};
@@ -327,6 +328,62 @@ class Theme:
         QScrollArea, QScrollArea QWidget#SettingsBody {{
             background: transparent;
             border: none;
+        }}
+        QMenu {{
+            background: {t.card};
+            border: 1px solid {t.card_border};
+            border-radius: 8px;
+            padding: 6px;
+            color: {t.text};
+            font-size: 13px;
+        }}
+        QMenu::item {{
+            background: transparent;
+            padding: 7px 18px 7px 14px;
+            border-radius: 6px;
+            color: {t.text};
+        }}
+        QMenu::item:selected {{
+            background: {t.accent};
+            color: #ffffff;
+        }}
+        QMenu::separator {{
+            height: 1px;
+            background: {t.divider};
+            margin: 6px 8px;
+        }}
+        """
+
+
+    def menu_style(self):
+        """QMenu 专属样式表（菜单项/分隔符），供托盘菜单等独立弹出菜单显式 setStyleSheet。
+
+        独立 QMenu（无父 widget）不一定继承 app 全局 QSS，因此由调用方显式应用并随主题刷新。
+        """
+        t = self
+        return f"""
+        QMenu {{
+            background: {t.card};
+            border: 1px solid {t.card_border};
+            border-radius: 8px;
+            padding: 6px;
+            color: {t.text};
+            font-size: 13px;
+        }}
+        QMenu::item {{
+            background: transparent;
+            padding: 7px 18px 7px 14px;
+            border-radius: 6px;
+            color: {t.text};
+        }}
+        QMenu::item:selected {{
+            background: {t.accent};
+            color: #ffffff;
+        }}
+        QMenu::separator {{
+            height: 1px;
+            background: {t.divider};
+            margin: 6px 8px;
         }}
         """
 

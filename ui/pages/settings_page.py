@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
     QSlider, QSpinBox, QFrame, QSizePolicy, QScrollArea,
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QTimer
 
 from core import win_utils
 from core import autostart
@@ -59,6 +59,10 @@ class SettingsPage(QWidget):
         self._theme = Theme(config.get("theme", "light"))
         self._init_ui()
         self.refresh_from_config()
+        # 透明度预览节流定时器（单喷）
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.timeout.connect(self._emit_preview)
 
     def _init_ui(self):
         root = QVBoxLayout(self)
@@ -126,15 +130,17 @@ class SettingsPage(QWidget):
         croot.setContentsMargins(16, 14, 16, 14)
         croot.setSpacing(12)
         self._add_row(croot, "主题", self._theme_combo())
-        self._add_row(croot, "面板透明度", self._panel_alpha_row())
-        self._add_row(croot, "候选条透明度", self._opacity_row())
+        self._add_row(croot, "面板不透明度", self._panel_alpha_row())
+        self._add_row(croot, "候选条不透明度", self._opacity_row())
         self._add_row(croot, "亚克力模糊", self._acrylic_toggle())
         v.addWidget(card)
 
         # 外观项改动时实时预览（主题 / 透明度 / 亚克力），不落盘，关闭或点“应用并保存”才最终提交
         self.theme_combo.currentIndexChanged.connect(lambda *_a: self._emit_preview())
         self.acrylic_check.toggled.connect(lambda *_a: self._emit_preview())
-        self.panel_alpha_slider.valueChanged.connect(lambda *_a: self._emit_preview())
+        # 透明度滑块拖动时高频触发，用单喷定时器节流，避免每像素重绘导致卡顿
+        self.panel_alpha_slider.valueChanged.connect(lambda *_a: self._schedule_preview())
+        self.opacity_slider.valueChanged.connect(lambda *_a: self._schedule_preview())
 
         # 输入
         v.addWidget(self._section_title("输入"))
@@ -422,6 +428,10 @@ class SettingsPage(QWidget):
         pass
 
     # ---------- 应用 ----------
+    def _schedule_preview(self):
+        """透明度滑块拖动时高频触发，节流到每 40ms 一次（单喷），避免连续重绘卡顿。"""
+        self._preview_timer.start(40)
+
     def _emit_preview(self):
         """外观实时预览：把当前控件状态打包成临时配置发出去，由统一窗口立即重绘，
         但不写入磁盘、不触发主程序的保存/重注册逻辑。"""

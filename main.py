@@ -393,6 +393,7 @@ def main():
         # 实时应用：换肤等；热键的实际重新注册放到统一窗口关闭时统一处理
         # 应用级样式表也要随主题刷新，否则独立对话框（新增/编辑等）不会跟随新主题
         app.setStyleSheet(Theme(config.get("theme", "light")).style_sheet())
+        menu.setStyleSheet(Theme(config.get("theme", "light")).menu_style())
         window.apply_config(config)
         unified.apply_config(config)
         state.max_recent = int(config.get("max_recent", 30))
@@ -413,6 +414,7 @@ def main():
     app.setWindowIcon(icon)
     tray = QSystemTrayIcon(icon, app)
     menu = QMenu()
+    menu.setStyleSheet(Theme(config.get("theme", "light")).menu_style())
     show_action = QAction("唤起面板", app)
     show_action.triggered.connect(window.toggle)
     panel_action = QAction("打开主面板", app)

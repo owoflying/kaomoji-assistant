@@ -439,6 +439,9 @@ class UnifiedSettingsWindow(QMainWindow):
         self.search_page.set_theme(self.theme)
         self.home_page.set_theme(self.theme)
         self._update_backdrop()
+        # 记录已提交状态，供“仅预览未保存就关闭”时回滚（见 _preview_appearance / closeEvent）
+        self._last_committed = dict(self.config)
+        self._dirty = False
 
     def _on_settings_applied(self, new_cfg):
         self.config_applied.emit(new_cfg)
@@ -447,13 +450,15 @@ class UnifiedSettingsWindow(QMainWindow):
         """设置页「外观」改动的实时预览：立即重绘本窗口的主题/透明度/亚克力，不落盘。
 
         这样用户在设置里选深色、拖透明度滑块时立刻看到效果，避免“点了没反应”误以为切不了。
-        仅影响本窗口的可视状态；真正提交仍发生在「应用并保存」（走 config_applied）。
+        仅影响本窗口的可视状态，并通过 _dirty 标记；真正提交走「应用并保存」（config_applied），
+        若只预览就关闭则由 closeEvent 回滚到上次已提交状态，不会“记进面板”却未落盘。
         """
         theme_name = preview_cfg.get("theme", self.theme.name)
         acrylic = bool(preview_cfg.get("acrylic", self._acrylic_on))
         changed_skin = (theme_name != self.theme.name) or (acrylic != self._acrylic_on)
         # 软更新 config：paintEvent 读 panel_alpha 等依赖它
         self.config = dict(preview_cfg)
+        self._dirty = True
         if changed_skin:
             self.theme = Theme(theme_name)
             self._acrylic_on = acrylic and _has_dwm
@@ -477,19 +482,30 @@ class UnifiedSettingsWindow(QMainWindow):
         return base
 
     def _adjusted_panel_base(self):
-        """面板基底色（亚克力开=window_tint，关=纯色底 bg），按 panel_alpha 缩放透明度，
-        让「面板透明度」滑块真实作用于整块面板背景。亚克力关闭时纯色底转 rgba 再缩放，
-        使透明度滑块在关亚克力时也生效。"""
+        """面板基底色，按 panel_alpha（语义=不透明度，值越大越实）缩放。
+
+        - 亚克力开启：基底 RGB 取 window_tint，但不透明度直接由 panel_alpha 决定
+          （映射并保底 0.6），让「不透明度」滑块在开亚克力时也真实生效；拉到 100% 即接近
+          实色磨砂玻璃，不再“永远半透明、甚至比关亚克力还透”。
+          原 bug：window_tint 固有 alpha 仅 0.85/0.88，乘 panel_alpha 后最多 0.85，
+          导致即使不透明度拉满面板仍透明。
+        - 亚克力关闭：纯色底 bg 直接按 panel_alpha 缩放（保底 0.4），纯色半透明。
+        """
         import re
         base = self.theme.window_tint if self._acrylic_on else self.theme.bg
         alpha = float(self.config.get("panel_alpha", 0.92))
         m = re.match(r"rgba?\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)", base)
         if m:
-            r, g, b, a = int(m.group(1)), int(m.group(2)), int(m.group(3)), float(m.group(4))
-            return "rgba(%d,%d,%d,%.2f)" % (r, g, b, max(0.0, min(1.0, a * alpha)))
-        # 亚克力关闭时的纯色底（hex）：转 rgba 后再缩放
-        c = QColor(base)
-        return "rgba(%d,%d,%d,%.2f)" % (c.red(), c.green(), c.blue(), max(0.0, min(1.0, alpha)))
+            r, g, b = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        else:
+            c = QColor(base)
+            r, g, b = c.red(), c.green(), c.blue()
+        if self._acrylic_on:
+            # 不透明度滑块映射（保底 0.6 让磨砂层始终可见；100% 时完全实色）
+            a = max(0.6, min(1.0, 0.55 + 0.45 * alpha))
+        else:
+            a = max(0.4, min(1.0, alpha))
+        return "rgba(%d,%d,%d,%.2f)" % (r, g, b, a)
 
     def showEvent(self, e):
         super().showEvent(e)
@@ -500,6 +516,10 @@ class UnifiedSettingsWindow(QMainWindow):
         self.home_page.refresh_stats()
 
     def closeEvent(self, e):
+        # 若只预览了外观但没点“应用并保存”，关闭时回滚到上次已提交状态，
+        # 避免亚克力/主题被“记进面板”却未落盘（见 _preview_appearance）。
+        if getattr(self, "_dirty", False) and getattr(self, "_last_committed", None):
+            self.apply_config(self._last_committed)
         self.finished.emit()
         super().closeEvent(e)
 

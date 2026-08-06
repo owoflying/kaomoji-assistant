@@ -125,6 +125,7 @@ class LogPanel(QWidget):
         self._text.setLineWrapMode(QPlainTextEdit.NoWrap)
         mono = "Consolas" if "Consolas" in QFontDatabase.families() else "Courier New"
         self._text.setFont(QFont(mono, 11))
+        self._text.setMinimumHeight(110)
         self._apply_style()
         root.addWidget(self._text, 1)
 
@@ -198,6 +199,7 @@ class EventStream(QWidget):
         self._text.setLineWrapMode(QPlainTextEdit.NoWrap)
         mono = "Consolas" if "Consolas" in QFontDatabase.families() else "Courier New"
         self._text.setFont(QFont(mono, 11))
+        self._text.setMinimumHeight(110)
         self._text.setStyleSheet(
             "QPlainTextEdit{background:#ffffff;border:1px solid #d0d0d0;"
             "border-radius:8px;padding:8px 10px;color:#222;}"
@@ -225,6 +227,7 @@ class EventStream(QWidget):
 # ---------------------------------------------------------------------------
 class DevPage(QWidget):
     config_applied = Signal(dict)
+    developer_mode_disabled = Signal()   # 请求主窗口关闭开发者模式
 
     def __init__(self, dev_refs, config=None, save_config=None,
                  theme_name="light", parent=None):
@@ -233,11 +236,14 @@ class DevPage(QWidget):
         self.config = config or {}
         self._save_config = save_config
         self._theme = Theme(theme_name)
+        self._active = False
         self._init_ui()
         self._tick_timer = QTimer(self)
         self._tick_timer.setInterval(600)
         self._tick_timer.timeout.connect(self._tick)
-        self._tick_timer.start()
+        # 计时器默认不启动：由主窗口在页面「进入」时 set_active(True) 启动，
+        # 「离开」（含退出动画期间）set_active(False) 停止，
+        # 避免淡出动画过程中后台仍刷新文本导致「文字跳动/闪烁」。
 
     # ---------- UI ----------
     def _init_ui(self):
@@ -245,17 +251,24 @@ class DevPage(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
+        # 滚动区：与设置页一致，关闭横向滚动条（避免窄窗口出现横向条/错位），
+        # 背景透明以透出主窗口亚克力材质；body 用 SettingsBody 透明背景，
+        # 由统一窗口的 _refresh_content_sheet 注入内容区表面底色。
         scroll = QScrollArea()
+        scroll.setObjectName("SettingsScroll")
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setStyleSheet("background:transparent;border:none;")
         inner = QWidget()
-        inner.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        inner.setObjectName("SettingsBody")
+        inner.setStyleSheet("background:transparent;")
         body = QVBoxLayout(inner)
         body.setContentsMargins(28, 22, 28, 28)
         body.setSpacing(16)
         scroll.setWidget(inner)
-        root.addWidget(scroll)
+        root.addWidget(scroll, 1)
 
         title = QLabel("开发者模式")
         title.setObjectName("PageTitle")
@@ -274,12 +287,13 @@ class DevPage(QWidget):
         body.addWidget(self._build_experiment_card())
         body.addWidget(self._build_data_card())
         body.addWidget(self._build_hotkey_card())
+        body.addWidget(self._build_control_card())
         body.addStretch(1)
 
     def _card(self, title):
         card = QFrame()
         card.setObjectName("Card")
-        card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        card.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         v = QVBoxLayout(card)
         v.setContentsMargins(20, 18, 20, 18)
         v.setSpacing(12)
@@ -292,14 +306,14 @@ class DevPage(QWidget):
     def _build_event_card(self):
         card, v = self._card("实时事件流 / 运行日志")
         self._stream = EventStream(self._refs.get("bus"))
-        self._stream.setMinimumHeight(80)
-        self._stream.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._stream.setMinimumHeight(150)
+        self._stream.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         v.addWidget(self._stream)
 
         self._log_panel = LogPanel(self._refs.get("log_buffer") or [],
                                    self._theme.name)
-        self._log_panel.setMinimumHeight(80)
-        self._log_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._log_panel.setMinimumHeight(150)
+        self._log_panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         v.addWidget(self._log_panel)
         return card
 
@@ -472,7 +486,26 @@ class DevPage(QWidget):
         v.addWidget(note)
         return card
 
+    # ---- 10. 开发者模式控制 ----
+    def _build_control_card(self):
+        card, v = self._card("开发者模式控制")
+        tip = QLabel("关闭后「开发者」标签与导航项会立即移除，配置项 developer_mode 置为 false 并保存；"
+                     "如需重新开启，回到「关于」页连点版本号 8 次即可。")
+        tip.setObjectName("BodyText")
+        tip.setWordWrap(True)
+        v.addWidget(tip)
+        h = QHBoxLayout()
+        b = QPushButton("关闭开发者模式")
+        b.setObjectName("DangerButton")
+        b.clicked.connect(self._on_disable)
+        h.addWidget(b)
+        h.addStretch(1)
+        v.addLayout(h)
+        return card
+
     # ---------- 行为 ----------
+    def _on_disable(self):
+        self.developer_mode_disabled.emit()
     def showEvent(self, e):
         super().showEvent(e)
         self._refresh_diag()
@@ -489,6 +522,25 @@ class DevPage(QWidget):
             self._exp_auto_popup.set_theme(theme)
         if hasattr(self, "_exp_blur"):
             self._exp_blur.set_theme(theme)
+
+    def set_active(self, active):
+        """由主窗口在页面进入/离开时调用。
+
+        - 进入：启动后台计时器（实时事件流、诊断采样、日志刷新）；
+        - 离开（含退出动画期间）：立即停止，避免在淡出动画过程中后台仍刷新文本，
+          造成「文字跳动/闪烁」（这是此前退出动画闪烁的根因；其他页面无此类后台计时器）。
+        """
+        self._active = bool(active)
+        if active:
+            if not self._tick_timer.isActive():
+                self._tick_timer.start()
+            # 仅当用户勾选了「自动刷新」才重启日志轮询，尊重用户选择
+            if hasattr(self, "_log_panel") and self._log_panel._auto.isChecked():
+                self._log_panel._timer.start()
+        else:
+            self._tick_timer.stop()
+            if hasattr(self, "_log_panel"):
+                self._log_panel._timer.stop()
 
     def _tick(self):
         mon = self._refs.get("monitor")

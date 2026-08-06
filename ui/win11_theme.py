@@ -159,6 +159,18 @@ class Theme:
         QPushButton#AccentButton:pressed {{
             background: {t.accent};
         }}
+        QPushButton#DangerButton {{
+            background: #d13438;
+            color: #ffffff;
+            border: 1px solid rgba(0,0,0,0.12);
+            font-weight: 600;
+        }}
+        QPushButton#DangerButton:hover {{
+            background: #b62a2e;
+        }}
+        QPushButton#DangerButton:pressed {{
+            background: #d13438;
+        }}
         QPushButton#TitleButton, QPushButton#TitleClose {{
             background: transparent;
             border: none;

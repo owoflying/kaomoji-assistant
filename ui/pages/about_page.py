@@ -83,13 +83,6 @@ class AboutPage(QWidget):
         link_row.addStretch(1)
         croot.addLayout(link_row)
 
-        # 开发者模式门户：运行日志入口（仅启用后可见）
-        self._log_btn = QPushButton("查看运行日志")
-        self._log_btn.setObjectName("AccentButton")
-        self._log_btn.clicked.connect(self._open_log_viewer)
-        self._log_btn.setVisible(False)
-        croot.addWidget(self._log_btn)
-
         croot.addSpacing(8)
         thanks = QLabel("技术栈：Python · PySide6 · pynput · Windows DWM")
         thanks.setObjectName("Caption")
@@ -133,13 +126,8 @@ class AboutPage(QWidget):
         self._click_count = 0
         self._click_timer.stop()
         self._dev_badge.setVisible(True)
-        self._log_btn.setVisible(True)
         self.developer_mode_enabled.emit()
         if announce:
-            self._dev_hint.setText("已启用开发者模式，可在关于页查看运行日志")
+            self._dev_hint.setText("已启用开发者模式，可在「开发者」标签查看运行日志与实时事件流")
         else:
             self._dev_hint.setText("开发者模式已启用")
-
-    def _open_log_viewer(self):
-        if self._open_log:
-            self._open_log()

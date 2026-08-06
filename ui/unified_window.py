@@ -385,6 +385,7 @@ class UnifiedSettingsWindow(QMainWindow):
             self.dev_page = DevPage(
                 self.dev_refs, self.config, self.save_config, self.theme.name)
             self.dev_page.config_applied.connect(self._on_settings_applied)
+            self.dev_page.developer_mode_disabled.connect(self._disable_dev_tab)
             self._pages["developer"] = self.dev_page
         for p in self._pages.values():
             self.content.addWidget(p)
@@ -413,10 +414,15 @@ class UnifiedSettingsWindow(QMainWindow):
         # 窗口未显示时没有有效 geometry，动画会导致布局错乱，强制走静态切换
         if animate and not self.isVisible():
             animate = False
-        # 开发者页含大量控件 + QScrollArea，交叉淡入动画与 DWM 亚克力/透明背景叠加
-        # 容易引发整窗短暂透明闪烁，关闭该页动画以保证稳定。
-        if animate and key == "developer":
-            animate = False
+        # 进入/离开时管理开发者页后台计时器：离开即停止（含退出动画期间），
+        # 避免淡出动画过程中后台仍刷新文本导致「文字跳动/闪烁」；进入时启动。
+        leaving = self.content.currentWidget()
+        entering = self._pages.get(key)
+        if leaving is not entering:
+            if isinstance(leaving, DevPage):
+                leaving.set_active(False)
+            if isinstance(entering, DevPage):
+                entering.set_active(True)
         if animate:
             # 真实交叉淡入淡出 + 轻微上浮，旧页淡出、新页淡入，无文字残留
             self.content.slide_to(self._pages[key], 230, rise=10)
@@ -446,11 +452,37 @@ class UnifiedSettingsWindow(QMainWindow):
         self.dev_page = DevPage(
             self.dev_refs, self.config, self.save_config, self.theme.name)
         self.dev_page.config_applied.connect(self._on_settings_applied)
+        self.dev_page.developer_mode_disabled.connect(self._disable_dev_tab)
         self._pages["developer"] = self.dev_page
         self.content.addWidget(self.dev_page)
         self.dev_page.set_theme(self.theme)
         # 若当前停在关于页，自动跳到开发者页，让用户立刻看到入口
         self._set_page("developer")
+
+    def _disable_dev_tab(self):
+        """关闭开发者模式：置 config 标志为 false 并保存，实时移除标签页与导航项，跳回设置页。"""
+        if not self.config.get("developer_mode", False):
+            return
+        # 先暂停开发者页后台计时器，避免移除过程中仍触发刷新
+        dev = self._pages.get("developer")
+        if dev is not None:
+            dev.set_active(False)
+        self.config["developer_mode"] = False
+        if self.save_config:
+            self.save_config(self.config)
+        # 移除导航项（保留其他项顺序）
+        for i, (k, item) in enumerate(self._nav_items):
+            if k == "developer":
+                self._nav_items.pop(i)
+                item.setParent(None)
+                item.deleteLater()
+                break
+        # 从栈与页面表中移除开发者页
+        if "developer" in self._pages:
+            self.content.removeWidget(self._pages["developer"])
+            del self._pages["developer"]
+        # 跳回设置页（保留与进入一致的淡入动画体验）
+        self._set_page("settings")
 
     def _apply_theme(self):
         t = self.theme

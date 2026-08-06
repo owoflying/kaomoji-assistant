@@ -277,12 +277,12 @@ class Theme:
             height: 18px;
             border-radius: 4px;
             border: 1px solid {t.input_border};
-            background: {t.input_bg};
+            background: transparent;  /* 未选中=空白方框（不填充） */
         }}
         QCheckBox::indicator:checked {{
             background: {t.accent};
             border: 1px solid {t.accent};
-            color: #ffffff;  /* 帮助某些 Qt 样式在自定义 indicator 后仍能绘制白色对勾 */
+            color: #ffffff;  /* 选中=填充强调色方框 + 白色对勾 */
         }}
         QComboBox {{
             background: {t.input_bg};

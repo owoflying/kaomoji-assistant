@@ -369,7 +369,7 @@ class UnifiedSettingsWindow(QMainWindow):
         self.home_page = HomePage(self.config, self.state, self.user_kao, self.triggers, self.data)
         self.library_page = LibraryPage(self.data)
         self.custom_page = CustomKaomojiPage(self.user_kao)
-        self.trigger_page = TriggerPage(self.triggers)
+        self.trigger_page = TriggerPage(self.triggers, self.theme)
         self.search_page = SearchPage(self.data, self.user_kao, self.config.get("theme", "light"))
         self.settings_page = SettingsPage(self.config)
         self.about_page = AboutPage(self.config, self.save_config, self.open_log)
@@ -538,6 +538,7 @@ class UnifiedSettingsWindow(QMainWindow):
         self.search_page.set_theme(t)
         self.settings_page.set_theme(t)
         self.home_page.set_theme(t)
+        self.trigger_page.set_theme(t)
         if "developer" in self._pages:
             self.dev_page.set_theme(t)
         self._update_backdrop()
@@ -558,6 +559,7 @@ class UnifiedSettingsWindow(QMainWindow):
         self.settings_page.set_theme(self.theme)
         self.search_page.set_theme(self.theme)
         self.home_page.set_theme(self.theme)
+        self.trigger_page.set_theme(self.theme)
         if "developer" in self._pages:
             self.dev_page.set_theme(self.theme)
         self._update_backdrop()

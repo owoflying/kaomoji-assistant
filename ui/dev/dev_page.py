@@ -13,13 +13,14 @@ from collections import Counter
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QPushButton,
-    QPlainTextEdit, QComboBox, QCheckBox, QLineEdit, QGridLayout, QScrollArea,
-    QSizePolicy, QStyle, QStyleOptionButton,
+    QPlainTextEdit, QComboBox, QLineEdit, QGridLayout, QScrollArea,
+    QSizePolicy,
 )
-from PySide6.QtCore import Qt, Signal, QTimer, QElapsedTimer, QPoint
-from PySide6.QtGui import QFont, QFontDatabase, QPainter, QPen, QColor
+from PySide6.QtCore import Qt, Signal, QTimer, QElapsedTimer
+from PySide6.QtGui import QFont, QFontDatabase
 
 from ui.win11_theme import Theme
+from ui.fluent_checkbox import FluentCheckBox
 from core import win_utils
 
 
@@ -27,58 +28,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 _KAOMOJI_PATH = os.path.join(_ROOT, "data", "kaomoji.json")
 
 
-# ---------------------------------------------------------------------------
-# Fluent 风格复选框（显式绘制对勾，避免 Qt 样式在自定义 indicator 后丢失勾号）
-# ---------------------------------------------------------------------------
-class FluentCheckBox(QCheckBox):
-    def __init__(self, text, theme=None, parent=None):
-        super().__init__(text, parent)
-        self._theme = theme
-
-    def set_theme(self, theme):
-        self._theme = theme
-        self.update()
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        t = self._theme
-        if t is None:
-            t = Theme("light")
-
-        opt = QStyleOptionButton()
-        self.initStyleOption(opt)
-
-        # 自定义 indicator：圆角方框 + 对勾
-        ir = self.style().subElementRect(QStyle.SE_CheckBoxIndicator, opt, self)
-        checked = bool(opt.state & QStyle.State_On)
-        hovered = bool(opt.state & QStyle.State_MouseOver)
-
-        bg = QColor(t.accent) if checked else QColor(t.input_bg)
-        border = QColor(t.accent) if checked else (
-            QColor(t.accent) if hovered else QColor(t.input_border)
-        )
-        pen = QPen(border)
-        pen.setWidth(1)
-        painter.setPen(pen)
-        painter.setBrush(bg)
-        painter.drawRoundedRect(ir, 4, 4)
-
-        if checked:
-            # 手绘白色对勾
-            check_pen = QPen(QColor("#ffffff"), 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
-            painter.setPen(check_pen)
-            points = [
-                QPoint(ir.x() + 4, ir.y() + ir.height() // 2),
-                QPoint(ir.x() + ir.width() // 2 - 1, ir.y() + ir.height() - 5),
-                QPoint(ir.x() + ir.width() - 4, ir.y() + 4),
-            ]
-            painter.drawPolyline(points)
-
-        # 文本使用当前 QSS 字体/颜色绘制
-        painter.setPen(QColor(t.text))
-        cr = self.style().subElementRect(QStyle.SE_CheckBoxContents, opt, self)
-        painter.drawText(cr, Qt.AlignLeft | Qt.AlignVCenter, self.text())
+# FluentCheckBox 已抽离到 ui/fluent_checkbox.py，开发者设置与各处的勾选框统一复用。
 
 
 # ---------------------------------------------------------------------------

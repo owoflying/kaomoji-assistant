@@ -1,16 +1,18 @@
 """快捷短语页：触发词 -> 输出管理。"""
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QListWidget,
-    QListWidgetItem, QLineEdit, QDialogButtonBox, QDialog, QFrame, QCheckBox,
+    QListWidgetItem, QLineEdit, QDialogButtonBox, QDialog, QFrame,
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 
 from ui.win11_theme import kaomoji_font
+from ui.fluent_checkbox import FluentCheckBox
 
 
 class _TriggerEditDialog(QDialog):
-    def __init__(self, trigger="", output="", delete_trigger=False, parent=None):
+    def __init__(self, trigger="", output="", delete_trigger=False,
+                 theme=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("编辑快捷短语" if trigger else "新增快捷短语")
         self.setMinimumWidth(380)
@@ -29,8 +31,8 @@ class _TriggerEditDialog(QDialog):
         self.output_edit.setFont(kaomoji_font(14))
         root.addWidget(self.output_edit)
 
-        self.delete_chk = QCheckBox(
-            "应用后删除触发词（上屏颜文字时一并清掉你刚输入的这个词）")
+        self.delete_chk = FluentCheckBox(
+            "应用后删除触发词（上屏颜文字时一并清掉你刚输入的这个词）", theme)
         self.delete_chk.setChecked(bool(delete_trigger))
         root.addWidget(self.delete_chk)
 
@@ -48,11 +50,15 @@ class _TriggerEditDialog(QDialog):
 
 
 class TriggerPage(QWidget):
-    def __init__(self, triggers, parent=None):
+    def __init__(self, triggers, theme=None, parent=None):
         super().__init__(parent)
         self.triggers = triggers
+        self._theme = theme
         self._init_ui()
         self._refresh()
+
+    def set_theme(self, theme):
+        self._theme = theme
 
     def _init_ui(self):
         root = QVBoxLayout(self)
@@ -104,7 +110,7 @@ class TriggerPage(QWidget):
             self.list_w.addItem(item)
 
     def _add(self):
-        dlg = _TriggerEditDialog()
+        dlg = _TriggerEditDialog(theme=self._theme)
         if dlg.exec() == QDialog.Accepted:
             trig, out, delete = dlg.data()
             if trig and out:
@@ -123,7 +129,7 @@ class TriggerPage(QWidget):
                 out = it["output"]
                 delete = it.get("delete_trigger", False)
                 break
-        dlg = _TriggerEditDialog(trig, out, delete)
+        dlg = _TriggerEditDialog(trig, out, delete, theme=self._theme)
         if dlg.exec() == QDialog.Accepted:
             new_trig, new_out, new_delete = dlg.data()
             if new_trig and new_out:

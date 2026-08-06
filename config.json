@@ -9,5 +9,6 @@
   "opacity": 0.5,
   "page_size": 3,
   "panel_alpha": 1.0,
-  "theme": "light"
+  "theme": "light",
+  "developer_mode": false
 }

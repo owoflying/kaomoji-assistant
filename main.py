@@ -59,6 +59,7 @@ DEFAULT_CONFIG = {
         "page_size": 3,
         "autostart": False,
         "auto_hide_on_blur": True,
+        "developer_mode": False,
     }
 
 
@@ -348,7 +349,13 @@ def main():
     window.selected.connect(on_selected)
 
     # 统一主面板：整合 主页/库/我的颜文字/快捷短语/搜索/设置/关于
-    unified = UnifiedSettingsWindow(data, config, state, user_kao, triggers)
+    unified = UnifiedSettingsWindow(
+        data, config, state, user_kao, triggers,
+        save_config=save_config,
+        open_log=lambda: show_log_viewer(
+            LOG_BUFFER, parent=unified,
+            theme_name=config.get("theme", "light")),
+    )
 
     def _resume_main():
         """统一窗口关闭后恢复全局热键与自动弹出监听。"""
@@ -435,7 +442,12 @@ def main():
         lambda: show_log_viewer(LOG_BUFFER, parent=unified,
                                 theme_name=config.get("theme", "light"))
     )
+    # 日志功能整合进开发者模式：未启用时不可访问
+    log_action.setVisible(bool(config.get("developer_mode", False)))
     menu.addAction(log_action)
+    menu.aboutToShow.connect(
+        lambda: log_action.setVisible(bool(config.get("developer_mode", False)))
+    )
     menu.addSeparator()
     menu.addAction(quit_action)
     tray.setContextMenu(menu)

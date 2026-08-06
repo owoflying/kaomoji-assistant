@@ -211,13 +211,16 @@ class UnifiedSettingsWindow(QMainWindow):
     _PAD = 12          # 窗口边缘到面板内容的距离（也是阴影与缩放热区宽度）
     _TITLEBAR_H = 40
 
-    def __init__(self, data, config, state, user_kao, triggers, parent=None):
+    def __init__(self, data, config, state, user_kao, triggers,
+                 save_config=None, open_log=None, parent=None):
         super().__init__(parent)
         self.data = data
         self.config = config
         self.state = state
         self.user_kao = user_kao
         self.triggers = triggers
+        self.save_config = save_config
+        self.open_log = open_log
 
         self.theme = Theme(config.get("theme", "light"))
         self._nav_items = []
@@ -361,7 +364,7 @@ class UnifiedSettingsWindow(QMainWindow):
         self.trigger_page = TriggerPage(self.triggers)
         self.search_page = SearchPage(self.data, self.user_kao, self.config.get("theme", "light"))
         self.settings_page = SettingsPage(self.config)
-        self.about_page = AboutPage()
+        self.about_page = AboutPage(self.config, self.save_config, self.open_log)
 
         self._pages = {
             "home": self.home_page,

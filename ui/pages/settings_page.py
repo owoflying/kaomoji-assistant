@@ -56,6 +56,11 @@ class SettingsPage(QWidget):
         self._cap_keys = []
         self._listener = None
         self._pynput = None
+        # 程序化加载（构造 / apply_config）期间屏蔽预览信号：setValue/setCurrentIndex/setChecked
+        # 会触发 currentIndexChanged/toggled/valueChanged -> _emit_preview -> config_preview，
+        # 进而让统一窗口把 self.config 换成预览副本、切断与关于页共享的字典引用，导致
+        # “开发者模式”等状态在不同页之间读不一致。用户交互时此标志为 False，预览照常触发。
+        self._loading = False
         # 透明度预览节流定时器（单喷）必须在 _init_ui / refresh_from_config 之前创建：
         # 否则 refresh_from_config 里 slider.setValue 触发的 valueChanged 会调用
         # _schedule_preview -> self._preview_timer.start()，而此时属性尚不存在，
@@ -307,24 +312,30 @@ class SettingsPage(QWidget):
 
     def refresh_from_config(self):
         cfg = self.config
-        self._captured = None
-        self._update_hotkey_label(cfg.get("hotkey", "<ctrl>+<shift>+k"))
-        theme = cfg.get("theme", "light")
-        idx = self.theme_combo.findData(theme)
-        self.theme_combo.setCurrentIndex(idx if idx >= 0 else 0)
-        pa = int(float(cfg.get("panel_alpha", 0.92)) * 100)
-        self.panel_alpha_slider.setValue(pa)
-        op = int(float(cfg.get("opacity", 0.98)) * 100)
-        self.opacity_slider.setValue(op)
-        self.acrylic_check.setChecked(bool(cfg.get("acrylic", True)))
-        method = cfg.get("input_method", "clipboard")
-        midx = self.method_combo.findData(method)
-        self.method_combo.setCurrentIndex(midx if midx >= 0 else 0)
-        self.recent_spin.setValue(int(cfg.get("max_recent", 30)))
-        self.auto_check.setChecked(bool(cfg.get("auto_popup", True)))
-        self.blur_hide_check.setChecked(bool(cfg.get("auto_hide_on_blur", True)))
-        self.page_spin.setValue(int(cfg.get("page_size", 3)))
-        self.autostart_check.setChecked(autostart.is_enabled())
+        # 程序化加载：先把各控件值刷回去，但屏蔽由此引发的预览信号（见 _loading 注释）。
+        # 用 try/finally 确保即使某行抛错也恢复正常，避免后续用户交互的预览被永久屏蔽。
+        self._loading = True
+        try:
+            self._captured = None
+            self._update_hotkey_label(cfg.get("hotkey", "<ctrl>+<shift>+k"))
+            theme = cfg.get("theme", "light")
+            idx = self.theme_combo.findData(theme)
+            self.theme_combo.setCurrentIndex(idx if idx >= 0 else 0)
+            pa = int(float(cfg.get("panel_alpha", 0.92)) * 100)
+            self.panel_alpha_slider.setValue(pa)
+            op = int(float(cfg.get("opacity", 0.98)) * 100)
+            self.opacity_slider.setValue(op)
+            self.acrylic_check.setChecked(bool(cfg.get("acrylic", True)))
+            method = cfg.get("input_method", "clipboard")
+            midx = self.method_combo.findData(method)
+            self.method_combo.setCurrentIndex(midx if midx >= 0 else 0)
+            self.recent_spin.setValue(int(cfg.get("max_recent", 30)))
+            self.auto_check.setChecked(bool(cfg.get("auto_popup", True)))
+            self.blur_hide_check.setChecked(bool(cfg.get("auto_hide_on_blur", True)))
+            self.page_spin.setValue(int(cfg.get("page_size", 3)))
+            self.autostart_check.setChecked(autostart.is_enabled())
+        finally:
+            self._loading = False
 
     def _update_hotkey_label(self, hotkey_str=None):
         if self._captured is not None:
@@ -442,11 +453,15 @@ class SettingsPage(QWidget):
     # ---------- 应用 ----------
     def _schedule_preview(self):
         """透明度滑块拖动时高频触发，节流到每 40ms 一次（单喷），避免连续重绘卡顿。"""
+        if getattr(self, "_loading", False):
+            return
         self._preview_timer.start(40)
 
     def _emit_preview(self):
         """外观实时预览：把当前控件状态打包成临时配置发出去，由统一窗口立即重绘，
         但不写入磁盘、不触发主程序的保存/重注册逻辑。"""
+        if getattr(self, "_loading", False):
+            return
         preview = dict(self.config)
         preview["theme"] = self.theme_combo.currentData()
         preview["panel_alpha"] = self.panel_alpha_slider.value() / 100.0

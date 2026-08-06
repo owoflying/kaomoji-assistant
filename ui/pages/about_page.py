@@ -13,7 +13,7 @@ from PySide6.QtGui import QFont, QDesktopServices
 
 
 _CLICK_TARGET = 8          # 连续点击版本号多少次解锁开发者模式
-_CLICK_TIMEOUT_MS = 2500    # 两次点击间隔超过该值则计数清零
+_CLICK_TIMEOUT_MS = 6000    # 两次点击间隔超过该值才清零（放宽到 6s，避免正常节奏点击被误重置导致“要点好久”）
 
 
 class AboutPage(QWidget):
@@ -108,12 +108,18 @@ class AboutPage(QWidget):
             self._dev_hint.setText("开发者模式已启用")
             return
         self._click_count += 1
+        self._flash_version()  # 每次点击即时反馈，避免“点了没反应”的卡顿感
         remaining = _CLICK_TARGET - self._click_count
         if remaining <= 0:
             self._enter_developer_mode(announce=True)
             return
         self._dev_hint.setText("再点击 %d 次解锁开发者模式" % remaining)
         self._click_timer.start()   # 重置超时
+
+    def _flash_version(self):
+        """点击版本号时的轻量视觉反馈：短暂高亮，确认点击已被接收。"""
+        self._ver_label.setStyleSheet("color:#0a84ff;font-weight:bold;")
+        QTimer.singleShot(150, lambda: self._ver_label.setStyleSheet(""))
 
     def _reset_clicks(self):
         self._click_count = 0
@@ -131,3 +137,13 @@ class AboutPage(QWidget):
             self._dev_hint.setText("已启用开发者模式，可在「开发者」标签查看运行日志与实时事件流")
         else:
             self._dev_hint.setText("开发者模式已启用")
+
+    def reset_developer_mode(self):
+        """由统一窗口在「关闭开发者模式」时调用：清空本页的开发者模式状态，
+        使后续再次连点版本号能重新解锁（否则本页仍记着 developer_mode=True，
+        会直接短路点击计数、不再发出 developer_mode_enabled 信号，导致无法二次进入）。"""
+        self._click_count = 0
+        self._click_timer.stop()
+        self._dev_badge.setVisible(False)
+        self._dev_hint.setText("")
+        self.config["developer_mode"] = False

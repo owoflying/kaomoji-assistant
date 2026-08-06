@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QStackedWidget,
     QSizePolicy, QFrame, QPushButton,
 )
-from PySide6.QtCore import Qt, Signal, QPoint, QRect, QRectF, QEvent, QPropertyAnimation, QEasingCurve, QAbstractAnimation
+from PySide6.QtCore import Qt, Signal, QPoint, QRect, QRectF, QEvent, QPropertyAnimation, QEasingCurve, QAbstractAnimation, QTimer
 from PySide6.QtGui import (
     QFont, QColor, QPainter, QPainterPath, QPen, QLinearGradient,
     QRegion, QTransform,
@@ -223,6 +223,9 @@ class UnifiedSettingsWindow(QMainWindow):
         self.save_config = save_config
         self.open_log = open_log
         self.dev_refs = dev_refs or {}
+        # 开发者模式权威状态：用独立标志位，避免依赖 self.config["developer_mode"]
+        # —— 因为 _preview_appearance 会把 self.config 替换成预览副本，导致读到的标志位不可靠。
+        self._developer_mode = bool(config.get("developer_mode", False))
 
         self.theme = Theme(config.get("theme", "light"))
         self._nav_items = []
@@ -443,12 +446,28 @@ class UnifiedSettingsWindow(QMainWindow):
         self._nav_items.append(("developer", item))
 
     def _enable_dev_tab(self):
-        """关于页解锁开发者模式后实时添加「开发者」标签（无需重开窗口）。"""
+        """关于页解锁开发者模式后实时添加「开发者」标签（无需重开窗口）。
+
+        分两步：先把导航项同步加入侧边栏并立即刷新，给用户即时反馈
+        （避免“首次进入侧边栏不立即出现标签页”）；重型 DevPage 构建放到下一事件循环，
+        既避免第 8 次点击瞬间卡顿，又让侧边栏先完成布局、标签页随后淡入。
+        """
+        if "developer" in self._pages or getattr(self, "_dev_enabling", False):
+            return
+        if self._developer_mode:
+            return
+        self._dev_enabling = True
+        # 1) 同步加入导航项并高亮，侧边栏立即出现「开发者」入口
+        if not any(k == "developer" for k, _ in self._nav_items):
+            self._add_dev_nav_item(self._nav_container.layout())
+            self.sidebar.update()
+        # 2) 重型构建延后，避免点击瞬间主线程阻塞
+        QTimer.singleShot(0, self._finish_enable_dev_tab)
+
+    def _finish_enable_dev_tab(self):
+        self._dev_enabling = False
         if "developer" in self._pages:
             return
-        if not self.config.get("developer_mode", False):
-            return
-        self._add_dev_nav_item(self._nav_container.layout())
         self.dev_page = DevPage(
             self.dev_refs, self.config, self.save_config, self.theme.name)
         self.dev_page.config_applied.connect(self._on_settings_applied)
@@ -456,13 +475,16 @@ class UnifiedSettingsWindow(QMainWindow):
         self._pages["developer"] = self.dev_page
         self.content.addWidget(self.dev_page)
         self.dev_page.set_theme(self.theme)
+        self._developer_mode = True
+        self.config["developer_mode"] = True
         # 若当前停在关于页，自动跳到开发者页，让用户立刻看到入口
         self._set_page("developer")
 
     def _disable_dev_tab(self):
         """关闭开发者模式：置 config 标志为 false 并保存，实时移除标签页与导航项，跳回设置页。"""
-        if not self.config.get("developer_mode", False):
+        if not self._developer_mode:
             return
+        self._developer_mode = False
         # 先暂停开发者页后台计时器，避免移除过程中仍触发刷新
         dev = self._pages.get("developer")
         if dev is not None:
@@ -470,6 +492,9 @@ class UnifiedSettingsWindow(QMainWindow):
         self.config["developer_mode"] = False
         if self.save_config:
             self.save_config(self.config)
+        # 同步清空关于页的开发者模式状态，否则其仍记着 developer_mode=True，
+        # 再次连点版本号会被短路、不再发出 developer_mode_enabled，导致无法二次进入。
+        self.about_page.reset_developer_mode()
         # 移除导航项（保留其他项顺序）
         for i, (k, item) in enumerate(self._nav_items):
             if k == "developer":
@@ -518,6 +543,9 @@ class UnifiedSettingsWindow(QMainWindow):
         self._shadow_color = _parse_color(self.theme.shadow_color)
         self._apply_theme()
         self.settings_page.config = config
+        # 让关于页也始终指向统一窗口的权威配置字典：避免 _preview_appearance 把 self.config
+        # 换成预览副本后，关于页仍持有旧的字典引用，导致 developer_mode 在页间读不一致（二次解锁失效）。
+        self.about_page.config = config
         self.settings_page.refresh_from_config()
         self.settings_page.set_theme(self.theme)
         self.search_page.set_theme(self.theme)

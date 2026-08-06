@@ -155,6 +155,7 @@ class SettingsPage(QWidget):
         self._add_row(croot, "最大最近记录", self._recent_spin())
         self._add_row(croot, "每页候选数", self._page_spin())
         self._add_row(croot, "打字时自动弹出", self._auto_toggle())
+        self._add_row(croot, "失焦自动隐藏", self._blur_hide_toggle())
         v.addWidget(card)
 
         # 系统
@@ -279,6 +280,13 @@ class SettingsPage(QWidget):
         self.auto_check = ToggleSwitch(self._theme)
         return self.auto_check
 
+    def _blur_hide_toggle(self):
+        self.blur_hide_check = ToggleSwitch(self._theme)
+        self.blur_hide_check.setToolTip(
+            "候选条在窗口失焦或焦点离开输入框时自动收起；关闭则常驻直到手动关闭"
+        )
+        return self.blur_hide_check
+
     def _autostart_toggle(self):
         self.autostart_check = ToggleSwitch(self._theme)
         if not autostart.is_supported():
@@ -290,7 +298,7 @@ class SettingsPage(QWidget):
     def set_theme(self, theme_obj):
         """主题切换时同步开关配色，并强制刷新样式表。"""
         self._theme = theme_obj
-        for t in (self.acrylic_check, self.auto_check, self.autostart_check):
+        for t in (self.acrylic_check, self.auto_check, self.autostart_check, self.blur_hide_check):
             t.update_theme(theme_obj)
         # 强制 Qt 重新评估该分支的样式，解决部分控件换主题后未刷新外观的问题
         self.style().unpolish(self)
@@ -314,6 +322,7 @@ class SettingsPage(QWidget):
         self.method_combo.setCurrentIndex(midx if midx >= 0 else 0)
         self.recent_spin.setValue(int(cfg.get("max_recent", 30)))
         self.auto_check.setChecked(bool(cfg.get("auto_popup", True)))
+        self.blur_hide_check.setChecked(bool(cfg.get("auto_hide_on_blur", True)))
         self.page_spin.setValue(int(cfg.get("page_size", 3)))
         self.autostart_check.setChecked(autostart.is_enabled())
 
@@ -455,6 +464,7 @@ class SettingsPage(QWidget):
         new_cfg["input_method"] = self.method_combo.currentData()
         new_cfg["max_recent"] = self.recent_spin.value()
         new_cfg["auto_popup"] = self.auto_check.isChecked()
+        new_cfg["auto_hide_on_blur"] = self.blur_hide_check.isChecked()
         new_cfg["page_size"] = self.page_spin.value()
         new_cfg["autostart"] = self.autostart_check.isChecked()
         self.config = new_cfg

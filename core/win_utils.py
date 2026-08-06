@@ -521,7 +521,10 @@ def get_focused_text(max_len=200):
         tid = user32.GetWindowThreadProcessId(fg, ctypes.byref(wintypes.DWORD(0)))
         if not user32.GetGUIThreadInfo(tid, ctypes.byref(gui)):
             return ""
-        hwnd = gui.hwndFocus or gui.hwndCaret or fg
+        # 仅当焦点落在真正的可编辑控件（hwndFocus / hwndCaret）时才读取；
+        # 两者皆空说明焦点不在编辑区（在桌面 / 窗口自身），不要回退去读顶层窗口标题，
+        # 否则标题文本会进入情绪检测，可能误触发候选条自动弹出。
+        hwnd = gui.hwndFocus or gui.hwndCaret
         if not hwnd:
             return ""
 

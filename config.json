@@ -1,16 +1,13 @@
 {
-  "acrylic": true,
+  "acrylic": false,
   "auto_hide_on_blur": true,
   "auto_popup": true,
   "autostart": true,
   "hotkey": "<ctrl>+<shift>+k",
   "input_method": "direct",
   "max_recent": 30,
-  "max_visible_items": 8,
-  "panel_alpha": 0.92,
-  "opacity": 1.0,
+  "opacity": 0.5,
   "page_size": 3,
-  "theme": "light",
-  "window_height": 180,
-  "window_width": 620
+  "panel_alpha": 1.0,
+  "theme": "light"
 }

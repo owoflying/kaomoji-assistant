@@ -55,10 +55,11 @@ DEFAULT_CONFIG = {
     "acrylic": True,
     "input_method": "clipboard",
     "max_recent": 30,
-    "auto_popup": True,
-    "page_size": 3,
-    "autostart": False,
-}
+        "auto_popup": True,
+        "page_size": 3,
+        "autostart": False,
+        "auto_hide_on_blur": True,
+    }
 
 
 def load_config():

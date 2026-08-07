@@ -120,16 +120,18 @@ class LogPanel(QWidget):
 # 事件流面板（订阅 DevEventBus）
 # ---------------------------------------------------------------------------
 class EventStream(QWidget):
-    def __init__(self, bus, parent=None):
+    def __init__(self, bus, theme_name="light", parent=None):
         super().__init__(parent)
         self._bus = bus
         self._paused = False
+        self._theme = Theme(theme_name)
         self._init_ui()
         if bus is not None:
             bus.event.connect(self.on_event)
 
     def set_theme(self, theme):
         self._theme = theme
+        self._apply_style()
 
     def _init_ui(self):
         root = QVBoxLayout(self)
@@ -150,11 +152,16 @@ class EventStream(QWidget):
         mono = "Consolas" if "Consolas" in QFontDatabase.families() else "Courier New"
         self._text.setFont(QFont(mono, 11))
         self._text.setMinimumHeight(110)
-        self._text.setStyleSheet(
-            "QPlainTextEdit{background:#ffffff;border:1px solid #d0d0d0;"
-            "border-radius:8px;padding:8px 10px;color:#222;}"
-        )
+        self._apply_style()
         root.addWidget(self._text, 1)
+
+    def _apply_style(self):
+        t = self._theme
+        self._text.setStyleSheet(
+            "QPlainTextEdit{background:%s;border:1px solid %s;border-radius:8px;"
+            "padding:8px 10px;color:%s;}"
+            % (("#2a2a2a" if t.dark else "#ffffff"), t.card_border, t.text)
+        )
 
     def _toggle_pause(self):
         self._paused = not self._paused
@@ -210,10 +217,16 @@ class DevPage(QWidget):
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        scroll.setStyleSheet("background:transparent;border:none;")
         inner = QWidget()
         inner.setObjectName("SettingsBody")
-        inner.setStyleSheet("background:transparent;")
+        self._scroll = scroll
+        self._inner = inner
+        # 关键：给滚动区/内容体应用「完整」主题 QSS，而不是只设 background:transparent。
+        # 仅设透明背景会让 Qt 切断从统一窗口根继承的全局 QSS 级联，导致其内部
+        # AccentButton/复选框等子控件收不到样式（典型：浅色模式下「应用并热生效」按钮
+        # 白底白字不可见）。完整 QSS 已含 QScrollArea/SettingsBody 的透明规则，
+        # 透出亚克力不受影响，同时子控件样式完整。
+        self._apply_content_style()
         body = QVBoxLayout(inner)
         body.setContentsMargins(28, 22, 28, 28)
         body.setSpacing(16)
@@ -242,6 +255,20 @@ class DevPage(QWidget):
         body.addWidget(self._build_hotkey_card())
         body.addStretch(1)
 
+    def _apply_content_style(self):
+        """给滚动区/内容体应用「完整」主题 QSS（而非只设透明背景）。
+
+        仅设 background:transparent 会让 Qt 切断从统一窗口根继承的全局 QSS 级联，
+        导致其内部 AccentButton/复选框等子控件收不到样式（典型：浅色模式下
+        「应用并热生效」按钮白底白字不可见）。完整 QSS 已含 QScrollArea/SettingsBody
+        的透明规则，透出亚克力不受影响，同时子控件样式完整。
+        """
+        if not hasattr(self, "_scroll") or not hasattr(self, "_inner"):
+            return
+        ss = self._theme.style_sheet()
+        self._scroll.setStyleSheet(ss)
+        self._inner.setStyleSheet(ss)
+
     def _card(self, title):
         card = QFrame()
         card.setObjectName("Card")
@@ -257,7 +284,7 @@ class DevPage(QWidget):
     # ---- 1. 事件流 + 日志（可观测性） ----
     def _build_event_card(self):
         card, v = self._card("实时事件流 / 运行日志")
-        self._stream = EventStream(self._refs.get("bus"))
+        self._stream = EventStream(self._refs.get("bus"), self._theme.name)
         self._stream.setMinimumHeight(150)
         self._stream.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         v.addWidget(self._stream)
@@ -475,6 +502,7 @@ class DevPage(QWidget):
 
     def set_theme(self, theme):
         self._theme = theme
+        self._apply_content_style()
         if hasattr(self, "_log_panel"):
             self._log_panel.set_theme(theme)
         if hasattr(self, "_stream"):

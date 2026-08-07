@@ -372,7 +372,7 @@ class UnifiedSettingsWindow(QMainWindow):
         self.trigger_page = TriggerPage(self.triggers, self.theme)
         self.search_page = SearchPage(self.data, self.user_kao, self.config.get("theme", "light"))
         self.settings_page = SettingsPage(self.config)
-        self.about_page = AboutPage(self.config, self.save_config, self.open_log)
+        self.about_page = AboutPage(self.config, self.state, self.save_config, self.open_log)
 
         self._pages = {
             "home": self.home_page,

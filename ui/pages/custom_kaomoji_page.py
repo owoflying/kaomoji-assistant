@@ -1,14 +1,39 @@
-"""我的颜文字页：分组 + 条目管理（增删改、标签）。"""
+"""我的颜文字页：分组 + 条目管理（增删改、标签、拖拽排序、导入导出备份）。"""
+import json
+from datetime import datetime
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QLineEdit, QDialogButtonBox, QDialog,
-    QMessageBox, QFrame,
+    QMessageBox, QFrame, QFileDialog,
 )
-from ui.fluent_combobox import FluentComboBox
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 
+from ui.fluent_combobox import FluentComboBox
 from ui.win11_theme import kaomoji_font
+
+
+class _KaoList(QListWidget):
+    """支持拖拽重排的列表；拖放结束时通过 on_drop(dragged_text, target_text) 回调。"""
+
+    def __init__(self, on_drop, parent=None):
+        super().__init__(parent)
+        self._on_drop = on_drop
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDragDropMode(QListWidget.InternalMove)
+        self.setSelectionMode(QListWidget.SingleSelection)
+        self.setDefaultDropAction(Qt.MoveAction)
+
+    def dropEvent(self, event):
+        tgt = self.itemAt(event.pos())
+        src = self.currentItem()
+        if src is not None and tgt is not None and src != tgt:
+            self._on_drop(src.data(Qt.UserRole), tgt.data(Qt.UserRole))
+        event.accept()
+        # 不直接调用 super().dropEvent：底层数据已在 _on_drop 里重排，
+        # 随后 _refresh_list 按新顺序重建列表，避免 Qt 内部移动与数据重排双重处理。
 
 
 class _ItemEditDialog(QDialog):
@@ -60,6 +85,7 @@ class CustomKaomojiPage(QWidget):
     def __init__(self, user_kao, parent=None):
         super().__init__(parent)
         self.user_kao = user_kao
+        self._tag_filter = None
         self._init_ui()
         self._refresh_groups()
 
@@ -71,6 +97,20 @@ class CustomKaomojiPage(QWidget):
         title = QLabel("我的颜文字")
         title.setObjectName("PageTitle")
         root.addWidget(title)
+
+        # 迁移工具栏：导出 / 导入 / 备份
+        tool_row = QHBoxLayout()
+        self.export_btn = QPushButton("导出")
+        self.import_btn = QPushButton("导入")
+        self.backup_btn = QPushButton("备份")
+        self.export_btn.clicked.connect(self._export)
+        self.import_btn.clicked.connect(self._import)
+        self.backup_btn.clicked.connect(self._backup)
+        tool_row.addWidget(self.export_btn)
+        tool_row.addWidget(self.import_btn)
+        tool_row.addWidget(self.backup_btn)
+        tool_row.addStretch(1)
+        root.addLayout(tool_row)
 
         # 分组卡片
         grp_card = QFrame()
@@ -89,6 +129,12 @@ class CustomKaomojiPage(QWidget):
         self.del_group_btn.clicked.connect(self._del_group)
         grp_root.addWidget(self.new_group_btn)
         grp_root.addWidget(self.del_group_btn)
+        grp_root.addSpacing(16)
+        grp_root.addWidget(QLabel("标签"))
+        self.tag_combo = FluentComboBox(None)
+        self.tag_combo.setMinimumWidth(140)
+        self.tag_combo.currentIndexChanged.connect(self._on_tag_filter)
+        grp_root.addWidget(self.tag_combo)
         root.addWidget(grp_card)
 
         # 列表卡片
@@ -97,7 +143,7 @@ class CustomKaomojiPage(QWidget):
         list_root = QVBoxLayout(list_card)
         list_root.setContentsMargins(12, 12, 12, 12)
         list_root.setSpacing(8)
-        self.list_w = QListWidget()
+        self.list_w = _KaoList(on_drop=self._on_drop_reorder)
         self.list_w.itemDoubleClicked.connect(self._edit_item)
         list_root.addWidget(self.list_w, 1)
         op_row = QHBoxLayout()
@@ -122,17 +168,56 @@ class CustomKaomojiPage(QWidget):
         if cur and self.group_combo.findText(cur) >= 0:
             self.group_combo.setCurrentText(cur)
         self.group_combo.blockSignals(False)
+        self._refresh_tags()
+        self._refresh_list()
+
+    def _refresh_tags(self):
+        self.tag_combo.blockSignals(True)
+        cur = self.tag_combo.currentText()
+        self.tag_combo.clear()
+        self.tag_combo.addItem("（全部）", None)
+        tags = set()
+        for it in self.user_kao.items:
+            for t in it.get("tags", []):
+                tags.add(t)
+        for t in sorted(tags):
+            self.tag_combo.addItem(t, t)
+        idx = self.tag_combo.findText(cur)
+        if cur and idx >= 0:
+            self.tag_combo.setCurrentIndex(idx)
+        else:
+            self.tag_combo.setCurrentIndex(0)
+            self._tag_filter = None
+        self.tag_combo.blockSignals(False)
+
+    def _on_tag_filter(self, index):
+        self._tag_filter = self.tag_combo.itemData(index)
         self._refresh_list()
 
     def _refresh_list(self):
-        group = self.group_combo.currentText()
         self.list_w.clear()
-        for text in self.user_kao.items_for_group(group):
-            tags = self.user_kao.tags_of(text)
-            item = QListWidgetItem(text if not tags else "%s    [%s]" % (text, ", ".join(tags)))
-            item.setData(Qt.UserRole, text)
-            item.setFont(kaomoji_font(14))
-            self.list_w.addItem(item)
+        if self._tag_filter:
+            # 跨分组：列出带该标签的所有颜文字，并标注所属分组
+            for it in self.user_kao.items:
+                if self._tag_filter in it.get("tags", []):
+                    text = it["text"]
+                    label = "%s    （分组：%s）" % (text, it.get("group", "默认"))
+                    item = QListWidgetItem(label)
+                    item.setData(Qt.UserRole, text)
+                    item.setFont(kaomoji_font(14))
+                    self.list_w.addItem(item)
+        else:
+            group = self.group_combo.currentText()
+            for text in self.user_kao.items_for_group(group):
+                tags = self.user_kao.tags_of(text)
+                item = QListWidgetItem(text if not tags else "%s    [%s]" % (text, ", ".join(tags)))
+                item.setData(Qt.UserRole, text)
+                item.setFont(kaomoji_font(14))
+                self.list_w.addItem(item)
+
+    def _on_drop_reorder(self, dragged, target):
+        self.user_kao.move_item(dragged, target)
+        self._refresh_list()
 
     def _new_group(self):
         name, ok = _text_input(self, "新建分组", "分组名称：")
@@ -180,6 +265,55 @@ class CustomKaomojiPage(QWidget):
         text = self.list_w.item(row).data(Qt.UserRole)
         self.user_kao.remove_item(text)
         self._refresh_groups()
+
+    # ---------- 迁移：导出 / 导入 / 备份 ----------
+    def _export(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出颜文字库", "user_kaomoji.json", "JSON 文件 (*.json)")
+        if not path:
+            return
+        payload = {
+            "app": "kaomoji-assistant",
+            "kind": "user_kaomoji",
+            "version": 1,
+            "exported_at": datetime.now().isoformat(timespec="seconds"),
+            "data": self.user_kao.export_dict(),
+        }
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+            QMessageBox.information(self, "已导出", "已导出到：\n%s" % path)
+        except Exception as e:
+            QMessageBox.warning(self, "导出失败", str(e))
+
+    def _import(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "导入颜文字库", "", "JSON 文件 (*.json)")
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            data = payload.get("data") if isinstance(payload, dict) and "data" in payload else payload
+            groups = data.get("groups") if isinstance(data, dict) else None
+            items = data.get("items") if isinstance(data, dict) else None
+            if not isinstance(items, list):
+                QMessageBox.warning(self, "格式错误", "该文件不是有效的颜文字库备份。")
+                return
+            added, updated, skipped = self.user_kao.import_data(groups, items)
+            self._refresh_groups()
+            QMessageBox.information(
+                self, "导入完成",
+                "新增 %d 条，更新 %d 条，跳过 %d 条无效数据。" % (added, updated, skipped))
+        except Exception as e:
+            QMessageBox.warning(self, "导入失败", str(e))
+
+    def _backup(self):
+        dest = self.user_kao.backup()
+        if dest:
+            QMessageBox.information(self, "已备份", "已备份到：\n%s" % dest)
+        else:
+            QMessageBox.warning(self, "备份失败", "无法写入备份文件。")
 
 
 def _text_input(parent, title, label):

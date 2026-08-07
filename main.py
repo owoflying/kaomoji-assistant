@@ -365,6 +365,8 @@ def main():
 
     def on_selected(text, ctx=None):
         method = config.get("input_method", "clipboard")
+        # 统计：任何来源的插入都在此汇聚，记录一次使用计数
+        state.record_usage(text)
         # 先告知监听器「这段文本是我们自己送进去的」：
         # 进入静默期 + 后续采样时把它剔除，否则颜文字里的 "?"「哇」等字符
         # 会被当成用户新输入的情绪词，导致上屏后又弹一次。

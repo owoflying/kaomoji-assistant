@@ -11,6 +11,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QUrl, QTimer, QEvent, Signal
 from PySide6.QtGui import QFont, QDesktopServices
 
+from ui.win11_theme import kaomoji_font
+
 
 _CLICK_TARGET = 8          # 连续点击版本号多少次解锁开发者模式
 _CLICK_TIMEOUT_MS = 6000    # 两次点击间隔超过该值才清零（放宽到 6s，避免正常节奏点击被误重置导致“要点好久”）
@@ -19,9 +21,10 @@ _CLICK_TIMEOUT_MS = 6000    # 两次点击间隔超过该值才清零（放宽�
 class AboutPage(QWidget):
     developer_mode_enabled = Signal()  # 解锁开发者模式后实时通知主窗口添加标签
 
-    def __init__(self, config=None, save_config=None, open_log=None, parent=None):
+    def __init__(self, config=None, state=None, save_config=None, open_log=None, parent=None):
         super().__init__(parent)
         self.config = config or {}
+        self._state = state
         self._save_config = save_config
         self._open_log = open_log
         self._click_count = 0
@@ -89,6 +92,42 @@ class AboutPage(QWidget):
         croot.addWidget(thanks)
 
         root.addWidget(card)
+
+        # 使用统计卡片
+        if self._state is not None:
+            stat_card = QFrame()
+            stat_card.setObjectName("Card")
+            scard = QVBoxLayout(stat_card)
+            scard.setContentsMargins(24, 22, 24, 22)
+            scard.setSpacing(10)
+
+            stitle = QLabel("使用统计")
+            stitle.setObjectName("PageTitle")
+            scard.addWidget(stitle)
+
+            stotal = QLabel("累计插入：%d 次" % self._state.total_inserts())
+            stotal.setObjectName("BodyText")
+            scard.addWidget(stotal)
+
+            top = self._state.top_usage(10)
+            if top:
+                for text, cnt in top:
+                    row = QHBoxLayout()
+                    tl = QLabel(text)
+                    tl.setFont(kaomoji_font(14))
+                    cl = QLabel("%d 次" % cnt)
+                    cl.setObjectName("Caption")
+                    row.addWidget(tl)
+                    row.addStretch(1)
+                    row.addWidget(cl)
+                    scard.addLayout(row)
+            else:
+                empty = QLabel("还没有使用记录，去插入几个颜文字吧～")
+                empty.setObjectName("Caption")
+                scard.addWidget(empty)
+
+            root.addWidget(stat_card)
+
         root.addStretch(1)
 
         # 若已处于开发者模式，直接进入启用态

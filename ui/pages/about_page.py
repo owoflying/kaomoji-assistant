@@ -7,6 +7,7 @@
 """
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QFrame, QPushButton, QHBoxLayout,
+    QScrollArea,
 )
 from PySide6.QtCore import Qt, QUrl, QTimer, QEvent, Signal
 from PySide6.QtGui import QFont, QDesktopServices
@@ -42,6 +43,23 @@ class AboutPage(QWidget):
         title = QLabel("关于")
         title.setObjectName("PageTitle")
         root.addWidget(title)
+
+        # 把卡片内容放进可滚动区域：统计行数多时会超出可用高度，
+        # 没有滚动会导致布局被压缩、文字被截断（截图中“使用统计”标题几乎完全消失）。
+        scroll = QScrollArea()
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        # 让滚动区与视口透明，透出内容区表面背景
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        scroll.viewport().setStyleSheet("background: transparent;")
+
+        body = QWidget()
+        body.setObjectName("AboutBody")
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(22)
 
         card = QFrame()
         card.setObjectName("Card")
@@ -91,7 +109,7 @@ class AboutPage(QWidget):
         thanks.setObjectName("Caption")
         croot.addWidget(thanks)
 
-        root.addWidget(card)
+        body_layout.addWidget(card)
 
         # 使用统计卡片
         if self._state is not None:
@@ -127,9 +145,11 @@ class AboutPage(QWidget):
                 empty.setObjectName("Caption")
                 scard.addWidget(empty)
 
-            root.addWidget(stat_card)
+            body_layout.addWidget(stat_card)
 
-        root.addStretch(1)
+        body_layout.addStretch(1)
+        scroll.setWidget(body)
+        root.addWidget(scroll)
 
         # 若已处于开发者模式，直接进入启用态
         if self.config.get("developer_mode", False):

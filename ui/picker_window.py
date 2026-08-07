@@ -218,10 +218,10 @@ class PickerWindow(QWidget):
 
     def _apply_window_material(self):
         hwnd = int(self.winId())
-        if self.config.get("acrylic", True):
-            apply_backdrop(hwnd, DWMSBT_TRANSIENTWINDOW)
-        else:
-            apply_backdrop(hwnd, DWMSBT_NONE)
+        # 候选条不使用 DWM 系统亚克力：Win11 上 DWM 亚克力在窗口首帧极易闪现
+        # 系统深色/黑色，尤其在应用主题为浅色但系统主题为深色时。候选条已由
+        # paintEvent 自绘半透背景，关闭系统模糊可避免闪一下深色候选栏。
+        apply_backdrop(hwnd, DWMSBT_NONE)
         apply_dark_mode(hwnd, self.config.get("theme", "light") == "dark")
 
     def _apply_style(self):

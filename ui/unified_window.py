@@ -234,6 +234,9 @@ class UnifiedSettingsWindow(QMainWindow):
         self._acrylic_on = bool(config.get("acrylic", True)) and _has_dwm
         self._shadow_color = _parse_color(self.theme.shadow_color)
         self._theme_ss = ""          # 缓存当前主题的完整 QSS，供 _refresh_content_sheet 复用
+        # 窗口状态持久化：关闭时记住是否最大化，下次 show 时恢复
+        self._saved_maximized = False
+        self._normal_geometry = None
 
         self._init_window()
         self._init_ui()
@@ -626,17 +629,20 @@ class UnifiedSettingsWindow(QMainWindow):
         self._update_max_btn_glyph()
         self.home_page.refresh_stats()
 
+    def show(self):
+        """重写 show：若上次关闭时处于最大化，则直接以最大化状态显示，
+        避免先显示普通尺寸再切最大化的闪烁，也避免状态错乱。"""
+        if not self.isVisible() and getattr(self, "_saved_maximized", False):
+            self._saved_maximized = False
+            self.showMaximized()
+        else:
+            super().show()
+
     def closeEvent(self, e):
-        # 关闭前若处于最大化，先恢复普通状态。
-        # 无边框窗口在最大化时直接隐藏/再显示，Qt 容易把最大化状态与几何尺寸搞混
-        # （再次 show 后 isMaximized() 仍为 True 但窗口尺寸已乱），
-        # 表现为“再次最大化/恢复时卡顿、窗口无法移动”。
-        # 关闭时强制恢复正常，下次打开从普通状态开始，避免状态残留。
-        if self.isMaximized():
-            try:
-                self.showNormal()
-            except Exception:
-                pass
+        # 保存窗口状态，供下次 show() 恢复。保留用户的最大化习惯。
+        self._saved_maximized = self.isMaximized()
+        if not self.isMaximized() and self._normal_geometry is None:
+            self._normal_geometry = self.geometry()
         self.finished.emit()
         super().closeEvent(e)
 
@@ -656,7 +662,13 @@ class UnifiedSettingsWindow(QMainWindow):
     def _toggle_maximize(self):
         if self.isMaximized():
             self.showNormal()
+            # 无边框窗口 showNormal 后几何可能不正确，用保存的普通几何兜底
+            geom = getattr(self, "_normal_geometry", None)
+            if geom is not None and geom.isValid():
+                self.setGeometry(geom)
         else:
+            # 最大化前保存普通几何，供恢复时使用
+            self._normal_geometry = self.geometry()
             self.showMaximized()
 
     def _update_max_btn_glyph(self):

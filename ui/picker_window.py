@@ -20,7 +20,7 @@ import random
 import time
 
 from PySide6.QtWidgets import (
-    QWidget, QHBoxLayout, QLabel, QPushButton, QLayout, QGraphicsOpacityEffect,
+    QWidget, QHBoxLayout, QLabel, QPushButton, QLayout,
 )
 from PySide6.QtCore import (
     Qt, Signal, QEvent, QTimer, QPoint, QPropertyAnimation, QEasingCurve,
@@ -183,13 +183,21 @@ class PickerWindow(QWidget):
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
         self.setFocusPolicy(Qt.NoFocus)
         self.winId()
-        # 淡入淡出：用透明通道做动画
-        self._opacity_fx = QGraphicsOpacityEffect(self)
-        # 初始透明：showEvent 会负责淡入。设为 1.0 时，show() 到 showEvent 之间
-        # 可能先渲染一帧，若此时主题/材质尚未就绪就会闪一下（浅色模式闪深色）。
-        self._opacity_fx.setOpacity(0.0)
-        self.setGraphicsEffect(self._opacity_fx)
-        self._anim = QPropertyAnimation(self._opacity_fx, b"opacity", self)
+        # 淡入淡出：动画「顶层窗口的 windowOpacity」，而不是 QGraphicsOpacityEffect。
+        #
+        # 为什么必须换成 windowOpacity（这才是「闪一下深色候选栏」的根治点）：
+        #   候选条的 HWND 全程常驻、只 ShowWindow/HideWindow，不销毁重建。
+        #   它是 WA_TranslucentBackground + FramelessWindowHint 的分层窗口
+        #   （WS_EX_LAYERED，Qt 用 UpdateLayeredWindow 贴图）。ShowWindow 时
+        #   Windows 会先把「上一次合成好的那张位图」原样贴出来，Qt 的重绘要
+        #   晚一帧才到——如果隐藏期间主题从深色切成了浅色，这一帧贴出来的
+        #   就是旧的深色候选条，于是看到「浅色模式下闪一下深色」。
+        #   QGraphicsOpacityEffect 只作用于 Qt 自绘内容，管不到这张陈旧位图；
+        #   而 windowOpacity 在 Qt/Windows 里走的是 UpdateLayeredWindow 的全局
+        #   alpha，能在 show() 之前就把整个原生窗口压成完全透明，陈旧帧自然
+        #   不可见。淡入由 showEvent 在首帧重绘之后再启动。
+        self.setWindowOpacity(0.0)
+        self._anim = QPropertyAnimation(self, b"windowOpacity", self)
         self._anim.setDuration(130)
         self._anim.setEasingCurve(QEasingCurve.OutCubic)
         self._anim.finished.connect(self._on_anim_finished)
@@ -215,18 +223,35 @@ class PickerWindow(QWidget):
             self._rebuild_chips()
             self.set_candidates(self.items)
         self._apply_config_visuals()
+        if self.isVisible():
+            self.repaint()               # 可见时立刻用新主题重绘，别等下一帧
+        else:
+            # 隐藏时改主题：分层窗口里还留着旧主题那张位图，且无法重绘。
+            # 压成全透明，确保下次 ShowWindow 贴出的旧帧完全不可见。
+            self._anim.stop()
+            self.setWindowOpacity(0.0)
 
     def _apply_window_material(self):
+        """按配置设置 DWM 材质与沉浸式深色标记。
+
+        说明：上一版曾把 backdrop 硬写成 DWMSBT_NONE 想「关掉亚克力去闪烁」，
+        但 DWMWA_SYSTEMBACKDROP_TYPE(38) 是 **Win11 才有** 的属性，Win10 上
+        DwmSetWindowAttribute 直接失败、整个调用是个 no-op —— 所以那个改动在
+        Win10 上根本不可能影响闪烁，白白丢了 Win11 的亚克力。这里恢复按配置
+        走，闪烁改由 windowOpacity 方案根治（见 _init_window / _prepare_show）。
+        """
         hwnd = int(self.winId())
-        # 候选条不使用 DWM 系统亚克力：Win11 上 DWM 亚克力在窗口首帧极易闪现
-        # 系统深色/黑色，尤其在应用主题为浅色但系统主题为深色时。候选条已由
-        # paintEvent 自绘半透背景，关闭系统模糊可避免闪一下深色候选栏。
-        apply_backdrop(hwnd, DWMSBT_NONE)
+        if self.config.get("acrylic", True):
+            apply_backdrop(hwnd, DWMSBT_TRANSIENTWINDOW)
+        else:
+            apply_backdrop(hwnd, DWMSBT_NONE)
         apply_dark_mode(hwnd, self.config.get("theme", "light") == "dark")
 
     def _apply_style(self):
-        pal = PALETTES.get(self.config.get("theme", "light"), PALETTES["light"])
+        theme = self.config.get("theme", "light")
+        pal = PALETTES.get(theme, PALETTES["light"])
         self._palette = pal
+        self._applied_theme = theme      # 供 _prepare_show 判断主题是否已同步
         self.setStyleSheet(_style(pal))
         r, g, b = [int(x) for x in pal["bg"].split(",")]
         # 不透明度与亚克力解耦：亚克力只负责底层玻璃质感，透明度永远听配置的
@@ -528,11 +553,26 @@ class PickerWindow(QWidget):
         if not self._hiding:
             return
         self._anim.stop()
+        self.setWindowOpacity(0.0)
         self._hiding = False
         self._emotion = None
         self._caret = False
         self._closing_enabled = False
         super().hide()
+
+    def _prepare_show(self):
+        """show() 之前的统一准备：压成全透明 + 确认主题已同步。
+
+        必须在 show() **之前** 把 windowOpacity 归零：常驻 HWND 的分层窗口在
+        ShowWindow 时会先贴出上一次合成的位图（可能是旧主题的深色候选条），
+        Qt 的重绘要晚一帧。归零后这一帧完全不可见，淡入由 showEvent 负责。
+        """
+        self._anim.stop()
+        self.setWindowOpacity(0.0)
+        # 兜底：万一 config 被外部直接改过（没走 apply_config），这里补一次同步，
+        # 保证「显示出来的第一帧」就是当前主题，不会先浅后深或先深后浅。
+        if self.config.get("theme", "light") != getattr(self, "_applied_theme", None):
+            self._apply_config_visuals()
 
     def toggle(self):
         if self.isVisible() and not self._hiding:
@@ -549,6 +589,7 @@ class PickerWindow(QWidget):
         self._delete_trigger = False
         self.set_candidates(self._manual_items())
         self._saved_foreground = win_utils.get_foreground_hwnd()
+        self._prepare_show()
         self.show()
 
     def show_for_emotion(self, emotion):
@@ -568,6 +609,7 @@ class PickerWindow(QWidget):
         self._delete_trigger = False
         self.set_candidates(items)
         self._saved_foreground = win_utils.get_foreground_hwnd()
+        self._prepare_show()
         self.show()
         self.emotion_shown.emit(emotion)
 
@@ -586,6 +628,7 @@ class PickerWindow(QWidget):
         self._delete_trigger = delete_after
         self.set_candidates([text])
         self._saved_foreground = win_utils.get_foreground_hwnd()
+        self._prepare_show()
         self.show()
 
     def showEvent(self, e):
@@ -603,14 +646,25 @@ class PickerWindow(QWidget):
         # 必须等真正见过一次可编辑焦点后再武装，否则面板会自己秒关。
         self._had_editable = self._emotion is not None
         self._focus_timer.start()
-        # 淡入
+        # 淡入：**延后到下一轮事件循环**再开始。
+        # showEvent 在原生 ShowWindow 之前送达，此刻 Qt 还没画过新一帧；
+        # 若立刻起动画，前几毫秒会以渐增的 alpha 把「上一次合成的旧位图」
+        # （可能是切主题前的深色候选条）透出来。先保持全透明让 Qt 完成首帧
+        # 重绘，再淡入，就彻底看不到旧帧了。
         self._anim.stop()
-        self._opacity_fx.setOpacity(0.0)
+        self.setWindowOpacity(0.0)
+        QTimer.singleShot(0, self._start_fade_in)
+        super().showEvent(e)
+        self.isVisibleChanged.emit(True)
+
+    def _start_fade_in(self):
+        """首帧重绘之后再启动淡入（见 showEvent 注释）。"""
+        if self._hiding or not self.isVisible():
+            return
+        self._anim.stop()
         self._anim.setStartValue(0.0)
         self._anim.setEndValue(1.0)
         self._anim.start()
-        super().showEvent(e)
-        self.isVisibleChanged.emit(True)
 
     def hideEvent(self, e):
         super().hideEvent(e)
@@ -622,6 +676,8 @@ class PickerWindow(QWidget):
             self._focus_timer.stop()
             self._emotion = None
             self._closing_enabled = False
+            self._anim.stop()
+            self.setWindowOpacity(0.0)
             super().hide()
             return
         if self._hiding:
@@ -631,7 +687,7 @@ class PickerWindow(QWidget):
         self._focus_timer.stop()
         # 淡出后再真正隐藏
         self._anim.stop()
-        self._anim.setStartValue(self._opacity_fx.opacity())
+        self._anim.setStartValue(self.windowOpacity())
         self._anim.setEndValue(0.0)
         self._anim.start()
 
@@ -657,6 +713,9 @@ class PickerWindow(QWidget):
         self._hiding = False
         self._emotion = None
         self._closing_enabled = False
+        # 隐藏前显式归零：保证「最后一张合成位图」是全透明的，
+        # 下次 ShowWindow 即便先贴旧帧也看不见任何东西。
+        self.setWindowOpacity(0.0)
         super().hide()
 
     def event(self, e):

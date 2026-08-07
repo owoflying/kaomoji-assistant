@@ -234,9 +234,11 @@ class UnifiedSettingsWindow(QMainWindow):
         self._acrylic_on = bool(config.get("acrylic", True)) and _has_dwm
         self._shadow_color = _parse_color(self.theme.shadow_color)
         self._theme_ss = ""          # 缓存当前主题的完整 QSS，供 _refresh_content_sheet 复用
-        # 窗口状态持久化：关闭时记住是否最大化，下次 show 时恢复
+        # 窗口状态持久化：关闭/隐藏时记住是否最大化，下次 show 时恢复
         self._saved_maximized = False
         self._normal_geometry = None
+        # 最小化前是否处于最大化（任务栏点击 = 最小化 -> 还原，需保住最大化）
+        self._max_before_min = False
 
         self._init_window()
         self._init_ui()
@@ -630,21 +632,61 @@ class UnifiedSettingsWindow(QMainWindow):
         self.home_page.refresh_stats()
 
     def show(self):
-        """重写 show：若上次关闭时处于最大化，则直接以最大化状态显示，
-        避免先显示普通尺寸再切最大化的闪烁，也避免状态错乱。"""
-        if not self.isVisible() and getattr(self, "_saved_maximized", False):
-            self._saved_maximized = False
-            self.showMaximized()
-        else:
+        """重写 show：若上次关闭时处于最大化，则直接以最大化状态显示。
+
+        依赖 hideEvent 里已把 Qt 侧窗口状态清成 WindowNoState，
+        这样这里的 showMaximized() 一定是一次「真实的状态跃迁」，
+        Qt 与原生 WINDOWPLACEMENT 保持同步（详见 _remember_and_reset_state）。
+        """
+        if self.isVisible():
             super().show()
+            return
+        if getattr(self, "_saved_maximized", False):
+            self.showMaximized()
+            return
+        geom = getattr(self, "_normal_geometry", None)
+        if geom is not None and geom.isValid():
+            self.setGeometry(geom)
+        super().show()
 
     def closeEvent(self, e):
-        # 保存窗口状态，供下次 show() 恢复。保留用户的最大化习惯。
-        self._saved_maximized = self.isMaximized()
-        if not self.isMaximized() and self._normal_geometry is None:
-            self._normal_geometry = self.geometry()
         self.finished.emit()
         super().closeEvent(e)
+        # 窗口状态的保存/清零统一放在 hideEvent：close() 与 main.py 里的
+        # hide()（选中颜文字后收起面板）两条路径都会经过它，不会漏。
+
+    def hideEvent(self, e):
+        super().hideEvent(e)
+        self._remember_and_reset_state()
+
+    def _remember_and_reset_state(self):
+        """窗口隐藏后：记住最大化意图，并把 Qt 侧窗口状态清零。
+
+        为什么必须清零（这正是「重新打开后第一次点还原被吞掉」的根因）：
+          Qt 隐藏窗口时**不会**清掉 WindowMaximized 标志，而
+          QWidget.setWindowState() 在 old == new 时会直接 return。
+          于是「最大化 -> 关闭 -> 重新打开」时，showMaximized() 里的
+          setWindowState(Maximized) 因为状态没变而早退，原生侧从未收到
+          这次状态设置，Qt 记的状态和 Windows 的 WINDOWPLACEMENT 失配。
+          结果第一次点「还原」时 showNormal() 只是把 Qt 状态改回 Normal，
+          原生窗口纹丝不动 —— 看起来就是这一下被吞了，得再点一次才生效。
+
+        隐藏状态下调用 setWindowState 是安全的：Qt 的 setWindowState_sys
+        里有 `visible` 守卫，不可见时只更新内部状态、不会 ShowWindow，
+        所以没有任何视觉副作用。
+        """
+        if self.isMinimized():
+            return                        # 最小化不算隐藏，别把状态记错
+        self._saved_maximized = self.isMaximized()
+        if not self._saved_maximized:
+            g = self.geometry()
+            if g.isValid():
+                self._normal_geometry = g
+        if self.windowState() != Qt.WindowNoState:
+            try:
+                self.setWindowState(Qt.WindowNoState)
+            except Exception:
+                pass
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -662,14 +704,30 @@ class UnifiedSettingsWindow(QMainWindow):
     def _toggle_maximize(self):
         if self.isMaximized():
             self.showNormal()
-            # 无边框窗口 showNormal 后几何可能不正确，用保存的普通几何兜底
-            geom = getattr(self, "_normal_geometry", None)
-            if geom is not None and geom.isValid():
-                self.setGeometry(geom)
+            # 不要在这里硬 setGeometry：会和 Windows 自己的还原逻辑打架。
+            # 只在还原确实没生效时兜底（见 _ensure_normal_geometry）。
+            QTimer.singleShot(0, self._ensure_normal_geometry)
         else:
             # 最大化前保存普通几何，供恢复时使用
-            self._normal_geometry = self.geometry()
+            g = self.geometry()
+            if g.isValid():
+                self._normal_geometry = g
             self.showMaximized()
+
+    def _ensure_normal_geometry(self):
+        """还原后若窗口仍占满工作区，说明 showNormal 没真正落地，用保存值兜底。"""
+        if not self.isVisible() or self.isMaximized() or self.isMinimized():
+            return
+        geom = getattr(self, "_normal_geometry", None)
+        if geom is None or not geom.isValid():
+            return
+        try:
+            avail = self.screen().availableGeometry()
+        except Exception:
+            return
+        cur = self.geometry()
+        if cur.width() >= avail.width() - 2 and cur.height() >= avail.height() - 2:
+            self.setGeometry(geom)
 
     def _update_max_btn_glyph(self):
         self._max_btn.setText("\u25a1" if not self.isMaximized() else "\u25d9")
@@ -677,10 +735,40 @@ class UnifiedSettingsWindow(QMainWindow):
     def changeEvent(self, e):
         super().changeEvent(e)
         if e.type() == QEvent.WindowStateChange:
+            self._track_minimize_restore(e.oldState())
             self._update_max_btn_glyph()
             self._apply_window_chrome_state()
             self._update_mask()
             self.update()
+
+    def _track_minimize_restore(self, old_state):
+        """让最大化状态扛得住「任务栏图标连点」。
+
+        点一下任务栏图标 = 最小化，再点一下 = 还原。连点两下就是
+        最小化 + 还原。无边框窗口接管了 WM_GETMINMAXINFO，这条还原路径上
+        Windows 偶尔会把窗口还原成普通尺寸而不是最大化，用户看到的就是
+        「莫名其妙退出了最大化」。这里自己记住「最小化之前是不是最大化」，
+        还原后如果掉出了最大化，就补一次 showMaximized 拉回来。
+        """
+        if self.isMinimized():
+            # 进入最小化：记下之前是否最大化。Qt 在最小化时会保留
+            # WindowMaximized 位，所以新旧状态都查一遍更稳。
+            self._max_before_min = bool(old_state & Qt.WindowMaximized) or bool(
+                self.windowState() & Qt.WindowMaximized
+            )
+            return
+        if old_state & Qt.WindowMinimized:
+            # 从最小化还原
+            if self._max_before_min and not self.isMaximized():
+                # 延后一轮：等 Windows 把还原动画/几何处理完再拉回最大化，
+                # 否则会和系统的还原过程打架。
+                QTimer.singleShot(0, self._restore_maximized)
+            self._max_before_min = False
+
+    def _restore_maximized(self):
+        if not self.isVisible() or self.isMinimized() or self.isMaximized():
+            return
+        self.showMaximized()
 
     def _title_btn_rects_window(self):
         """三个标题栏按钮在窗口坐标系中的矩形（用于 WM_NCHITTEST 排除点击）。"""
@@ -708,10 +796,13 @@ class UnifiedSettingsWindow(QMainWindow):
                 mi = _MONITORINFO()
                 mi.cbSize = ctypes.sizeof(_MONITORINFO)
                 if ctypes.windll.user32.GetMonitorInfoW(monitor, ctypes.byref(mi)):
-                    wa = mi.rcWork
+                    wa, mon = mi.rcWork, mi.rcMonitor
                     mmi = _MINMAXINFO.from_address(int(msg.lParam))
-                    mmi.ptMaxPosition.x = wa.left
-                    mmi.ptMaxPosition.y = wa.top
+                    # ptMaxPosition 是**相对于所在显示器**的坐标，不是屏幕绝对坐标。
+                    # 主屏原点为 (0,0) 时两者恰好相同，所以单屏看不出问题；
+                    # 副屏上用绝对坐标会把窗口最大化到错误位置。
+                    mmi.ptMaxPosition.x = wa.left - mon.left
+                    mmi.ptMaxPosition.y = wa.top - mon.top
                     mmi.ptMaxSize.x = wa.right - wa.left
                     mmi.ptMaxSize.y = wa.bottom - wa.top
             except Exception:

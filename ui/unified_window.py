@@ -627,6 +627,16 @@ class UnifiedSettingsWindow(QMainWindow):
         self.home_page.refresh_stats()
 
     def closeEvent(self, e):
+        # 关闭前若处于最大化，先恢复普通状态。
+        # 无边框窗口在最大化时直接隐藏/再显示，Qt 容易把最大化状态与几何尺寸搞混
+        # （再次 show 后 isMaximized() 仍为 True 但窗口尺寸已乱），
+        # 表现为“再次最大化/恢复时卡顿、窗口无法移动”。
+        # 关闭时强制恢复正常，下次打开从普通状态开始，避免状态残留。
+        if self.isMaximized():
+            try:
+                self.showNormal()
+            except Exception:
+                pass
         self.finished.emit()
         super().closeEvent(e)
 

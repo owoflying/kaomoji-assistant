@@ -98,7 +98,7 @@ class AboutPage(QWidget):
             stat_card = QFrame()
             stat_card.setObjectName("Card")
             scard = QVBoxLayout(stat_card)
-            scard.setContentsMargins(24, 22, 24, 22)
+            scard.setContentsMargins(24, 28, 24, 22)
             scard.setSpacing(10)
 
             stitle = QLabel("使用统计")
@@ -113,6 +113,7 @@ class AboutPage(QWidget):
             if top:
                 for text, cnt in top:
                     row = QHBoxLayout()
+                    row.setContentsMargins(0, 4, 0, 4)
                     tl = QLabel(text)
                     tl.setFont(kaomoji_font(14))
                     cl = QLabel("%d 次" % cnt)

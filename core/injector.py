@@ -141,6 +141,12 @@ class KaomojiInjector:
         # 先快照（独立副本），再替换剪贴板，确保恢复时用的不是悬空指针
         saved = self._snapshot_clipboard(clipboard)
         clipboard.setText(text)
+        # 关键延时：Qt/Windows 的剪贴板写入并非完全同步到系统。
+        # 若立刻发送 Ctrl+V，目标程序可能读到旧剪贴板内容（表现为“无论选什么颜文字
+        # 都贴出我原来的剪贴板”）。延迟 80ms 让 Qt 把新内容真正交给 OS 剪贴板。
+        QTimer.singleShot(80, lambda: self._send_paste_and_restore(clipboard, saved))
+
+    def _send_paste_and_restore(self, clipboard, saved):
         c = self._controller
         c.press(Key.ctrl)
         c.press("v")

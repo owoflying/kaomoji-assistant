@@ -185,7 +185,9 @@ class PickerWindow(QWidget):
         self.winId()
         # 淡入淡出：用透明通道做动画
         self._opacity_fx = QGraphicsOpacityEffect(self)
-        self._opacity_fx.setOpacity(1.0)
+        # 初始透明：showEvent 会负责淡入。设为 1.0 时，show() 到 showEvent 之间
+        # 可能先渲染一帧，若此时主题/材质尚未就绪就会闪一下（浅色模式闪深色）。
+        self._opacity_fx.setOpacity(0.0)
         self.setGraphicsEffect(self._opacity_fx)
         self._anim = QPropertyAnimation(self._opacity_fx, b"opacity", self)
         self._anim.setDuration(130)
@@ -200,6 +202,19 @@ class PickerWindow(QWidget):
         self._apply_window_material()
         self._apply_style()
         self._update_tooltip()
+
+    def apply_config(self, config):
+        """外部配置（主题/不透明度/亚克力/每页数量等）变更后刷新候选条。
+
+        由 main.py 的 apply_settings 调用，保证设置页改动实时生效。
+        """
+        self.config = config
+        self.page_size = int(config.get("page_size", 3))
+        # 若当前可见且每页数量变化，需要重建芯片数量
+        if len(self._chips) != self.page_size:
+            self._rebuild_chips()
+            self.set_candidates(self.items)
+        self._apply_config_visuals()
 
     def _apply_window_material(self):
         hwnd = int(self.winId())

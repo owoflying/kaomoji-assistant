@@ -1,8 +1,9 @@
 """颜文字库页：按分类浏览内置颜文字，点击即可复制到剪贴板或上屏。"""
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
-    QComboBox, QPushButton, QFrame,
+    QPushButton, QFrame,
 )
+from ui.fluent_combobox import FluentComboBox
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 
@@ -12,9 +13,10 @@ from ui.win11_theme import kaomoji_font
 class LibraryPage(QWidget):
     selected = Signal(str)
 
-    def __init__(self, data, parent=None):
+    def __init__(self, data, theme=None, parent=None):
         super().__init__(parent)
         self.data = data
+        self._theme = theme
         self._init_ui()
         self._refresh_list()
 
@@ -34,7 +36,7 @@ class LibraryPage(QWidget):
         cat_root.setContentsMargins(16, 14, 16, 14)
         cat_root.setSpacing(12)
         cat_root.addWidget(QLabel("分类"))
-        self.cat_combo = QComboBox()
+        self.cat_combo = FluentComboBox(self._theme)
         self.cat_combo.setMinimumWidth(180)
         self.cat_combo.addItem("全部")
         self.cat_combo.addItems(self.data.get_category_names())
@@ -64,6 +66,11 @@ class LibraryPage(QWidget):
         list_root.addLayout(op_row)
 
         root.addWidget(list_card, 1)
+
+    def set_theme(self, theme):
+        self._theme = theme
+        if hasattr(self, "cat_combo") and self.cat_combo is not None:
+            self.cat_combo.set_theme(theme)
 
     def _refresh_list(self):
         cat = self.cat_combo.currentText()

@@ -5,9 +5,10 @@
 布尔项改用 WinUI 3 风格 ToggleSwitch，更贴近系统设置观感。
 """
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QSlider, QSpinBox, QFrame, QSizePolicy, QScrollArea,
 )
+from ui.fluent_combobox import FluentComboBox
 from PySide6.QtCore import Qt, Signal
 
 from core import win_utils
@@ -208,7 +209,7 @@ class SettingsPage(QWidget):
         layout.addWidget(container)
 
     def _theme_combo(self):
-        self.theme_combo = QComboBox()
+        self.theme_combo = FluentComboBox(self._theme)
         self.theme_combo.addItem("浅色", "light")
         self.theme_combo.addItem("深色", "dark")
         self.theme_combo.setMinimumWidth(120)
@@ -247,7 +248,7 @@ class SettingsPage(QWidget):
         return self.acrylic_check
 
     def _method_combo(self):
-        self.method_combo = QComboBox()
+        self.method_combo = FluentComboBox(self._theme)
         self.method_combo.addItem("剪贴板粘贴", "clipboard")
         self.method_combo.addItem("直接字符投递", "direct")
         self.method_combo.addItem("模拟键入", "type")
@@ -289,10 +290,13 @@ class SettingsPage(QWidget):
 
     # ---------- 读取/写入 ----------
     def set_theme(self, theme_obj):
-        """主题切换时同步开关配色，并强制刷新样式表。"""
+        """主题切换时同步开关/下拉框配色，并强制刷新样式表。"""
         self._theme = theme_obj
         for t in (self.acrylic_check, self.auto_check, self.autostart_check, self.blur_hide_check):
             t.update_theme(theme_obj)
+        for c in (self.theme_combo, self.method_combo):
+            if c is not None:
+                c.set_theme(theme_obj)
         # 强制 Qt 重新评估该分支的样式，解决部分控件换主题后未刷新外观的问题
         self.style().unpolish(self)
         self.style().polish(self)

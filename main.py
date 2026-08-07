@@ -30,7 +30,7 @@ except Exception:               # pragma: no cover - COM 不可用
 from core.app_icon import make_icon
 from ui.picker_window import PickerWindow
 from ui.unified_window import UnifiedSettingsWindow
-from ui.win11_theme import Theme
+from ui.win11_theme import Theme, set_app_theme
 from ui.fluent_icons import ensure_icon_font
 from ui.log_viewer import show_log_viewer
 
@@ -316,6 +316,7 @@ def main():
     config = load_config()
     # 应用级样式：让所有独立对话框（新增/编辑颜文字等）与统一面板视觉一致
     app.setStyleSheet(Theme(config.get("theme", "light")).style_sheet())
+    set_app_theme(config.get("theme", "light"))
     # 让「配置里的 autostart」与注册表实际状态保持一致
     if autostart.is_supported():
         if bool(config.get("autostart", False)) != autostart.is_enabled():
@@ -492,6 +493,7 @@ def main():
         # 应用级样式表也要随主题刷新，否则独立对话框（新增/编辑等）不会跟随新主题
         app.setStyleSheet(Theme(config.get("theme", "light")).style_sheet())
         menu.setStyleSheet(Theme(config.get("theme", "light")).menu_style())
+        set_app_theme(config.get("theme", "light"))
         window.apply_config(config)
         unified.apply_config(config)
         state.max_recent = int(config.get("max_recent", 30))

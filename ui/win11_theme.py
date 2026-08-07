@@ -8,6 +8,22 @@ from PySide6.QtWidgets import QGraphicsOpacityEffect
 from PySide6.QtGui import QFont
 
 
+# 全局当前主题名（light/dark）。部分独立窗口/弹出层无法从父级便捷取到主题，
+# 由 main.py 在启动及 apply_settings 时同步，供 FluentComboBox 等控件统一读取。
+_current_theme_name = "light"
+
+
+def set_app_theme(name):
+    """设置当前应用主题名，供独立对话框/弹出层在无法遍历父窗口时读取。"""
+    global _current_theme_name
+    _current_theme_name = "dark" if str(name).lower() == "dark" else "light"
+
+
+def current_theme_name():
+    """返回当前应用主题名（light/dark）。"""
+    return _current_theme_name
+
+
 class Theme:
     """当前主题色板；根据名称 light/dark 返回对应颜色。"""
 
@@ -314,7 +330,8 @@ class Theme:
             height: 0px;
         }}
         QComboBox QAbstractItemView {{
-            background: {t.card};
+            background-color: {t.card};
+            color: {t.text};
             border: 1px solid {t.card_border};
             border-radius: 8px;
             padding: 6px;
@@ -323,15 +340,17 @@ class Theme:
             selection-color: #ffffff;
         }}
         QComboBox QAbstractItemView::item {{
+            background-color: transparent;
+            color: {t.text};
             border-radius: 6px;
             padding: 6px 10px;
             min-height: 24px;
         }}
         QComboBox QAbstractItemView::item:hover {{
-            background: {t.nav_hover};
+            background-color: {t.nav_hover};
         }}
         QComboBox QAbstractItemView::item:selected {{
-            background: {t.accent};
+            background-color: {t.accent};
             color: #ffffff;
         }}
         QFrame#Divider {{

@@ -1,9 +1,10 @@
 """我的颜文字页：分组 + 条目管理（增删改、标签）。"""
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QLineEdit, QDialogButtonBox, QDialog,
     QMessageBox, QFrame,
 )
+from ui.fluent_combobox import FluentComboBox
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 
@@ -11,8 +12,9 @@ from ui.win11_theme import kaomoji_font
 
 
 class _ItemEditDialog(QDialog):
-    def __init__(self, groups, text="", group="默认", tags="", parent=None):
+    def __init__(self, groups, text="", group="默认", tags="", theme=None, parent=None):
         super().__init__(parent)
+        self._theme = theme
         self.setWindowTitle("编辑颜文字" if text else "新增颜文字")
         self.setMinimumWidth(380)
         root = QVBoxLayout(self)
@@ -27,7 +29,7 @@ class _ItemEditDialog(QDialog):
 
         grp_row = QHBoxLayout()
         grp_row.addWidget(QLabel("分组"))
-        self.group_combo = QComboBox()
+        self.group_combo = FluentComboBox(self._theme)
         self.group_combo.setEditable(True)
         self.group_combo.addItems(groups)
         if group:
@@ -77,7 +79,7 @@ class CustomKaomojiPage(QWidget):
         grp_root.setContentsMargins(16, 14, 16, 14)
         grp_root.setSpacing(12)
         grp_root.addWidget(QLabel("分组"))
-        self.group_combo = QComboBox()
+        self.group_combo = FluentComboBox(None)
         self.group_combo.setMinimumWidth(160)
         self.group_combo.currentTextChanged.connect(self._refresh_list)
         grp_root.addWidget(self.group_combo, 1)

@@ -13,9 +13,10 @@ from collections import Counter
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QPushButton,
-    QPlainTextEdit, QComboBox, QLineEdit, QGridLayout, QScrollArea,
+    QPlainTextEdit, QLineEdit, QGridLayout, QScrollArea,
     QSizePolicy,
 )
+from ui.fluent_combobox import FluentComboBox
 from PySide6.QtCore import Qt, Signal, QTimer, QElapsedTimer
 from PySide6.QtGui import QFont, QFontDatabase
 
@@ -393,7 +394,7 @@ class DevPage(QWidget):
         v.addWidget(tip)
         h = QHBoxLayout()
         self._inject_text = QLineEdit("(๑•̀ㅂ•́)و✧")
-        self._method_combo = QComboBox()
+        self._method_combo = FluentComboBox(self._theme)
         self._method_combo.addItems(["clipboard", "direct", "type"])
         self._inject_result = QLabel("-")
         self._inject_result.setObjectName("BodyText")
@@ -479,6 +480,8 @@ class DevPage(QWidget):
             self._log_panel.set_theme(theme)
         if hasattr(self, "_stream"):
             self._stream.set_theme(theme)
+        if hasattr(self, "_method_combo"):
+            self._method_combo.set_theme(theme)
 
     def set_active(self, active):
         """由主窗口在页面进入/离开时调用。

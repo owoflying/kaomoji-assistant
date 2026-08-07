@@ -223,8 +223,8 @@ class UnifiedSettingsWindow(QMainWindow):
         self.save_config = save_config
         self.open_log = open_log
         self.dev_refs = dev_refs or {}
-        # 开发者模式权威状态：用独立标志位，避免依赖 self.config["developer_mode"]
-        # —— 因为 _preview_appearance 会把 self.config 替换成预览副本，导致读到的标志位不可靠。
+        # 开发者模式权威状态：用独立标志位，不依赖 self.config["developer_mode"]，
+        # 避免与设置页自动保存时的字典替换/刷新相互干扰。
         self._developer_mode = bool(config.get("developer_mode", False))
 
         self.theme = Theme(config.get("theme", "light"))
@@ -387,7 +387,6 @@ class UnifiedSettingsWindow(QMainWindow):
         if self.config.get("developer_mode", False):
             self.dev_page = DevPage(
                 self.dev_refs, self.config, self.save_config, self.theme.name)
-            self.dev_page.config_applied.connect(self._on_settings_applied)
             self.dev_page.developer_mode_disabled.connect(self._disable_dev_tab)
             self._pages["developer"] = self.dev_page
         for p in self._pages.values():
@@ -398,8 +397,6 @@ class UnifiedSettingsWindow(QMainWindow):
         self.library_page.selected.connect(self.output_selected.emit)
         self.search_page.selected.connect(self.output_selected.emit)
         self.settings_page.config_applied.connect(self._on_settings_applied)
-        # 外观项（主题/透明度/亚克力）改动时实时预览，不落盘、不触发主程序保存逻辑
-        self.settings_page.config_preview.connect(self._preview_appearance)
         # 关于页连点版本号解锁开发者模式后，实时添加「开发者」标签（无需重开窗口）
         self.about_page.developer_mode_enabled.connect(self._enable_dev_tab)
 
@@ -470,7 +467,6 @@ class UnifiedSettingsWindow(QMainWindow):
             return
         self.dev_page = DevPage(
             self.dev_refs, self.config, self.save_config, self.theme.name)
-        self.dev_page.config_applied.connect(self._on_settings_applied)
         self.dev_page.developer_mode_disabled.connect(self._disable_dev_tab)
         self._pages["developer"] = self.dev_page
         self.content.addWidget(self.dev_page)
@@ -552,8 +548,9 @@ class UnifiedSettingsWindow(QMainWindow):
         self._shadow_color = _parse_color(self.theme.shadow_color)
         self._apply_theme()
         self.settings_page.config = config
-        # 让关于页也始终指向统一窗口的权威配置字典：避免 _preview_appearance 把 self.config
-        # 换成预览副本后，关于页仍持有旧的字典引用，导致 developer_mode 在页间读不一致（二次解锁失效）。
+        # 让关于页也始终指向统一窗口的权威配置字典：设置页每次 _on_apply 会替换自己的
+        # self.config 为新副本，这里重新指向同一份唯一权威字典，避免 developer_mode
+        # 在页间读不一致（二次解锁失效）。
         self.about_page.config = config
         self.settings_page.refresh_from_config()
         self.settings_page.set_theme(self.theme)
@@ -563,37 +560,9 @@ class UnifiedSettingsWindow(QMainWindow):
         if "developer" in self._pages:
             self.dev_page.set_theme(self.theme)
         self._update_backdrop()
-        # 记录已提交状态，供“仅预览未保存就关闭”时回滚（见 _preview_appearance / closeEvent）
-        self._last_committed = dict(self.config)
-        self._dirty = False
 
     def _on_settings_applied(self, new_cfg):
         self.config_applied.emit(new_cfg)
-
-    def _preview_appearance(self, preview_cfg):
-        """设置页「外观」改动的实时预览：立即重绘本窗口的主题/透明度/亚克力，不落盘。
-
-        这样用户在设置里选深色、拖透明度滑块时立刻看到效果，避免“点了没反应”误以为切不了。
-        仅影响本窗口的可视状态，并通过 _dirty 标记；真正提交走「应用并保存」（config_applied），
-        若只预览就关闭则由 closeEvent 回滚到上次已提交状态，不会“记进面板”却未落盘。
-        """
-        theme_name = preview_cfg.get("theme", self.theme.name)
-        acrylic = bool(preview_cfg.get("acrylic", self._acrylic_on))
-        changed_skin = (theme_name != self.theme.name) or (acrylic != self._acrylic_on)
-        # 软更新 config：paintEvent 读 panel_alpha 等依赖它
-        self.config = dict(preview_cfg)
-        self._dirty = True
-        if changed_skin:
-            self.theme = Theme(theme_name)
-            self._acrylic_on = acrylic and _has_dwm
-            self._shadow_color = _parse_color(self.theme.shadow_color)
-            self._apply_theme()
-        else:
-            # 仅透明度变化：刷新内容区表面透明度并整面板重绘，不必整体重刷样式。
-            # 用 _refresh_content_sheet（完整 QSS + 表面背景）而非只设 background，
-            # 否则会再次切断主窗口 QSS 级联、让子页控件样式丢失。
-            self._refresh_content_sheet()
-            self.update()
 
     def _adjusted_content_surface(self):
         """根据 panel_alpha 调整内容区表面透明度。"""
@@ -658,10 +627,6 @@ class UnifiedSettingsWindow(QMainWindow):
         self.home_page.refresh_stats()
 
     def closeEvent(self, e):
-        # 若只预览了外观但没点“应用并保存”，关闭时回滚到上次已提交状态，
-        # 避免亚克力/主题被“记进面板”却未落盘（见 _preview_appearance）。
-        if getattr(self, "_dirty", False) and getattr(self, "_last_committed", None):
-            self.apply_config(self._last_committed)
         self.finished.emit()
         super().closeEvent(e)
 

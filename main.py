@@ -507,6 +507,17 @@ def main():
     unified.config_applied.connect(apply_settings)
     unified.finished.connect(_resume_main)
 
+    # 候选条不透明度实时预览：拖动滑块时即时改变候选条透明度，与滑动位置严格对应
+    # （落盘与正式应用仍由 sliderReleased -> _on_apply -> apply_settings 统一完成）。
+    def _preview_picker_opacity(value):
+        try:
+            if getattr(window, "_panel_bg", None) is not None:
+                window._panel_bg.setAlphaF(max(0.3, min(1.0, value)))
+                window.repaint()
+        except Exception:
+            pass
+    unified.settings_page.opacity_preview.connect(_preview_picker_opacity)
+
     # 系统托盘：唤起候选条 / 打开主面板 / 退出
     icon = make_icon()
     app.setWindowIcon(icon)

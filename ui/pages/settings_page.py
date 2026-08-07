@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
     QSlider, QSpinBox, QFrame, QSizePolicy, QScrollArea,
 )
-from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtCore import Qt, Signal
 
 from core import win_utils
 from core import autostart
@@ -44,8 +44,8 @@ def _build_hotkey_from_pynput(key, mods_set):
 
 
 class SettingsPage(QWidget):
-    config_applied = Signal(dict)
-    config_preview = Signal(dict)    # 外观实时预览（不落盘）
+    config_applied = Signal(dict)    # 任何设置改动后自动保存/应用
+    opacity_preview = Signal(float)  # 候选条不透明度实时预览（拖动中），仅作视觉反馈，不落盘
 
     def __init__(self, config, parent=None):
         super().__init__(parent)
@@ -56,18 +56,11 @@ class SettingsPage(QWidget):
         self._cap_keys = []
         self._listener = None
         self._pynput = None
-        # 程序化加载（构造 / apply_config）期间屏蔽预览信号：setValue/setCurrentIndex/setChecked
-        # 会触发 currentIndexChanged/toggled/valueChanged -> _emit_preview -> config_preview，
-        # 进而让统一窗口把 self.config 换成预览副本、切断与关于页共享的字典引用，导致
-        # “开发者模式”等状态在不同页之间读不一致。用户交互时此标志为 False，预览照常触发。
+        # 程序化加载（构造 / apply_config）期间屏蔽自动保存：setValue/setCurrentIndex/setChecked
+        # 会触发 currentIndexChanged/toggled/valueChanged -> _on_apply -> config_applied，
+        # 导致把 self.config 换成中间副本、切断与关于页共享的字典引用，造成
+        # “开发者模式”等状态在不同页之间读不一致。用户交互时此标志为 False，自动保存照常触发。
         self._loading = False
-        # 透明度预览节流定时器（单喷）必须在 _init_ui / refresh_from_config 之前创建：
-        # 否则 refresh_from_config 里 slider.setValue 触发的 valueChanged 会调用
-        # _schedule_preview -> self._preview_timer.start()，而此时属性尚不存在，
-        # 导致构造期 AttributeError，进而使设置页半初始化、保存按钮等渲染异常。
-        self._preview_timer = QTimer(self)
-        self._preview_timer.setSingleShot(True)
-        self._preview_timer.timeout.connect(self._emit_preview)
         self._theme = Theme(config.get("theme", "light"))
         self._init_ui()
         self.refresh_from_config()
@@ -143,13 +136,6 @@ class SettingsPage(QWidget):
         self._add_row(croot, "亚克力模糊", self._acrylic_toggle())
         v.addWidget(card)
 
-        # 外观项改动时实时预览（主题 / 透明度 / 亚克力），不落盘，关闭或点“应用并保存”才最终提交
-        self.theme_combo.currentIndexChanged.connect(lambda *_a: self._emit_preview())
-        self.acrylic_check.toggled.connect(lambda *_a: self._emit_preview())
-        # 透明度滑块拖动时高频触发，用单喷定时器节流，避免每像素重绘导致卡顿
-        self.panel_alpha_slider.valueChanged.connect(lambda *_a: self._schedule_preview())
-        self.opacity_slider.valueChanged.connect(lambda *_a: self._schedule_preview())
-
         # 输入
         v.addWidget(self._section_title("输入"))
         card = self._card()
@@ -175,16 +161,20 @@ class SettingsPage(QWidget):
         v.addStretch(1)
         self.scroll.setWidget(body)
 
-        # 底部应用按钮（固定命令栏，不随内容滚动）
-        btn_row = QHBoxLayout()
-        btn_row.setContentsMargins(36, 12, 36, 16)
-        btn_row.addStretch(1)
-        ok = QPushButton("应用并保存")
-        ok.setObjectName("AccentButton")
-        ok.setDefault(True)
-        ok.clicked.connect(self._on_apply)
-        btn_row.addWidget(ok)
-        root.addLayout(btn_row)
+        # 所有设置项改动后自动保存：所有控件（含上方各节所建）都已存在，此处统一接线。
+        # 外观项不再走 preview（不落盘）机制；滑块拖动时实时更新标签与候选条预览，
+        # 释放后再统一保存，避免高频写盘/重绘。
+        self.theme_combo.currentIndexChanged.connect(lambda *_a: self._on_apply())
+        self.acrylic_check.toggled.connect(lambda *_a: self._on_apply())
+        self.panel_alpha_slider.sliderReleased.connect(lambda *_a: self._on_apply())
+        self.opacity_slider.sliderReleased.connect(lambda *_a: self._on_apply())
+        # 非外观项改动立即保存
+        self.method_combo.currentIndexChanged.connect(lambda *_a: self._on_apply())
+        self.recent_spin.valueChanged.connect(lambda *_a: self._on_apply())
+        self.page_spin.valueChanged.connect(lambda *_a: self._on_apply())
+        self.auto_check.toggled.connect(lambda *_a: self._on_apply())
+        self.blur_hide_check.toggled.connect(lambda *_a: self._on_apply())
+        self.autostart_check.toggled.connect(lambda *_a: self._on_apply())
 
     # ---------- 子控件工厂 ----------
     def _section_title(self, text):
@@ -229,7 +219,7 @@ class SettingsPage(QWidget):
         self.panel_alpha_slider = QSlider(Qt.Horizontal)
         self.panel_alpha_slider.setRange(50, 100)
         self.panel_alpha_slider.setTickInterval(5)
-        self.panel_alpha_value = QLabel("92%")
+        self.panel_alpha_value = QLabel("")
         self.panel_alpha_value.setFixedWidth(44)
         self.panel_alpha_value.setObjectName("BodyText")
         self.panel_alpha_slider.valueChanged.connect(
@@ -244,12 +234,10 @@ class SettingsPage(QWidget):
         self.opacity_slider = QSlider(Qt.Horizontal)
         self.opacity_slider.setRange(50, 100)
         self.opacity_slider.setTickInterval(5)
-        self.opacity_value = QLabel("98%")
+        self.opacity_value = QLabel("")
         self.opacity_value.setFixedWidth(44)
         self.opacity_value.setObjectName("BodyText")
-        self.opacity_slider.valueChanged.connect(
-            lambda v: self.opacity_value.setText("%d%%" % v)
-        )
+        self.opacity_slider.valueChanged.connect(self._on_opacity_input)
         row.addWidget(self.opacity_slider, 1)
         row.addWidget(self.opacity_value)
         return row
@@ -323,8 +311,10 @@ class SettingsPage(QWidget):
             self.theme_combo.setCurrentIndex(idx if idx >= 0 else 0)
             pa = int(float(cfg.get("panel_alpha", 0.92)) * 100)
             self.panel_alpha_slider.setValue(pa)
+            self.panel_alpha_value.setText("%d%%" % pa)
             op = int(float(cfg.get("opacity", 0.98)) * 100)
             self.opacity_slider.setValue(op)
+            self.opacity_value.setText("%d%%" % op)
             self.acrylic_check.setChecked(bool(cfg.get("acrylic", True)))
             method = cfg.get("input_method", "clipboard")
             midx = self.method_combo.findData(method)
@@ -421,6 +411,8 @@ class SettingsPage(QWidget):
             self._update_hotkey_label()
             return
         self._update_hotkey_label()
+        # 热键录制完成后自动保存
+        self._on_apply()
 
     def _on_cap_press(self, key):
         if not self._capturing:
@@ -451,27 +443,24 @@ class SettingsPage(QWidget):
         pass
 
     # ---------- 应用 ----------
-    def _schedule_preview(self):
-        """透明度滑块拖动时高频触发，节流到每 40ms 一次（单喷），避免连续重绘卡顿。"""
-        if getattr(self, "_loading", False):
-            return
-        self._preview_timer.start(40)
+    def _on_opacity_input(self, value):
+        """候选条不透明度滑块拖动中：实时更新标签与候选条预览（不落盘）。
 
-    def _emit_preview(self):
-        """外观实时预览：把当前控件状态打包成临时配置发出去，由统一窗口立即重绘，
-        但不写入磁盘、不触发主程序的保存/重注册逻辑。"""
+        程序化加载（refresh_from_config 的 setValue）期间 _loading 为 True，此时仅让
+        label 随值刷新，不向外发预览信号，避免与 _on_apply 的自保存逻辑互相干扰。
+        """
         if getattr(self, "_loading", False):
             return
-        preview = dict(self.config)
-        preview["theme"] = self.theme_combo.currentData()
-        preview["panel_alpha"] = self.panel_alpha_slider.value() / 100.0
-        preview["acrylic"] = self.acrylic_check.isChecked()
-        self.config_preview.emit(preview)
+        self.opacity_value.setText("%d%%" % value)
+        self.opacity_preview.emit(value / 100.0)
 
     def _on_apply(self):
+        if getattr(self, "_loading", False):
+            return
         new_cfg = dict(self.config)
         if self._captured is not None:
             new_cfg["hotkey"] = win_utils.format_hotkey(self._captured)
+            self._captured = None
         new_cfg["theme"] = self.theme_combo.currentData()
         new_cfg["panel_alpha"] = self.panel_alpha_slider.value() / 100.0
         new_cfg["opacity"] = self.opacity_slider.value() / 100.0

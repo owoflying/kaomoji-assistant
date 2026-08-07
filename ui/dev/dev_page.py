@@ -1,5 +1,5 @@
 """开发者模式标签页：集事件流、诊断、情绪可视化、模拟触发、焦点原始流、
-输入方式对比、即时配置实验、数据校验、热键冲突检测于一体。
+输入方式对比、数据校验、热键冲突检测于一体。
 
 仅在 developer_mode 启用后，由 UnifiedSettingsWindow 在导航栏显示。
 所有对 Windows API 的读取都包在 try/except 中，且不在 __init__ 主动调用，
@@ -183,7 +183,6 @@ class EventStream(QWidget):
 # 开发者标签页
 # ---------------------------------------------------------------------------
 class DevPage(QWidget):
-    config_applied = Signal(dict)
     developer_mode_disabled = Signal()   # 请求主窗口关闭开发者模式
 
     def __init__(self, dev_refs, config=None, save_config=None,
@@ -223,7 +222,7 @@ class DevPage(QWidget):
         self._inner = inner
         # 关键：给滚动区/内容体应用「完整」主题 QSS，而不是只设 background:transparent。
         # 仅设透明背景会让 Qt 切断从统一窗口根继承的全局 QSS 级联，导致其内部
-        # AccentButton/复选框等子控件收不到样式（典型：浅色模式下「应用并热生效」按钮
+        # AccentButton/复选框等子控件收不到样式（典型：浅色模式下 AccentButton
         # 白底白字不可见）。完整 QSS 已含 QScrollArea/SettingsBody 的透明规则，
         # 透出亚克力不受影响，同时子控件样式完整。
         self._apply_content_style()
@@ -250,7 +249,6 @@ class DevPage(QWidget):
         body.addWidget(self._build_sim_card())
         body.addWidget(self._build_focus_card())
         body.addWidget(self._build_inject_card())
-        body.addWidget(self._build_experiment_card())
         body.addWidget(self._build_data_card())
         body.addWidget(self._build_hotkey_card())
         body.addStretch(1)
@@ -260,7 +258,7 @@ class DevPage(QWidget):
 
         仅设 background:transparent 会让 Qt 切断从统一窗口根继承的全局 QSS 级联，
         导致其内部 AccentButton/复选框等子控件收不到样式（典型：浅色模式下
-        「应用并热生效」按钮白底白字不可见）。完整 QSS 已含 QScrollArea/SettingsBody
+        AccentButton 白底白字不可见）。完整 QSS 已含 QScrollArea/SettingsBody
         的透明规则，透出亚克力不受影响，同时子控件样式完整。
         """
         if not hasattr(self, "_scroll") or not hasattr(self, "_inner"):
@@ -408,33 +406,7 @@ class DevPage(QWidget):
         v.addWidget(self._inject_result)
         return card
 
-    # ---- 7. 即时配置实验 ----
-    def _build_experiment_card(self):
-        card, v = self._card("即时配置实验（热生效）")
-        tip = QLabel("改动后点击应用，立即热生效（不等重启），便于对比不同设置的表现。")
-        tip.setObjectName("BodyText")
-        tip.setWordWrap(True)
-        v.addWidget(tip)
-        h = QHBoxLayout()
-        self._exp_method = QComboBox(); self._exp_method.addItems(["clipboard", "direct", "type"])
-        self._exp_theme = QComboBox(); self._exp_theme.addItems(["light", "dark"])
-        h.addWidget(QLabel("输入方式")); h.addWidget(self._exp_method)
-        h.addWidget(QLabel("主题")); h.addWidget(self._exp_theme)
-        v.addLayout(h)
-        h2 = QHBoxLayout()
-        self._exp_auto_popup = FluentCheckBox("自动弹出", self._theme)
-        self._exp_blur = FluentCheckBox("失焦隐藏", self._theme)
-        h2.addWidget(self._exp_auto_popup)
-        h2.addWidget(self._exp_blur)
-        h2.addStretch(1)
-        v.addLayout(h2)
-        b = QPushButton("应用并热生效")
-        b.setObjectName("AccentButton")
-        b.clicked.connect(self._apply_experiment)
-        v.addWidget(b)
-        return card
-
-    # ---- 8. 数据校验报告 ----
+    # ---- 7. 数据校验报告 ----
     def _build_data_card(self):
         card, v = self._card("数据校验报告")
         self._data_report = QLabel("（点击刷新查看）")
@@ -507,10 +479,6 @@ class DevPage(QWidget):
             self._log_panel.set_theme(theme)
         if hasattr(self, "_stream"):
             self._stream.set_theme(theme)
-        if hasattr(self, "_exp_auto_popup"):
-            self._exp_auto_popup.set_theme(theme)
-        if hasattr(self, "_exp_blur"):
-            self._exp_blur.set_theme(theme)
 
     def set_active(self, active):
         """由主窗口在页面进入/离开时调用。
@@ -621,14 +589,6 @@ class DevPage(QWidget):
             self._inject_result.setText("注入完成：%d ms（方式=%s）" % (t0.elapsed(), method))
         except Exception as e:  # pragma: no cover - 真实注入路径依赖前台窗口
             self._inject_result.setText("注入失败：%r" % (e,))
-
-    def _apply_experiment(self):
-        cfg = dict(self._refs.get("config", {}) or {})
-        cfg["input_method"] = self._exp_method.currentText()
-        cfg["theme"] = self._exp_theme.currentText()
-        cfg["auto_popup"] = self._exp_auto_popup.isChecked()
-        cfg["auto_hide_on_blur"] = self._exp_blur.isChecked()
-        self.config_applied.emit(cfg)
 
     def _refresh_data_report(self):
         try:

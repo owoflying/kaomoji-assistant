@@ -365,8 +365,6 @@ def main():
 
     def on_selected(text, ctx=None):
         method = config.get("input_method", "clipboard")
-        # 统计：任何来源的插入都在此汇聚，记录一次使用计数
-        state.record_usage(text)
         # 先告知监听器「这段文本是我们自己送进去的」：
         # 进入静默期 + 后续采样时把它剔除，否则颜文字里的 "?"「哇」等字符
         # 会被当成用户新输入的情绪词，导致上屏后又弹一次。
@@ -382,6 +380,12 @@ def main():
         else:
             # 延迟一点，确保面板隐藏、焦点已回到原窗口后再注入文本
             QTimer.singleShot(0, lambda: injector.inject(text, method))
+        # 使用统计（任何来源的插入都在此汇聚）：放到注入调度之后并兜底捕获异常，
+        # 确保统计逻辑的任何意外都不会阻断颜文字注入（避免「剪贴板模式失效」）。
+        try:
+            state.record_usage(text)
+        except Exception:
+            pass
 
 
     def _cursor_tail_equals(word):

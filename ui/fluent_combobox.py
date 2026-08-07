@@ -82,17 +82,24 @@ class FluentComboBox(QComboBox):
                 vp.setStyleSheet(
                     "background-color: {bg}; color: {fg};".format(bg=t.card, fg=t.text)
                 )
-            # 3) 外层容器（QComboBoxPrivateContainer）：设为不透明，覆盖原生深底
+            # 3) 外层容器（QComboBoxPrivateContainer）：设为不透明、无边框，覆盖原生深底
             container = view.parent()
             if isinstance(container, QWidget):
                 container.setStyleSheet(
-                    "background-color: {bg}; border: 1px solid {bd};"
-                    "border-radius: 8px;".format(bg=t.card, bd=t.card_border)
+                    "background-color: {bg}; border: none;"
+                    "border-radius: 8px;".format(bg=t.card)
                 )
-            # 4) best-effort：Win11 上用 DWM 同步外框（Win10 无效也无妨）
-            if _has_dwm:
-                popup = view.window()
-                if popup is not None and popup != self.window():
+            # 4) 弹窗顶层窗口本身也强制同色底，Win10 下原生深色框（黑边/黑条）由此盖掉
+            popup = view.window()
+            if isinstance(popup, QWidget) and popup != self.window():
+                try:
+                    popup.setStyleSheet(
+                        "background-color: {bg}; border: none;".format(bg=t.card)
+                    )
+                except Exception:
+                    pass
+                # 5) best-effort：Win11 上用 DWM 同步外框（Win10 无效也无妨）
+                if _has_dwm:
                     try:
                         apply_dark_mode(int(popup.winId()), t.dark)
                     except Exception:

@@ -320,6 +320,7 @@ class Theme:
             subcontrol-position: top right;
             border: none;
             width: 26px;
+            background: transparent;  /* 必须显式透明：否则 Win10 会回退原生下拉按钮（右侧黑条） */
         }}
         QComboBox::down-arrow {{
             image: none;

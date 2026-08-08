@@ -55,9 +55,8 @@ class AboutPage(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        # 让滚动区与视口透明，透出内容区表面背景
-        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
-        scroll.viewport().setStyleSheet("background: transparent;")
+        # 不在这里单独 setStyleSheet：QScrollArea 的透明规则已由全局 QSS 提供，
+        # 自行 setStyleSheet 会切断级联，导致卡片内 AccentButton 等规则失效。
 
         body = QWidget()
         body.setObjectName("AboutBody")
@@ -174,6 +173,10 @@ class AboutPage(QWidget):
         title.setObjectName("PageTitle")
         root.addWidget(title)
 
+        self._rel_current = QLabel("当前版本：%s" % get_app_version())
+        self._rel_current.setObjectName("Caption")
+        root.addWidget(self._rel_current)
+
         self._rel_status = QLabel("点击「检查更新」获取项目最新发行包")
         self._rel_status.setObjectName("BodyText")
         root.addWidget(self._rel_status)
@@ -197,6 +200,7 @@ class AboutPage(QWidget):
 
         self._rel_download = QPushButton("下载最新发行包")
         self._rel_download.setObjectName("AccentButton")
+        self._rel_download.setMaximumWidth(260)
         self._rel_download.setVisible(False)
         self._rel_download.clicked.connect(self._on_download_release)
         btn_row.addWidget(self._rel_download)
@@ -258,7 +262,9 @@ class AboutPage(QWidget):
         if asset and asset.get("url"):
             self._dl_url = asset["url"]
             self._dl_name = asset.get("name") or "KaomojiAssistant-release"
-            self._rel_download.setText("下载 %s" % self._dl_name)
+            display_name = self._dl_name if len(self._dl_name) <= 28 else self._dl_name[:25] + "…"
+            self._rel_download.setText("下载 %s" % display_name)
+            self._rel_download.setToolTip(self._dl_name)
             self._rel_download.setVisible(True)
         else:
             self._rel_status.setText("最新发行版：%s（无可用下载资产）" % tag)

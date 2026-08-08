@@ -233,6 +233,7 @@ class AboutPage(QWidget):
         self._dl_url = None        # 待下载资产 URL
         self._dl_name = None       # 待下载资产文件名
         self._dl_sha256 = None     # 待下载资产服务端 SHA-256（来自 digest）
+        self._dl_size = 0          # 待下载资产真实字节数（来自 assets[].size）
 
     def _set_busy(self, busy):
         """检查/下载期间禁用触发按钮，避免重复请求。"""
@@ -265,6 +266,7 @@ class AboutPage(QWidget):
             self._dl_url = asset["url"]
             self._dl_name = asset.get("name") or "KaomojiAssistant-release"
             self._dl_sha256 = asset.get("sha256") or None
+            self._dl_size = asset.get("size") or 0
             display_name = self._dl_name if len(self._dl_name) <= 28 else self._dl_name[:25] + "…"
             self._rel_download.setText("下载 %s" % display_name)
             self._rel_download.setToolTip(self._dl_name)
@@ -291,7 +293,7 @@ class AboutPage(QWidget):
         self._rel_open.setVisible(False)
         self._dl_dest = dest
         self._set_busy(True)
-        self._api.download_asset(self._dl_url, dest, self._dl_sha256)
+        self._api.download_asset(self._dl_url, dest, self._dl_sha256, expected_size=self._dl_size)
 
     def _on_dl_progress(self, pct):
         self._rel_progress.setText("下载进度：%d%%" % pct)

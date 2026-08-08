@@ -606,6 +606,16 @@ def main():
     tray.setToolTip("颜文字输入辅助器")
     tray.show()
 
+    # 正式版本首次启动：弹出「欢迎更新 vX (commit)」提示（仅发布构建且版本较上次变化才弹）
+    def _maybe_show_update():
+        try:
+            from ui.update_dialog import UpdateDialog
+            UpdateDialog.maybe_show(
+                parent=unified, theme_name=config.get("theme", "light"))
+        except Exception as e:
+            _append_log("warn", "update", "更新弹窗失败：%s" % e)
+    QTimer.singleShot(0, _maybe_show_update)
+
     hotkey.start(config.get("hotkey", "<ctrl>+<shift>+k"))
     if config.get("auto_popup", True):
         monitor.start()

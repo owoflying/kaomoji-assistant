@@ -118,7 +118,9 @@ SettingsPage / AboutPage / DevPage ──(config_applied)──▶ UnifiedWindow
 
 > **经验提示（亚克力/不透明度语义）**：面板基底 alpha 必须**直接以 `panel_alpha`（=不透明度）为基底**——亚克力开 `a=max(0.6, min(1.0, 0.55+0.45*panel_alpha))`、关 `a=max(0.4, min(1.0, panel_alpha))`。切勿再乘 `window_tint` 固有 alpha(≤0.85)，否则拉满 100% 面板仍半透，且比关亚克力时更透（旧 bug）。
 
-> **经验提示（页面切换透出桌面）**：`ui/animated_stack.py` 的 `AnimatedStackedWidget.slide_to` 做页面交叉过渡。**切勿让「新页」也做 0→1 透明度淡入**——主窗体是 `WA_TranslucentBackground`（亚克力/半透明），过渡中段若新旧两页同时半透，会透过半透窗体直接露出桌面（表现为"切换/切出时短暂消失并透入背后画面"）。正确做法：新页**始终保持不透明**（仅做 `pos` 上浮动画），旧页置于最上层做 1→0 淡出、露出下方不透明的新页——这是真正的交叉过渡且绝不透出桌面。
+> **经验提示（页面切换透出桌面）**：`ui/animated_stack.py` 的 `AnimatedStackedWidget.slide_to` 做页面交叉过渡。透出桌面有**两层根因**，二者叠加为「切换时短暂消失并透入背后画面」：
+> 1. **新页也曾做 0→1 透明度淡入**——主窗体是 `WA_TranslucentBackground`（亚克力/半透明），过渡中段新旧两页同时半透，直接露出桌面。**已修**：新页**始终不透明**（仅 `pos` 上浮），旧页置顶 1→0 淡出露出不透明新页。
+> 2. **内容区背景本身是半透明的**：`unified_window._adjusted_content_surface()` 把 `theme.content_surface` 的 alpha 再乘 `panel_alpha`（默认 0.92），故 `QStackedWidget#ContentArea` 背景默认 92% 不透明——亚克力观感需要它半透，但旧页淡出的 230ms 内这层半透背景仍会透出桌面。**已修**：`slide_to` 动画期间经 `_push_opaque_background()` 把内容区背景临时切为**完全不透明兜底色**（取自 content_surface 的 RGB、alpha 强制 1），`_finished` 再经 `_pop_opaque_background()` 恢复半透明。兜底色与常规样式表由 `_refresh_content_sheet()` 写入 `AnimatedStackedWidget._normal_ss` / `set_opaque_color()`，主题/不透明度变更时同步刷新。这样切换瞬间完全不透、平时亚克力照常。
 > **经验提示（几何警告 / 「卡住无法缩小」真 bug）**：最大化↔还原过渡时可能打印 `QWindowsWindow::setGeometry: Unable to set geometry WxH ... Resulting geometry: <工作区尺寸>`。成因：`WM_GETMINMAXINFO` 把 `ptMaxSize` 设为工作区尺寸，而过渡瞬间窗口仍带 `WS_MAXIMIZE` 原生样式，Qt 下发普通尺寸 `setGeometry` 时被 Windows 钳到工作区。
 > - **瞬时出现的**：过渡一帧内自动恢复，属良性噪音（仅终端可见）。
 > - **持续出现且伴随「窗口卡住、鼠标拖不动边框、点还原无效」**：是**真 bug**。根因——无边框窗口在**隐藏态**（如收进托盘）调 `setWindowState(NoState)` 只清 Qt 侧状态、**不清原生 `WS_MAXIMIZE`**；重新 `show()` 为普通态时原生仍带最大化样式，`setGeometry` 被钳到工作区，且 `WM_NCHITTEST` 在 maximized 下禁用缩放热区 → 卡死无法缩小。

@@ -4,6 +4,8 @@
 不同时，由 main.py 在启动后弹出一次。弹窗内容（版本号 + 更新说明）均来自构建期
 烘焙的 core._build_version，不依赖运行时 git。
 """
+import os
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
@@ -68,4 +70,6 @@ class UpdateDialog(QDialog):
         )
         dlg.exec()
         ver.save_seen_version(cur)
+        # 清掉「强制弹窗」标志，避免本进程内（或异常情况下）被重复触发
+        os.environ.pop("KAOMOJI_FORCE_UPDATE_POPUP", None)
         return True

@@ -114,7 +114,14 @@ def save_seen_version(version):
 
 
 def should_show_update_popup():
-    """仅正式发布构建（有版本标签）且本次版本与上次已见版本不同时弹出。"""
+    """是否应在启动时弹出更新提示框。
+
+    - 若环境变量 KAOMOJI_FORCE_UPDATE_POPUP=1（开发者模式「模拟升级」注入），直接返回
+      True，绕过「必须正式发布构建」与「版本已见」两道门槛，使开发构建也能弹窗；
+    - 否则仅正式发布构建（有版本标签）且本次版本与上次已见版本不同时弹出。
+    """
+    if os.environ.get("KAOMOJI_FORCE_UPDATE_POPUP") == "1":
+        return bool(get_app_version())
     if not is_release_build():
         return False
     cur = get_app_version()

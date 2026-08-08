@@ -493,6 +493,11 @@ class UnifiedSettingsWindow(QMainWindow):
         if dev is not None:
             dev.set_active(False)
         self.config["developer_mode"] = False
+        # 关闭开发者模式时连带关闭「测试模式」：测试功能总开关只存在于开发者页，
+        # 关掉开发者模式应一并关掉测试模式，否则测试功能会逃逸到正式环境。
+        # use_test_features=False 后，下方 save_config 会按 _TEST_FEATURE_DEFAULTS
+        # 把各测试项（如 use_uia_elevation）强制归位默认值，实现「自动关闭并归位」。
+        self.config["use_test_features"] = False
         # 同步清空关于页的开发者模式状态，否则其仍记着 developer_mode=True，
         # 再次连点版本号会被短路、不再发出 developer_mode_enabled，导致无法二次进入。
         self.about_page.reset_developer_mode()
@@ -519,6 +524,9 @@ class UnifiedSettingsWindow(QMainWindow):
                 self.save_config(self.config)
             except Exception:
                 pass
+        # 落盘后同步让设置页重新评估测试项可见性（隐藏测试功能分组、禁用并回退输入方式），
+        # 与开发者页切换「测试功能」开关走同一刷新路径，确保 UI 即时反映「测试模式已关闭并归位」。
+        self._on_test_features_changed()
 
     def _apply_theme(self):
         t = self.theme

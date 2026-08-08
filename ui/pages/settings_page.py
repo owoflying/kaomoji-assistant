@@ -219,9 +219,12 @@ class SettingsPage(QWidget):
         else:
             row.addLayout(widget_or_layout)
         container = QWidget()
+        container.setObjectName("SettingsRow")
         container.setLayout(row)
         container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         container.setMinimumHeight(36)
+        container.setAutoFillBackground(False)
+        container.setAttribute(Qt.WA_StyledBackground, False)
         layout.addWidget(container)
 
     def _theme_combo(self):

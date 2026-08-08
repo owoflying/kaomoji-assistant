@@ -149,6 +149,18 @@ class Theme:
         QFrame#CardHover:hover {{
             background: {t.card_hover};
         }}
+        /* ToggleSwitch 完全自绘，禁用原生按钮在 hover/focus 时的黑色背景条 */
+        QAbstractButton#ToggleSwitch, QAbstractButton#ToggleSwitch:hover,
+        QAbstractButton#ToggleSwitch:focus {{
+            background: transparent;
+            border: none;
+            outline: none;
+        }}
+        /* 设置项行容器必须透明，避免子控件 hover/focus 时露出原生黑色背景 */
+        QWidget#SettingsRow {{
+            background: transparent;
+            border: none;
+        }}
         QPushButton {{
             background: {t.input_bg};
             border: 1px solid {t.input_border};

@@ -129,6 +129,12 @@ SettingsPage / AboutPage / DevPage ──(config_applied)──▶ UnifiedWindow
 
 > **经验提示（QSS 级联割裂，已踩三次）**：带自身 `setStyleSheet` 的控件，其**派生控件不再继承更上层祖先的样式规则**（Qt 行为）。若中间容器只设 `background:transparent`，内部 `QPushButton#AccentButton`/滑块/开关会"降级"为原生样式（浅色下白底白字不可见）。正确做法：中间容器要应用**完整** `Theme.style_sheet()` 再追加自身规则（如 `DevPage._apply_content_style`、`UnifiedWindow._refresh_content_sheet`）。
 
+> **经验提示（死代码 / 解耦：重复方法遮蔽 + 硬编码广播列表）**：
+> 1. **同一个类不要定义两个同名方法**——Python 以最后一个为准，前面的会被"静默遮蔽"且永不执行。`PickerWindow` 曾有两个 `apply_config`：靠后的那个（每次配置变更都 `page=0; active=0` 重置用户选择、且丢失隐藏态 `setWindowOpacity(0.0)` 亚克力防闪逻辑）遮蔽了正确的前置版本，表现为"改个不透明度就跳回第一页 + 亚克力闪烁复现"。删掉重复的那个即可根治。
+> 2. 子页主题广播**不要在每个调用点硬编码** `search/settings/home/trigger/dev` 列表，改为遍历 `self._pages.values()` 并对 `hasattr(page,"set_theme")` 的页面广播——既去重，又自动覆盖 `library` 等"已实现 `set_theme` 却漏调"的页面（此前库浏览页切主题不刷新）。
+> 3. 删未用导入前先用 grep 确认符号在文件内**仅出现在 import 行**（`QSS` 字符串里的 `QStackedWidget` 只是选择器、非引用）；`enable_shadow` 等死函数无调用方才删，删后其专属导入（`QGraphicsDropShadowEffect`/`QColor`）一并移除。
+> 4. 函数体内的 `import re` 等应提到模块顶部。
+
 **全局钩子与健壮性**
 热键/键盘/鼠标钩子均在独立线程或系统级回调中运行。UIA 文本读取（`core/uia_text.py`）走 `_UIAWorker` 独立线程 + `join(timeout)` + 忙碌守护，默认超时 0.2~0.35s，超时回退（文本→''、可编辑→True、矩形→None）。
 
@@ -262,5 +268,6 @@ SettingsPage / AboutPage / DevPage ──(config_applied)──▶ UnifiedWindow
 | 测试模式 | 关闭时仍有系统调用/异常 | 入口读开关，失败只记日志 |
 | 打包 | --add-data 写文件名 | 写目录；冻结/源码路径分离 |
 | 协作 | LF/CRLF 不一致 | 统一 .gitattributes |
+| 代码维护 | 重复方法遮蔽、未用导入残留、主题广播硬编码列表 | 类名不可重复定义、grep 确认未用导入、用 `self._pages` 遍历 + `hasattr` 解耦广播 |
 
 > **总结**：本项目最大的迭代风险不在"功能写不出"，而在"**看起来能用实则运行时失效**"——ctypes 常量、QSS 级联、UIA 超时、原生背景黑条、打包资源路径，每一类都需要**贴近真实 Windows 行为的验证**而非代码审查。把"测试模式默认隔离 + 离屏断言验证 + 全局 QSS 兜底原生绘制"作为基线规范，可避免绝大多数回归。

@@ -657,6 +657,10 @@ class UnifiedSettingsWindow(QMainWindow):
             return
         geom = getattr(self, "_normal_geometry", None)
         if geom is not None and geom.isValid():
+            # 隐藏态走 hideEvent 只清了 Qt 侧状态，原生 WS_MAXIMIZE 仍残留，
+            # 不先清掉就 setGeometry 会被钳到工作区（报 'Unable to set geometry'
+            # 且 WM_NCHITTEST 禁用缩放热区 → 卡住无法缩小）。
+            self._clear_native_maximized()
             self.setGeometry(geom)
         super().show()
 
@@ -725,10 +729,38 @@ class UnifiedSettingsWindow(QMainWindow):
                 self._normal_geometry = g
             self.showMaximized()
 
+    def _clear_native_maximized(self):
+        """无边框窗口在隐藏态下调 setWindowState(NoState) 不会清掉原生 WS_MAXIMIZE 样式，
+        导致重新显示时窗口仍带最大化样式：setGeometry 被钳到工作区（报
+        'Unable to set geometry' 警告），且 WM_NCHITTEST 在 maximized 下禁用缩放热区，
+        表现成「窗口卡住、无法缩小」。这里直接用原生 API 清掉 WS_MAXIMIZE 并刷新样式，
+        让窗口回到可缩放的普通态。"""
+        try:
+            hwnd = int(self.winId())
+            if not hwnd:
+                return
+            user32 = ctypes.windll.user32
+            GWL_STYLE = -16
+            WS_MAXIMIZE = 0x01000000
+            style = user32.GetWindowLongW(hwnd, GWL_STYLE)
+            if style & WS_MAXIMIZE:
+                user32.SetWindowLongW(hwnd, GWL_STYLE, style & ~WS_MAXIMIZE)
+                # NOMOVE | NOSIZE | NOZORDER | FRAMECHANGED：仅刷新样式，使去最大化立即生效
+                user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0020)
+        except Exception:
+            pass
+
     def _ensure_normal_geometry(self):
-        """还原后若窗口仍占满工作区，说明 showNormal 没真正落地，用保存值兜底。"""
-        if not self.isVisible() or self.isMaximized() or self.isMinimized():
+        """还原后若窗口仍占满工作区，说明 showNormal 没真正落地，用保存值兜底。
+
+        关键：先清掉原生 WS_MAXIMIZE 残留（见 _clear_native_maximized），否则窗口会卡在
+        最大化态——既报 'Unable to set geometry' 警告，又因 WM_NCHITTEST 在 maximized 下
+        禁用缩放热区而「无法缩小」。"""
+        if not self.isVisible() or self.isMinimized():
             return
+        self._clear_native_maximized()
+        if self.isMaximized():
+            self.showNormal()
         geom = getattr(self, "_normal_geometry", None)
         if geom is None or not geom.isValid():
             return

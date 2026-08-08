@@ -229,7 +229,7 @@ def _create_uiaccess_token(advapi32, kernel32, log):
                     SecurityImpersonation, TokenImpersonation, byref(h_imp)):
                 return None
         finally:
-            advapi32.CloseHandle(h_sys)
+            kernel32.CloseHandle(h_sys)
         try:
             # 临时冒充 SYSTEM：之后设 TokenUIAccess 的 SeTcbPrivilege 校验会通过
             if not advapi32.SetThreadToken(None, h_imp):
@@ -251,7 +251,7 @@ def _create_uiaccess_token(advapi32, kernel32, log):
             finally:
                 advapi32.RevertToSelf()
         finally:
-            advapi32.CloseHandle(h_imp)
+            kernel32.CloseHandle(h_imp)
     finally:
         kernel32.CloseHandle(h_self)
 

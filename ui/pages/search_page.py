@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QLabel, QFrame,
 )
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QFont
 
 from core.kaomoji_data import KaomojiData
 from core.user_kaomoji import UserKaomoji

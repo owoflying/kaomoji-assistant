@@ -9,6 +9,7 @@
 关于页与更新弹窗统一从这里取版本字符串，避免版本来源分散。
 """
 import os
+import sys
 import subprocess
 
 _DEFAULT = "unknown"
@@ -38,8 +39,11 @@ _META_CACHE = None  # 进程内缓存：版本信息在生命周期内不变，�
 def _build_meta():
     """返回 (commit, version_label, notes)。
 
-    优先从构建期生成的 core._build_version 读取（打包态，无 .git、不弹命令行黑框）；
-    仅当该模块不存在（开发/源码形态）才回退 git。结果缓存，避免重复调 git。
+    源码/开发形态（sys.frozen 为假）：始终以 git HEAD 为准，忽略 build.py 写入的
+    core/_build_version.py —— 该文件只用于「打包态」回退（onedir 内无 .git）、
+    不应污染源码态的版本号。
+    打包形态（frozen）：无 .git，使用构建期烘焙文件；缺失时再回退 git。
+    结果缓存，避免重复调 git。
     """
     global _META_CACHE
     if _META_CACHE is not None:
@@ -47,13 +51,18 @@ def _build_meta():
     commit = ""
     label = ""
     notes = ""
-    try:
-        from core import _build_version as bv
-        commit = getattr(bv, "BUILD_COMMIT", "") or ""
-        label = getattr(bv, "BUILD_VERSION", "") or ""
-        notes = getattr(bv, "BUILD_NOTES", "") or ""
-    except Exception:
-        # 无构建文件：开发/源码形态，回退 git 取 commit 短哈希
+    frozen = getattr(sys, "frozen", False)
+    if frozen:
+        # 打包态：读取构建期烘焙的版本信息（core/_build_version.py 已随包分发）
+        try:
+            from core import _build_version as bv
+            commit = getattr(bv, "BUILD_COMMIT", "") or ""
+            label = getattr(bv, "BUILD_VERSION", "") or ""
+            notes = getattr(bv, "BUILD_NOTES", "") or ""
+        except Exception:
+            commit = _git_commit()
+    else:
+        # 源码/开发态：直接 git 取 commit 短哈希，不被构建脚本污染
         commit = _git_commit()
     _META_CACHE = (commit, label, notes)
     return _META_CACHE

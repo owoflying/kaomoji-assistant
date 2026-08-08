@@ -73,7 +73,7 @@ DEFAULT_CONFIG = {
     "panel_alpha": 0.92,
     "opacity": 0.98,
     "acrylic": True,
-    "input_method": "clipboard",
+    "input_method": "direct",
     "max_recent": 30,
         "auto_popup": True,
         "page_size": 3,
@@ -83,6 +83,17 @@ DEFAULT_CONFIG = {
         "use_uia_elevation": False,
         "use_test_features": False,
     }
+
+# 处于测试模式的功能项（默认归属测试分组，确认上线后移出）；值为「关闭态默认」。
+# use_test_features=False 时，save_config 会把这些项强制归位为默认值，
+# 防止「仅隐藏设置 UI」挡不住的测试功能逃逸——已开启的测试项其配置位仍会被功能代码读取并生效。
+_TEST_FEATURE_DEFAULTS = {
+    "use_uia_elevation": False,
+}
+
+# 输入方式中始终可用的默认项；其余（clipboard/type）属于测试功能，仅 use_test_features=True 时可选，
+# 关闭测试模式时 save_config 会把 input_method 归位为默认值 direct。
+_ALWAYS_AVAILABLE_INPUT_METHODS = {"direct"}
 
 
 def load_config():
@@ -100,6 +111,15 @@ def load_config():
 
 
 def save_config(config):
+    # 测试模式关闭时，未毕业的测试功能一律归位为默认值，避免「测试功能逃逸」到正式环境
+    # （仅靠隐藏设置 UI 无法阻止——已开启的测试项其配置位仍会被功能代码读取并生效）。
+    if not config.get("use_test_features", False):
+        for key, default in _TEST_FEATURE_DEFAULTS.items():
+            config[key] = default
+        # 输入方式：非测试模式下只允许始终可用的默认项（direct），
+        # 其余（clipboard/type）属测试功能，归位为 direct，避免测试功能逃逸。
+        if config.get("input_method") not in _ALWAYS_AVAILABLE_INPUT_METHODS:
+            config["input_method"] = "direct"
     path = runtime.config_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:

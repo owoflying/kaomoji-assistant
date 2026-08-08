@@ -54,6 +54,7 @@ class FluentComboBox(QComboBox):
             "  padding: 6px 10px;"
             "  min-height: 24px;"
             "}}"
+            "QAbstractItemView::item:disabled {{ color: {bd}; }}"
             "QAbstractItemView::item:hover {{ background-color: {hv}; }}"
             "QAbstractItemView::item:selected {{"
             "  background-color: {ac}; color: #ffffff;"

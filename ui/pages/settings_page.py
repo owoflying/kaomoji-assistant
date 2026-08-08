@@ -13,6 +13,7 @@ from PySide6.QtCore import Qt, Signal
 
 from core import win_utils
 from core import autostart
+from core import uia_elevation
 from core.win_utils import MOD_CONTROL, MOD_ALT, MOD_SHIFT, MOD_WIN
 from ui.win11_theme import Theme
 from ui.toggle_switch import ToggleSwitch
@@ -178,12 +179,17 @@ class SettingsPage(QWidget):
         tip.setObjectName("Caption")
         tip.setWordWrap(True)
         croot.addWidget(tip)
+        # 真实状态行：反映“实际是否已拿到 UIAccess”，避免“配置开着但未生效”的假象。
+        self.uia_status = QLabel("")
+        self.uia_status.setObjectName("Caption")
+        self.uia_status.setWordWrap(True)
+        croot.addWidget(self.uia_status)
         v.addWidget(card)
         # 登记：use_test_features 关闭时隐藏整段（标题 + 卡片 + 行 + 说明）。
         # uia_row 已由 _add_row(test_feature=True) 登记，此处仅补登记卡片与说明文字，
         # 避免重复登记同一控件。
         self._test_section_title = adv_title
-        self._test_widgets.extend([card, tip])
+        self._test_widgets.extend([card, tip, self.uia_status])
 
         v.addStretch(1)
         self.scroll.setWidget(body)
@@ -291,9 +297,8 @@ class SettingsPage(QWidget):
         self.method_combo.addItem("模拟键入", "type")
         self.method_combo.setMinimumWidth(140)
         self.method_combo.setToolTip(
-            "剪贴板粘贴（默认，推荐）：发 Ctrl+V，不被中文输入法拦截；"
-            "直接字符投递：WM_CHAR 直送焦点控件；"
-            "模拟键入在中文输入法下可能产生乱码"
+            "直接字符投递（默认）：WM_CHAR 直送焦点控件，不被中文输入法拦截；"
+            "剪贴板粘贴 / 模拟键入为测试功能，仅在「测试模式」下可选"
         )
         return self.method_combo
 
@@ -331,7 +336,30 @@ class SettingsPage(QWidget):
             "开启后尝试为进程启用 uiAccess，使候选栏成为顶级窗口、能与屏幕键盘互相覆盖；"
             "需本程序也以管理员身份运行才生效，否则无效果"
         )
+        # 管理员权限检查：未通过则禁用开关（满足“检查通过才能使用”的约定），
+        # 避免用户在无权提权的进程上白白开启却毫无反应。
+        if not uia_elevation.is_user_admin():
+            self.uia_elevation_check.setEnabled(False)
+            self.uia_elevation_check.setToolTip(
+                "需要以管理员身份运行本程序，UIA 提权才能使用（当前非管理员）。")
         return self.uia_elevation_check
+
+    def _refresh_uia_status(self):
+        """根据真实状态刷新 UIA 行下方的状态文案，杜绝“配置开着但没生效”的假象。"""
+        if not uia_elevation.is_user_admin():
+            self.uia_status.setText("⚠ 需以管理员身份运行本程序，UIA 提权才会生效。")
+            self.uia_status.setStyleSheet("color:#c0392b;")
+            return
+        if not self.config.get("use_uia_elevation", False):
+            self.uia_status.setText("")
+            self.uia_status.setStyleSheet("")
+            return
+        if uia_elevation.has_uiaccess():
+            self.uia_status.setText("✓ 已生效：候选栏已成为 UIAccess 顶级窗口，可与屏幕键盘互相覆盖。")
+            self.uia_status.setStyleSheet("color:#107c10;")
+        else:
+            self.uia_status.setText("⚠ 已开启但本次未生效，请以管理员身份重启本程序。")
+            self.uia_status.setStyleSheet("color:#c0392b;")
 
     # ---------- 读取/写入 ----------
     def set_theme(self, theme_obj):
@@ -366,7 +394,7 @@ class SettingsPage(QWidget):
             self.opacity_slider.setValue(op)
             self.opacity_value.setText("%d%%" % op)
             self.acrylic_check.setChecked(bool(cfg.get("acrylic", True)))
-            method = cfg.get("input_method", "clipboard")
+            method = cfg.get("input_method", "direct")
             midx = self.method_combo.findData(method)
             self.method_combo.setCurrentIndex(midx if midx >= 0 else 0)
             self.recent_spin.setValue(int(cfg.get("max_recent", 30)))
@@ -379,6 +407,8 @@ class SettingsPage(QWidget):
             self._loading = False
         # 测试功能分组：根据 use_test_features 决定高级分区(UIA 提权等)是否可见
         self.apply_test_feature_visibility()
+        # 刷新 UIA 真实状态文案（避免“配置开着但未生效”的假象）
+        self._refresh_uia_status()
 
     def apply_test_feature_visibility(self):
         """按 use_test_features 显隐测试功能分组。
@@ -393,6 +423,36 @@ class SettingsPage(QWidget):
                 w.setVisible(visible)
         if self._test_section_title is not None:
             self._test_section_title.setVisible(visible)
+        # 输入方式里属于测试功能的选项（剪贴板粘贴/模拟键入）随测试模式同步禁用/启用
+        self._apply_input_method_availability()
+
+    def _apply_input_method_availability(self):
+        """测试模式关闭时，禁用「输入方式」里属于测试功能的选项（剪贴板粘贴/模拟键入），
+        仅保留默认且始终可用的「直接字符投递」；开启测试模式时全部可选。
+
+        这样正常情况下其他输入模式不可选择，符合「默认=直接字符输入」的产品定位。
+        若当前选中了被禁用的项（例如先开测试模式选了剪贴板、再关测试模式），
+        自动回退到默认 direct，使显示与「保存时归位」后的配置保持一致。
+        """
+        test = bool(self.config.get("use_test_features", False))
+        gated = {"clipboard", "type"}
+        model = self.method_combo.model()
+        for i in range(self.method_combo.count()):
+            data = self.method_combo.itemData(i)
+            if data in gated:
+                item = model.item(i) if model is not None else None
+                if item is not None:
+                    item.setEnabled(test)
+        if not test and self.method_combo.currentData() in gated:
+            idx = self.method_combo.findData("direct")
+            if idx >= 0:
+                # 临时屏蔽 _on_apply 信号，避免强制改选中项时触发隐式应用/保存
+                was_loading = self._loading
+                self._loading = True
+                try:
+                    self.method_combo.setCurrentIndex(idx)
+                finally:
+                    self._loading = was_loading
 
     def _update_hotkey_label(self, hotkey_str=None):
         if self._captured is not None:
@@ -541,6 +601,11 @@ class SettingsPage(QWidget):
         new_cfg["use_uia_elevation"] = self.uia_elevation_check.isChecked()
         self.config = new_cfg
         self.config_applied.emit(new_cfg)
+
+    def showEvent(self, e):
+        # 每次打开设置页都重新评估 UIA 真实状态（例如以管理员重启后刚生效）
+        self._refresh_uia_status()
+        super().showEvent(e)
 
     def hideEvent(self, e):
         self._stop_capture()

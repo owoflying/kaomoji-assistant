@@ -221,6 +221,7 @@ SettingsPage / AboutPage / DevPage ──(config_applied)──▶ UnifiedWindow
 - `--add-data` 目标写**目录**（`ui/fonts`），否则资源会嵌深一层导致字体注册失败、图标变豆腐块；
 - 验证：`QT_QPA_PLATFORM=offscreen` 可让源码态与 exe 形态都常驻运行。
 - 版本与更新弹窗：`build.py` 支持 `--version v1.2`（烘焙人工版本标签）与 `--notes`/`--notes-file`（更新说明）；三者写入 `core/_build_version.py`（`BUILD_COMMIT`/`BUILD_VERSION`/`BUILD_NOTES`，已加入 `.gitignore`）。`core/version.py` 的 `get_app_version()` 在带标签时组合显示为 `v1.2(bdb300a)`，关于页与更新弹窗统一从此取；**开发构建（无标签）仅显示 commit 短哈希**。`main.py` 启动后仅当**正式发布构建**（`is_release_build()` 为真）且本次版本与上次已见版本（存 `%APPDATA%/KaomojiAssistant/last_seen_version.txt`）不同，才弹一次「欢迎更新 v1.2(bdb300a)」对话框（`ui/update_dialog.py`）；开发构建与同版本重开均不弹。`build.py` 无命令行参数启动时进入**交互模式**：逐项 input 提示版本标签/更新说明（支持多行或 `@文件`，可全部留空做开发构建），最后确认再构建；传入任意命令行参数则跳过交互、按 argparse 直接编译（保留原路径）。
+- **开发者模式「模拟升级」**：开发者页新增「模拟升级」卡片，按钮「关闭应用并模拟升级」调用 `core.restart.restart_with_update_popup()`——给新进程注入 `KAOMOJI_FORCE_UPDATE_POPUP=1` 环境变量、以 `CREATE_NO_WINDOW` 重启当前进程（`sys.frozen` 用 exe、否则用 `python + 原 argv`），再 `QApplication.quit()` 退出旧进程。`should_show_update_popup()` 见该标志即返回 `True`（绕过「必须正式发布构建」与「版本已见」两道门槛），使开发构建也能弹更新框；弹完后 `UpdateDialog.maybe_show` 顺手清掉该标志。用于不重新打包即测试更新弹窗流程。
 
 > **经验提示（GUI 程序启动弹黑框）**：打包为 `--windowed` 后，任何 spawn 的 console 子进程（如 `git`）都会弹一个命令行黑框。原 `_build_meta` 每次无条件先调 `git`，而启动期 `get_app_version`/`is_release_build`/`should_show_update_popup` 至少被调 3 次（关于页、更新弹窗判断、发布构建判断），故每次启动弹 **3 次黑框**。源码/offscreen 测试因父进程本身有控制台而复用了控制台不暴露。**修复**：打包态优先读 `core/_build_version.py`（构建期烘焙）且不调 `git`，结果加进程内缓存（`_META_CACHE`）；`_git_commit` 也加 `CREATE_NO_WINDOW` 双保险。
 

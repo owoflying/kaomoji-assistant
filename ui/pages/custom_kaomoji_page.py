@@ -8,7 +8,6 @@ from PySide6.QtWidgets import (
     QMessageBox, QFrame, QFileDialog,
 )
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont
 
 from ui.fluent_combobox import FluentComboBox
 from ui.win11_theme import kaomoji_font

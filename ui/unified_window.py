@@ -12,13 +12,14 @@
   * 最大化时自动隐藏圆角、阴影与留白，让面板贴合屏幕工作区（不含任务栏）。
 """
 import ctypes
+import re
 from ctypes.wintypes import MSG, POINT, RECT, DWORD
 
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QStackedWidget,
-    QSizePolicy, QFrame, QPushButton,
+    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLabel,
+    QFrame, QPushButton,
 )
-from PySide6.QtCore import Qt, Signal, QPoint, QRect, QRectF, QEvent, QPropertyAnimation, QEasingCurve, QAbstractAnimation, QTimer
+from PySide6.QtCore import Qt, Signal, QPoint, QRect, QRectF, QEvent, QPropertyAnimation, QEasingCurve, QTimer
 from PySide6.QtGui import (
     QFont, QColor, QPainter, QPainterPath, QPen, QLinearGradient,
     QRegion, QTransform,
@@ -81,7 +82,6 @@ def _parse_color(spec):
     c = QColor(spec)
     if c.isValid():
         return c
-    import re
     m = re.match(r"rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)", spec)
     if m:
         r, g, b = int(m.group(1)), int(m.group(2)), int(m.group(3))
@@ -229,8 +229,6 @@ class UnifiedSettingsWindow(QMainWindow):
 
         self.theme = Theme(config.get("theme", "light"))
         self._nav_items = []
-        self._indicator = None
-        self._pending_index = 0
         self._acrylic_on = bool(config.get("acrylic", True)) and _has_dwm
         self._shadow_color = _parse_color(self.theme.shadow_color)
         self._theme_ss = ""          # 缓存当前主题的完整 QSS，供 _refresh_content_sheet 复用
@@ -546,12 +544,7 @@ class UnifiedSettingsWindow(QMainWindow):
         for _, item in self._nav_items:
             item.update_theme(t)
         # 子页中的自定义控件（搜索框、开关、主页图标）跟随主题
-        self.search_page.set_theme(t)
-        self.settings_page.set_theme(t)
-        self.home_page.set_theme(t)
-        self.trigger_page.set_theme(t)
-        if "developer" in self._pages:
-            self.dev_page.set_theme(t)
+        self._apply_theme_to_pages(t)
         self._update_backdrop()
         self.update()
 
@@ -568,13 +561,14 @@ class UnifiedSettingsWindow(QMainWindow):
         # 在页间读不一致（二次解锁失效）。
         self.about_page.config = config
         self.settings_page.refresh_from_config()
-        self.settings_page.set_theme(self.theme)
-        self.search_page.set_theme(self.theme)
-        self.home_page.set_theme(self.theme)
-        self.trigger_page.set_theme(self.theme)
-        if "developer" in self._pages:
-            self.dev_page.set_theme(self.theme)
+        self._apply_theme_to_pages(self.theme)
         self._update_backdrop()
+
+    def _apply_theme_to_pages(self, t):
+        """把主题广播给所有暴露 set_theme 的子页，避免 _apply_theme/apply_config 各写一遍。"""
+        for page in self._pages.values():
+            if hasattr(page, "set_theme"):
+                page.set_theme(t)
 
     def _on_settings_applied(self, new_cfg):
         self.config_applied.emit(new_cfg)
@@ -592,7 +586,6 @@ class UnifiedSettingsWindow(QMainWindow):
         """根据 panel_alpha 调整内容区表面透明度。"""
         base = self.theme.content_surface
         alpha = float(self.config.get("panel_alpha", 0.92))
-        import re
         m = re.match(r"rgba?\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)", base)
         if m:
             r, g, b, a = int(m.group(1)), int(m.group(2)), int(m.group(3)), float(m.group(4))
@@ -626,7 +619,6 @@ class UnifiedSettingsWindow(QMainWindow):
           导致即使不透明度拉满面板仍透明。
         - 亚克力关闭：纯色底 bg 直接按 panel_alpha 缩放（保底 0.4），纯色半透明。
         """
-        import re
         base = self.theme.window_tint if self._acrylic_on else self.theme.bg
         alpha = float(self.config.get("panel_alpha", 0.92))
         m = re.match(r"rgba?\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)", base)

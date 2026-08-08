@@ -5,7 +5,6 @@ from PySide6.QtWidgets import (
 )
 from ui.fluent_combobox import FluentComboBox
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont
 
 from ui.win11_theme import kaomoji_font
 

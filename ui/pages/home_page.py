@@ -1,6 +1,6 @@
 """主页：仪表盘，展示快速统计与常用入口卡片。"""
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QPushButton
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QCursor

@@ -10,7 +10,7 @@ codepoint 取自微软官方 fluentui-system-icons 仓库的 fonts/FluentSystemI
 import os
 
 from PySide6.QtWidgets import QLabel
-from PySide6.QtGui import QFont, QColor, QFontDatabase
+from PySide6.QtGui import QFont, QFontDatabase
 from PySide6.QtCore import Qt
 
 # 字体文件名（运行时通过 resource_path 定位，随包分发）

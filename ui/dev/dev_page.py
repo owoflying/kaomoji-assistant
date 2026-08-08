@@ -8,8 +8,6 @@
 import os
 import json
 import time
-import ctypes
-from collections import Counter
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QPushButton,

@@ -3,8 +3,6 @@
 提供浅色/深色主题令牌、圆角卡片/按钮/输入框的 QSS、以及常用动画辅助。
 所有颜色尽量贴近 Windows 11 设置应用的 Mica/Acrylic 观感。
 """
-from PySide6.QtCore import Qt, QEasingCurve, QPropertyAnimation, QAbstractAnimation
-from PySide6.QtWidgets import QGraphicsOpacityEffect
 from PySide6.QtGui import QFont
 
 
@@ -431,24 +429,6 @@ class Theme:
             margin: 6px 8px;
         }}
         """
-
-
-def fade_in(widget, duration=180):
-    """让 widget 从 0 淡入到 1；若已有 opacity effect 则复用。"""
-    effect = widget.graphicsEffect()
-    if not isinstance(effect, QGraphicsOpacityEffect):
-        effect = QGraphicsOpacityEffect(widget)
-        effect.setOpacity(0)
-        widget.setGraphicsEffect(effect)
-    else:
-        effect.setOpacity(0)
-    anim = QPropertyAnimation(effect, b"opacity", widget)
-    anim.setDuration(duration)
-    anim.setStartValue(0.0)
-    anim.setEndValue(1.0)
-    anim.setEasingCurve(QEasingCurve.OutQuad)
-    anim.start(QAbstractAnimation.DeleteWhenStopped)
-    return anim
 
 
 def kaomoji_font(size=14):

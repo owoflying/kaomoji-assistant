@@ -1,7 +1,5 @@
-"""Windows 11 视觉相关：系统背景模糊（Mica / Acrylic）、深色模式、柔和阴影。"""
+"""Windows 11 视觉相关：系统背景模糊（Mica / Acrylic）、深色模式。"""
 import ctypes
-from PySide6.QtWidgets import QGraphicsDropShadowEffect
-from PySide6.QtGui import QColor
 
 try:
     _dwmapi = ctypes.windll.dwmapi
@@ -48,13 +46,3 @@ def apply_dark_mode(hwnd, dark=True):
         )
     except Exception:
         pass
-
-
-def enable_shadow(widget, blur=22, color=QColor(0, 0, 0, 55), offset=0):
-    """为无边框 + 半透明窗口添加柔和阴影（会贴合圆角内容形状）。"""
-    effect = QGraphicsDropShadowEffect(widget)
-    effect.setBlurRadius(blur)
-    effect.setColor(color)
-    effect.setOffset(0, offset)
-    widget.setGraphicsEffect(effect)
-    return effect

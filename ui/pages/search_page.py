@@ -3,11 +3,10 @@
 在统一窗口内作为一页使用；选中后发出 selected 信号，由主窗口决定是否隐藏并注入。
 """
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QListWidget, QListWidgetItem,
+    QWidget, QVBoxLayout, QLineEdit, QListWidget, QListWidgetItem,
     QLabel, QFrame,
 )
-from PySide6.QtCore import Qt, Signal, QEvent
-from PySide6.QtGui import QFont, QColor
+from PySide6.QtCore import Qt, Signal
 
 from core.kaomoji_data import KaomojiData
 from core.user_kaomoji import UserKaomoji

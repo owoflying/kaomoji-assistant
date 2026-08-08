@@ -4,7 +4,6 @@ from PySide6.QtWidgets import (
     QListWidgetItem, QLineEdit, QDialogButtonBox, QDialog, QFrame,
 )
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont
 
 from ui.win11_theme import kaomoji_font
 from ui.fluent_checkbox import FluentCheckBox

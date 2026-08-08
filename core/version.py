@@ -18,9 +18,12 @@ _SEEN_FILE = "last_seen_version.txt"
 def _git_commit():
     try:
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        # CREATE_NO_WINDOW：即使本程序以 GUI 形态运行，也不弹出命令行黑框
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         out = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
             cwd=root, capture_output=True, text=True, timeout=2,
+            creationflags=flags,
         )
         if out.returncode == 0:
             return out.stdout.strip()
@@ -29,19 +32,31 @@ def _git_commit():
     return ""
 
 
+_META_CACHE = None  # 进程内缓存：版本信息在生命周期内不变，避免重复调 git 弹窗/开销
+
+
 def _build_meta():
-    """返回 (commit, version_label, notes)。打包态从 core._build_version 读取。"""
-    commit = _git_commit()
+    """返回 (commit, version_label, notes)。
+
+    优先从构建期生成的 core._build_version 读取（打包态，无 .git、不弹命令行黑框）；
+    仅当该模块不存在（开发/源码形态）才回退 git。结果缓存，避免重复调 git。
+    """
+    global _META_CACHE
+    if _META_CACHE is not None:
+        return _META_CACHE
+    commit = ""
     label = ""
     notes = ""
     try:
         from core import _build_version as bv
-        commit = getattr(bv, "BUILD_COMMIT", commit) or commit
+        commit = getattr(bv, "BUILD_COMMIT", "") or ""
         label = getattr(bv, "BUILD_VERSION", "") or ""
         notes = getattr(bv, "BUILD_NOTES", "") or ""
     except Exception:
-        pass
-    return commit, label, notes
+        # 无构建文件：开发/源码形态，回退 git 取 commit 短哈希
+        commit = _git_commit()
+    _META_CACHE = (commit, label, notes)
+    return _META_CACHE
 
 
 def format_version(commit, label=""):

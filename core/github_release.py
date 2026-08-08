@@ -9,8 +9,9 @@
 import os
 import json
 import tempfile
+import hashlib
 
-from PySide6.QtCore import QObject, QUrl, Signal, QStandardPaths
+from PySide6.QtCore import QObject, QUrl, Signal, QStandardPaths, QThread, QByteArray
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
 
@@ -53,11 +54,19 @@ def parse_release(payload):
     for a in data.get("assets", []) or []:
         if not isinstance(a, dict):
             continue
+        # GitHub 资产自 2023-02 起提供 digest 字段，形如 "sha256:<hex>"
+        digest = a.get("digest", "") or ""
+        sha = ""
+        if ":" in digest:
+            algo, _, h = digest.partition(":")
+            if algo.lower() == "sha256":
+                sha = h.strip()
         assets.append({
             "name": a.get("name", ""),
             "size": a.get("size", 0),
             "url": a.get("browser_download_url", ""),
             "content_type": a.get("content_type", ""),
+            "sha256": sha,
         })
     return {
         "tag": data.get("tag_name", ""),
@@ -93,13 +102,42 @@ def downloads_dir():
     return tempfile.gettempdir()
 
 
+def compute_sha256(path, chunk_size=1024 * 1024):
+    """计算文件 SHA-256（分块读取，纯函数，便于离线测试）。
+
+    返回 hex 串；文件不可读时返回 None。
+    """
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(chunk_size), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return None
+
+
+class HashWorker(QThread):
+    """后台线程计算文件 SHA-256，避免大文件阻塞主线程（GUI 卡顿）。"""
+
+    done = Signal(str, object)  # (path, hex_or_None)
+
+    def __init__(self, path):
+        super().__init__()
+        self._path = path
+
+    def run(self):
+        self.done.emit(self._path, compute_sha256(self._path))
+
+
 class ReleasesAPI(QObject):
     """获取最新发行版并下载资产。所有结果通过信号异步返回。"""
 
     latest_ready = Signal(object)        # dict（parse_release 的结果）或 None
     error_occurred = Signal(str)         # 错误信息
     download_progress = Signal(int)      # 0~100
-    download_finished = Signal(str)      # 保存路径
+    verifying = Signal()                 # 开始校验文件完整性
+    download_finished = Signal(str)      # 保存路径（已校验通过或无需校验）
     download_error = Signal(str)         # 错误信息
 
     def __init__(self, parent=None):
@@ -108,6 +146,9 @@ class ReleasesAPI(QObject):
         self._reply = None
         self._dl_reply = None
         self._dl_file = None
+        self._expected_sha = None    # 来自资产 digest 的预期 SHA-256
+        self._server_sha = None      # 实际用于比对的服务端哈希（header 或 digest）
+        self._hash_worker = None
 
     def fetch_latest_release(self):
         """拉取最新发行版；结果经 latest_ready / error_occurred 返回。"""
@@ -140,8 +181,13 @@ class ReleasesAPI(QObject):
             reply.deleteLater()
             self._reply = None
 
-    def download_asset(self, url, dest_path):
-        """下载资产到 dest_path；进度经 download_progress，结果经 download_finished/error。"""
+    def download_asset(self, url, dest_path, expected_sha256=None):
+        """下载资产到 dest_path；进度经 download_progress，结果经 download_finished/error。
+
+        expected_sha256 为服务端权威 SHA-256（来自资产 digest），用于下载后校验。
+        为 None 且下载响应头也无哈希时，跳过校验。
+        """
+        self._expected_sha = expected_sha256 or None
         try:
             self._dl_file = open(dest_path, "wb")
         except Exception as e:
@@ -162,6 +208,14 @@ class ReleasesAPI(QObject):
         if total > 0:
             self.download_progress.emit(int(received * 100 / total))
 
+    @staticmethod
+    def _safe_remove(path):
+        try:
+            if path and os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
+
     def _on_dl_finished(self):
         reply = self._dl_reply
         if reply is None:
@@ -171,17 +225,32 @@ class ReleasesAPI(QObject):
                 self.download_error.emit("下载失败：%s" % reply.errorString())
                 if self._dl_file:
                     self._dl_file.close()
-                    try:
-                        os.remove(self._dl_file.name)
-                    except Exception:
-                        pass
+                    self._safe_remove(self._dl_file.name)
                 return
             # 确保末尾分片写入
             last = reply.readAll()
             if last:
                 self._dl_file.write(last)
             self._dl_file.close()
-            self.download_finished.emit(self._dl_file.name)
+            saved_path = self._dl_file.name
+            # 取服务端权威哈希：优先下载响应头（可能被重定向剥离），否则用资产 digest
+            header_sha = ""
+            try:
+                raw = reply.rawHeader(QByteArray(b"x-checksum-sha256"))
+                header_sha = bytes(raw).decode("ascii", "ignore").strip()
+            except Exception:
+                header_sha = ""
+            self._server_sha = header_sha or (self._expected_sha or "")
+            if not self._server_sha:
+                # 服务端未提供哈希，跳过校验直接完成
+                self.download_finished.emit(saved_path)
+                return
+            # 后台线程计算本地哈希，避免大文件阻塞 GUI
+            self.verifying.emit()
+            self._hash_worker = HashWorker(saved_path)
+            self._hash_worker.done.connect(self._on_hash_done)
+            self._hash_worker.finished.connect(self._hash_worker.deleteLater)
+            self._hash_worker.start()
         except Exception as e:
             self.download_error.emit("下载完成处理失败：%s" % e)
         finally:
@@ -192,3 +261,15 @@ class ReleasesAPI(QObject):
                     pass
             reply.deleteLater()
             self._dl_reply = None
+
+    def _on_hash_done(self, path, local_sha):
+        self._hash_worker = None
+        if not local_sha:
+            self.download_error.emit("下载完成但无法读取文件进行校验")
+            self._safe_remove(path)
+            return
+        if local_sha.lower() == (self._server_sha or "").lower():
+            self.download_finished.emit(path)
+        else:
+            self.download_error.emit("校验失败：文件哈希不匹配，可能下载不完整或被篡改")
+            self._safe_remove(path)

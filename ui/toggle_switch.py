@@ -23,6 +23,10 @@ class ToggleSwitch(QAbstractButton):
         self._theme = theme if isinstance(theme, Theme) else Theme(theme)
         self.setCursor(Qt.PointingHandCursor)
         self.setFixedSize(44, 24)
+        # 自定义绘制，必须禁用原生按钮背景/边框/焦点轮廓，否则 Windows 风格
+        # 会在 hover/focus 时画出黑色/灰色背景条（旧 bug 回归）。
+        self.setAttribute(Qt.WA_StyledBackground, False)
+        self.setStyleSheet("background: transparent; border: none; outline: none;")
         self._anim = QPropertyAnimation(self, b"pos_f", self)
         self._anim.setDuration(160)
         self._anim.setEasingCurve(QEasingCurve.OutCubic)

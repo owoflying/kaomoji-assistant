@@ -615,14 +615,6 @@ class UnifiedSettingsWindow(QMainWindow):
             self._theme_ss
             + "\nQStackedWidget#ContentArea { background: %s; border: none; }" % surface
         )
-        # 缓存当前（半透明亚克力）样式表与动画期间的不透明兜底色，供切换动画临时切换。
-        # 切换动画时内容区背景会临时改为完全不透明，杜绝半透背景透出桌面的“短暂消失”现象。
-        import re as _re
-        self.content._normal_ss = self.content.styleSheet()
-        m = _re.match(r"rgba?\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)", surface)
-        if m:
-            # 取 content_surface 的 RGB、alpha 强制为 1，作为动画兜底的不透明色
-            self.content.set_opaque_color("rgb(%s,%s,%s)" % (m.group(1), m.group(2), m.group(3)))
 
     def _adjusted_panel_base(self):
         """面板基底色，按 panel_alpha（语义=不透明度，值越大越实）缩放。

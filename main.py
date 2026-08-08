@@ -317,7 +317,8 @@ def main():
 
     config = load_config()
     # 若用户在配置中开启了「使用UIA提权」，启动期为自身进程尝试启用 uiAccess，
-    # 以便读取管理员窗口的输入框。函数内部会先读配置，默认关闭时零副作用。
+    # 使候选栏成为 UIAccess 顶级窗口、能与屏幕键盘(osk)等互相覆盖。
+    # 函数内部会先读配置，默认关闭时零副作用；管理员运行时才会真正重启进程生效。
     uia_elevation.ensure_uiaccess(config, _append_log)
     # 应用级样式：让所有独立对话框（新增/编辑颜文字等）与统一面板视觉一致
     app.setStyleSheet(Theme(config.get("theme", "light")).style_sheet())
@@ -508,7 +509,7 @@ def main():
         window.apply_config(config)
         unified.apply_config(config)
         state.max_recent = int(config.get("max_recent", 30))
-        # 若用户刚开启「使用UIA提权」，立即为当前进程尝试提权，无需重启即生效
+        # 若用户刚开启「使用UIA提权」，立即为当前进程尝试提权（管理员下会以 UIAccess 令牌重启自身生效）
         uia_elevation.ensure_uiaccess(config, _append_log)
         # 自动弹出开关：按需开启/关闭全局监听；若统一窗口仍打开则保持暂停，
         # 等窗口关闭时由 _resume_main 统一恢复。

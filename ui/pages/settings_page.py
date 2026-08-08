@@ -166,7 +166,8 @@ class SettingsPage(QWidget):
         croot.setContentsMargins(16, 14, 16, 14)
         croot.setSpacing(12)
         self._add_row(croot, "使用 UIA 提权", self._uia_elevation_toggle())
-        tip = QLabel("开启后程序会尝试为自身进程启用 uiAccess，从而能读取「以管理员身份运行」的窗口的输入框。"
+        tip = QLabel("开启后程序会尝试为自身进程启用 uiAccess，使候选栏成为 UIAccess 顶级窗口，"
+                     "从而能与屏幕键盘(osk)等系统窗口处于同一 Z 序层级、互相覆盖。"
                      "该操作需要本程序本身也以管理员身份启动，否则不会生效；默认关闭，不影响其他功能。")
         tip.setObjectName("Caption")
         tip.setWordWrap(True)
@@ -306,7 +307,7 @@ class SettingsPage(QWidget):
     def _uia_elevation_toggle(self):
         self.uia_elevation_check = ToggleSwitch(self._theme)
         self.uia_elevation_check.setToolTip(
-            "开启后尝试为进程启用 uiAccess，以读取管理员窗口的输入框；"
+            "开启后尝试为进程启用 uiAccess，使候选栏成为顶级窗口、能与屏幕键盘互相覆盖；"
             "需本程序也以管理员身份运行才生效，否则无效果"
         )
         return self.uia_elevation_check

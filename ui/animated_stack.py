@@ -15,6 +15,8 @@ class AnimatedStackedWidget(QStackedWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._busy = False
+        self._normal_ss = ""      # 常规（半透明亚克力）样式表，由外部主题刷新时写入
+        self._opaque_color = None # 动画过渡期间的不透明兜底背景色（content_surface 的 RGB）
 
     def slide_to(self, widget, duration=230, rise=8):
         """切换到指定 widget，带「旧页淡出 + 新页上浮就位」过渡。
@@ -37,6 +39,7 @@ class AnimatedStackedWidget(QStackedWidget):
             return
 
         self._busy = True
+        self._push_opaque_background()  # 动画期间临时切不透明，避免透出桌面
         widget.setGraphicsEffect(None)  # 新页：保持不透明，不做透明度淡入
 
         # 新页：从下方 rise 像素处上浮就位（仅位移动画）
@@ -78,6 +81,7 @@ class AnimatedStackedWidget(QStackedWidget):
                 cur.hide()
             widget.setGraphicsEffect(None)
             widget.move(geo.x(), geo.y())
+            self._pop_opaque_background()  # 恢复半透明亚克力样式表
             self._busy = False
 
         anim_new_pos.finished.connect(_finished)
@@ -85,3 +89,25 @@ class AnimatedStackedWidget(QStackedWidget):
         widget.move(start_pos)
         for a in anims:
             a.start(QAbstractAnimation.DeleteWhenStopped)
+
+    def set_opaque_color(self, color):
+        """设置动画过渡期间使用的「不透明兜底背景色」（应为 rgb(r,g,b)，不含 alpha）。"""
+        self._opaque_color = color
+
+    def _push_opaque_background(self):
+        """动画期间临时把内容区背景切换为完全不透明，避免旧页淡出时透出桌面。
+
+        根因：内容区背景是半透明的（受 panel_alpha 影响，亚克力观感需要），旧页淡出的
+        230ms 内，这层半透背景会让窗口背后的画面短暂透出。动画期间改用不透明兜底色，
+        结束再恢复半透明，既消除透桌又保留平时亚克力效果。
+        """
+        if self._opaque_color and self._normal_ss:
+            self.setStyleSheet(
+                self._normal_ss
+                + "\nQStackedWidget#ContentArea { background: %s; border: none; }" % self._opaque_color
+            )
+
+    def _pop_opaque_background(self):
+        """动画结束恢复常规（半透明亚克力）样式表。"""
+        if self._normal_ss:
+            self.setStyleSheet(self._normal_ss)

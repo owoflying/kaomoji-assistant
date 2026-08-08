@@ -13,6 +13,7 @@ from PySide6.QtCore import Qt, QUrl, QTimer, QEvent, Signal
 from PySide6.QtGui import QFont, QDesktopServices
 
 from ui.win11_theme import kaomoji_font
+from core.version import get_app_version
 
 
 _CLICK_TARGET = 8          # 连续点击版本号多少次解锁开发者模式
@@ -71,8 +72,8 @@ class AboutPage(QWidget):
         name.setFont(QFont("Segoe UI Variable", 20, QFont.Weight.Bold))
         croot.addWidget(name)
 
-        # 版本号：点击 8 次解锁开发者模式
-        ver = QLabel("版本 1.0.0")
+        # 版本号：显示当前 commit 短哈希（如 f94d0d4），点击 8 次解锁开发者模式
+        ver = QLabel("版本 " + get_app_version())
         ver.setObjectName("BodyText")
         ver.setCursor(Qt.PointingHandCursor)
         ver.installEventFilter(self)

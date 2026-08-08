@@ -8,6 +8,7 @@
 """
 import os
 import sys
+import subprocess
 
 import PyInstaller.__main__
 from core.app_icon import save_ico
@@ -44,7 +45,32 @@ ARGS = [
     "--paths", HERE,
 ]
 
+
+def write_build_version():
+    """构建前把当前 commit 短哈希写入 core/_build_version.py，供打包态（无 git）回退显示。
+
+    该文件由本脚本自动生成，已加入 .gitignore，请勿手改。
+    """
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=HERE, capture_output=True, text=True, timeout=5,
+        )
+        commit = out.stdout.strip() if out.returncode == 0 else ""
+    except Exception:
+        commit = ""
+    if not commit:
+        commit = "unknown"
+    path = os.path.join(HERE, "core", "_build_version.py")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write('# 由 build.py 自动生成，请勿手改；记录构建所用 commit 短哈希。\n')
+        f.write('BUILD_COMMIT = "%s"\n' % commit)
+    print("[build] 写入构建版本 %s -> %s" % (commit, path))
+
+
 if __name__ == "__main__":
     # 构建前先生成与托盘同款的 ico 图标
     save_ico(ICO)
+    # 烘焙当前 commit 短哈希，供打包态版本号回退显示
+    write_build_version()
     sys.exit(PyInstaller.__main__.run(ARGS))

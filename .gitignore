@@ -23,6 +23,8 @@ dist/
 *.spec
 # 打包时自动生成的图标（build.py 每次构建都会重新生成）
 app.ico
+# 构建期由 build.py 写入的 commit 短哈希（供打包态版本号回退）
+core/_build_version.py
 
 # 编辑器 / IDE
 .idea/

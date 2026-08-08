@@ -147,6 +147,7 @@ class ReleasesAPI(QObject):
         self._dl_reply = None
         self._dl_file = None
         self._expected_sha = None    # 来自资产 digest 的预期 SHA-256
+        self._expected_size = 0      # 资产真实字节数（来自 releases API），作为进度分母
         self._server_sha = None      # 实际用于比对的服务端哈希（header 或 digest）
         self._hash_worker = None
 
@@ -181,13 +182,17 @@ class ReleasesAPI(QObject):
             reply.deleteLater()
             self._reply = None
 
-    def download_asset(self, url, dest_path, expected_sha256=None):
+    def download_asset(self, url, dest_path, expected_sha256=None, expected_size=0):
         """下载资产到 dest_path；进度经 download_progress，结果经 download_finished/error。
 
         expected_sha256 为服务端权威 SHA-256（来自资产 digest），用于下载后校验。
-        为 None 且下载响应头也无哈希时，跳过校验。
+        expected_size 为资产真实字节数（来自 releases API 的 assets[].size），作为
+        进度百分比的权威分母——GitHub 资产经 CDN 302 重定向，downloadProgress 信号
+        给到的 total 经常不可靠（偏小或仅反映重定向响应），直接用会导致进度条提前到
+        ~50% 然后卡住；用已知真实大小可让进度准确线性增长。
         """
         self._expected_sha = expected_sha256 or None
+        self._expected_size = expected_size or 0
         try:
             self._dl_file = open(dest_path, "wb")
         except Exception as e:
@@ -195,18 +200,18 @@ class ReleasesAPI(QObject):
             return
         req = QNetworkRequest(QUrl(url))
         req.setHeader(QNetworkRequest.UserAgentHeader, _user_agent())
-        try:
-            req.setTransferTimeout(REQUEST_TIMEOUT_MS)
-        except Exception:
-            pass
+        # 注意：下载大文件时不设 transfer timeout（仅元数据请求设），
+        # 否则慢速网络下超过 15s 无新字节会被强制中断，大发行包必失败。
         self._dl_reply = self._mgr.get(req)
         self._dl_reply.downloadProgress.connect(self._on_dl_progress)
         self._dl_reply.finished.connect(self._on_dl_finished)
         self.download_progress.emit(0)
 
     def _on_dl_progress(self, received, total):
-        if total > 0:
-            self.download_progress.emit(int(received * 100 / total))
+        # 优先用已知的资产真实大小作分母；拿不到才回退信号给的 total
+        denom = self._expected_size if self._expected_size and self._expected_size > 0 else total
+        if denom > 0:
+            self.download_progress.emit(int(received * 100 / denom))
 
     @staticmethod
     def _safe_remove(path):

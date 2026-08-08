@@ -62,6 +62,7 @@ kaomoji-assistant/
 │   ├── user_kaomoji.py     # 用户颜文字库
 │   ├── user_triggers.py    # 触发词管理
 │   ├── user_state.py       # 用户状态（最近使用等）
+│   ├── version.py          # 版本号（取当前 commit 短哈希，供关于页显示）
 │   └── app_icon.py         # 运行时生成/提取应用图标
 └── ui/
     ├── unified_window.py   # 统一设置窗口（无边框+亚克力+动画栈+导航）
@@ -164,8 +165,9 @@ SettingsPage / AboutPage / DevPage ──(config_applied)──▶ UnifiedWindow
 | 注入 | 直接字符投递（默认常驻）；剪贴板粘贴 / 模拟键入为测试功能，仅测试模式可选 | 部分（clipboard/type 是） |
 | 情绪 | 情绪识别与触发短语 | 否 |
 | 数据 | 自定义颜文字库、标签、导入导出 | 否 |
-| 设置 | 主题/不透明度/亚克力/输入方式/热键/开机自启 | 否 |
+| 设置 | 主题/不透明度/输入方式/热键/开机自启 | 否 |
 | 提权 | UIAccess 顶级窗口（与屏幕键盘互相覆盖） | **是**（高级分区） |
+| 外观实验 | 亚克力模糊背景（窗口与候选栏） | **是**（高级分区） |
 | 开发者 | 事件流/诊断/模拟触发/A-B 注入对比 | 否（需先开开发者模式） |
 | 测试模式 | 总开关控制测试功能可见性 | — |
 
@@ -181,7 +183,7 @@ SettingsPage / AboutPage / DevPage ──(config_applied)──▶ UnifiedWindow
 - 设置页用 `_add_row(..., test_feature=True)` 登记测试项，`apply_test_feature_visibility()` 按 `use_test_features` 整体显隐（连分区标题一起隐藏，避免空卡片）；
 - `use_test_features` 关闭时，**正式环境看不到该功能的设置 UI**；但仅靠隐藏 UI 拦不住功能——若配置位仍为真（例如曾在测试模式开启后关闭、或直接改 config.json），功能代码仍会读取并生效（"测试功能逃逸"）。
 
-> **功能门禁=保存时归位**：`main.save_config()` 在落盘前检查 `use_test_features`；为 `False` 时按 `_TEST_FEATURE_DEFAULTS`（如 `use_uia_elevation: False`）把各测试项强制归位为默认值。这样「关闭测试模式」会真正把未毕业功能关掉，覆盖设置页保存、开发者页开关测试模式等所有写入路径，杜绝逃逸。新测试功能只需往 `_TEST_FEATURE_DEFAULTS` 加一项即可获得该保护。
+> **功能门禁=保存时归位**：`main.save_config()` 在落盘前检查 `use_test_features`；为 `False` 时按 `_TEST_FEATURE_DEFAULTS`（如 `use_uia_elevation: False`、`acrylic: False`）把各测试项强制归位为默认值。这样「关闭测试模式」会真正把未毕业功能关掉，覆盖设置页保存、开发者页开关测试模式等所有写入路径，杜绝逃逸。新测试功能只需往 `_TEST_FEATURE_DEFAULTS` 加一项即可获得该保护。亚克力模糊即此例：`DEFAULT_CONFIG["acrylic"]` 默认 `True`（测试模式用户默认仍开模糊），`_TEST_FEATURE_DEFAULTS` 加 `"acrylic": False` 后测试关时归位关闭、并随「高级」分区整段隐藏（设置页用 `_add_row(..., test_feature=True)` 登记）。
 
 > **输入方式门禁（特例：多值设置）**：`input_method` 默认 `direct`（直接字符投递，始终可用）；`clipboard`/`type` 属测试功能——`settings_page._apply_input_method_availability()` 在 `use_test_features=False` 时禁用这两项的下拉条目（仅 `direct` 可选），并在当前选中了被禁用项时回退到 `direct`；`save_config` 另设 `_ALWAYS_AVAILABLE_INPUT_METHODS={"direct"}`，测试模式关闭时把 `input_method` 归位为 `direct`。即"默认=直接字符输入，其他模式仅测试模式可选"。
 
@@ -204,7 +206,8 @@ SettingsPage / AboutPage / DevPage ──(config_applied)──▶ UnifiedWindow
 
 ### 6.4 提交与评审
 
-- 采用 **conventional commits**（feat/fix/docs…）；
+- 采用 **conventional commits**（feat/fix/docs…），**每次改动按逻辑分组提交并 push**（不再逐次确认）；
+- 版本号统一为当前 git commit 短哈希（关于页显示、打包由 `build.py` 在 PyInstaller 运行前烘焙到 `core/_build_version.py` 供无 git 的打包态回退），不再写死版本号；
 - `dist/` 不进 git、`config.json`（运行时本地配置）不进 commit；
 - 本机 push；GitHub Release API 受限（401），**只能 Web UI 发布**。
 

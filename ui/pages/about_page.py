@@ -5,6 +5,8 @@
 - 系统托盘菜单的「查看日志」项也随之可见。
 日志功能因此完全被开发者模式门控，便于调试与诊断。
 """
+import os
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QFrame, QPushButton, QHBoxLayout,
     QScrollArea,
@@ -14,6 +16,7 @@ from PySide6.QtGui import QFont, QDesktopServices
 
 from ui.win11_theme import kaomoji_font
 from core.version import get_app_version
+from core.github_release import ReleasesAPI, pick_windows_asset, downloads_dir
 
 
 _CLICK_TARGET = 8          # 连续点击版本号多少次解锁开发者模式
@@ -112,6 +115,9 @@ class AboutPage(QWidget):
 
         body_layout.addWidget(card)
 
+        # 更新与下载卡片：从 GitHub 直接获取并下载项目发行包
+        self._init_release_card(body_layout)
+
         # 使用统计卡片
         if self._state is not None:
             stat_card = QFrame()
@@ -155,6 +161,153 @@ class AboutPage(QWidget):
         # 若已处于开发者模式，直接进入启用态
         if self.config.get("developer_mode", False):
             self._enter_developer_mode(announce=False)
+
+    # ---------- 更新与下载（GitHub 发行包） ----------
+    def _init_release_card(self, body_layout):
+        card = QFrame()
+        card.setObjectName("Card")
+        root = QVBoxLayout(card)
+        root.setContentsMargins(24, 22, 24, 22)
+        root.setSpacing(12)
+
+        title = QLabel("更新与下载")
+        title.setObjectName("PageTitle")
+        root.addWidget(title)
+
+        self._rel_status = QLabel("点击「检查更新」获取项目最新发行包")
+        self._rel_status.setObjectName("BodyText")
+        root.addWidget(self._rel_status)
+
+        self._rel_notes = QLabel("")
+        self._rel_notes.setObjectName("Caption")
+        self._rel_notes.setWordWrap(True)
+        self._rel_notes.setVisible(False)
+        root.addWidget(self._rel_notes)
+
+        self._rel_progress = QLabel("")
+        self._rel_progress.setObjectName("Caption")
+        self._rel_progress.setVisible(False)
+        root.addWidget(self._rel_progress)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
+        self._rel_check = QPushButton("检查更新")
+        self._rel_check.clicked.connect(self._on_check_update)
+        btn_row.addWidget(self._rel_check)
+
+        self._rel_download = QPushButton("下载最新发行包")
+        self._rel_download.setObjectName("AccentButton")
+        self._rel_download.setVisible(False)
+        self._rel_download.clicked.connect(self._on_download_release)
+        btn_row.addWidget(self._rel_download)
+
+        self._rel_open = QPushButton("打开下载文件夹")
+        self._rel_open.setVisible(False)
+        self._rel_open.clicked.connect(self._on_open_downloads)
+        btn_row.addWidget(self._rel_open)
+
+        btn_row.addStretch(1)
+        root.addLayout(btn_row)
+
+        self._rel_link = QPushButton("在浏览器查看发布页")
+        self._rel_link.setVisible(False)
+        self._rel_link.clicked.connect(self._on_open_release_page)
+        root.addWidget(self._rel_link)
+
+        body_layout.addWidget(card)
+
+        # 异步网络：持有 QNetworkAccessManager 的轻量封装
+        self._api = ReleasesAPI(self)
+        self._api.latest_ready.connect(self._on_latest_ready)
+        self._api.error_occurred.connect(self._on_rel_error)
+        self._api.download_progress.connect(self._on_dl_progress)
+        self._api.download_finished.connect(self._on_dl_finished)
+        self._api.download_error.connect(self._on_dl_error)
+
+        self._latest_info = None   # 解析后的发行版信息
+        self._dl_url = None        # 待下载资产 URL
+        self._dl_name = None       # 待下载资产文件名
+
+    def _set_busy(self, busy):
+        """检查/下载期间禁用触发按钮，避免重复请求。"""
+        self._rel_check.setEnabled(not busy)
+        self._rel_download.setEnabled(not busy)
+
+    def _on_check_update(self):
+        self._rel_status.setText("正在获取最新发行版信息…")
+        self._rel_notes.setVisible(False)
+        self._rel_download.setVisible(False)
+        self._rel_open.setVisible(False)
+        self._rel_link.setVisible(False)
+        self._rel_progress.setVisible(False)
+        self._set_busy(True)
+        self._api.fetch_latest_release()
+
+    def _on_latest_ready(self, info):
+        self._set_busy(False)
+        self._latest_info = info
+        tag = info.get("tag") or "(未知版本)"
+        self._rel_status.setText("最新发行版：%s" % tag)
+        # 发布说明摘要（截断到前若干字符，避免长文本撑爆卡片）
+        body = (info.get("body") or "").strip()
+        if body:
+            snippet = body if len(body) <= 240 else body[:240].rstrip() + "…"
+            self._rel_notes.setText(snippet)
+            self._rel_notes.setVisible(True)
+        asset = pick_windows_asset(info.get("assets") or [])
+        if asset and asset.get("url"):
+            self._dl_url = asset["url"]
+            self._dl_name = asset.get("name") or "KaomojiAssistant-release"
+            self._rel_download.setText("下载 %s" % self._dl_name)
+            self._rel_download.setVisible(True)
+        else:
+            self._rel_status.setText("最新发行版：%s（无可用下载资产）" % tag)
+        if info.get("html_url"):
+            self._rel_link.setVisible(True)
+            self._rel_html_url = info["html_url"]
+
+    def _on_rel_error(self, msg):
+        self._set_busy(False)
+        self._rel_status.setText(msg)
+        self._rel_download.setVisible(False)
+        self._rel_link.setVisible(False)
+
+    def _on_download_release(self):
+        if not self._dl_url or not self._dl_name:
+            return
+        dest = os.path.join(downloads_dir(), self._dl_name)
+        self._rel_status.setText("正在下载：%s" % self._dl_name)
+        self._rel_progress.setText("下载进度：0%")
+        self._rel_progress.setVisible(True)
+        self._rel_open.setVisible(False)
+        self._dl_dest = dest
+        self._set_busy(True)
+        self._api.download_asset(self._dl_url, dest)
+
+    def _on_dl_progress(self, pct):
+        self._rel_progress.setText("下载进度：%d%%" % pct)
+
+    def _on_dl_finished(self, path):
+        self._set_busy(False)
+        self._rel_progress.setText("下载完成")
+        self._rel_status.setText("已保存到：%s" % path)
+        self._rel_open.setVisible(True)
+
+    def _on_dl_error(self, msg):
+        self._set_busy(False)
+        self._rel_progress.setVisible(False)
+        self._rel_status.setText(msg)
+
+    def _on_open_downloads(self):
+        try:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(downloads_dir()))
+        except Exception:
+            pass
+
+    def _on_open_release_page(self):
+        url = getattr(self, "_rel_html_url", "")
+        if url:
+            QDesktopServices.openUrl(QUrl(url))
 
     # ---------- 事件过滤：捕获版本号点击 ----------
     def eventFilter(self, obj, event):

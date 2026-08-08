@@ -89,6 +89,7 @@ DEFAULT_CONFIG = {
 # 防止「仅隐藏设置 UI」挡不住的测试功能逃逸——已开启的测试项其配置位仍会被功能代码读取并生效。
 _TEST_FEATURE_DEFAULTS = {
     "use_uia_elevation": False,
+    "acrylic": False,
 }
 
 # 输入方式中始终可用的默认项；其余（clipboard/type）属于测试功能，仅 use_test_features=True 时可选，

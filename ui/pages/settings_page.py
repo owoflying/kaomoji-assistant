@@ -139,7 +139,6 @@ class SettingsPage(QWidget):
         self._add_row(croot, "主题", self._theme_combo())
         self._add_row(croot, "面板不透明度", self._panel_alpha_row())
         self._add_row(croot, "候选条不透明度", self._opacity_row())
-        self._add_row(croot, "亚克力模糊", self._acrylic_toggle())
         v.addWidget(card)
 
         # 输入
@@ -184,12 +183,19 @@ class SettingsPage(QWidget):
         self.uia_status.setObjectName("Caption")
         self.uia_status.setWordWrap(True)
         croot.addWidget(self.uia_status)
+        # 亚克力模糊：与 UIA 提权一并归入测试功能分组（use_test_features 关闭时整段隐藏并归位为关闭）。
+        self._add_row(croot, "亚克力模糊", self._acrylic_toggle(), test_feature=True)
+        ca_tip = QLabel("开启后窗口与候选栏使用 Windows 亚克力模糊背景（需系统支持 DWM 亚克力）。"
+                        "该效果属于实验性外观，仅测试模式可用。")
+        ca_tip.setObjectName("Caption")
+        ca_tip.setWordWrap(True)
+        croot.addWidget(ca_tip)
         v.addWidget(card)
         # 登记：use_test_features 关闭时隐藏整段（标题 + 卡片 + 行 + 说明）。
-        # uia_row 已由 _add_row(test_feature=True) 登记，此处仅补登记卡片与说明文字，
+        # uia_row / 亚克力行 已由 _add_row(test_feature=True) 登记，此处仅补登记卡片与说明文字，
         # 避免重复登记同一控件。
         self._test_section_title = adv_title
-        self._test_widgets.extend([card, tip, self.uia_status])
+        self._test_widgets.extend([card, tip, self.uia_status, ca_tip])
 
         v.addStretch(1)
         self.scroll.setWidget(body)

@@ -246,6 +246,7 @@ class DevPage(QWidget):
         # 避免用户滚动到长页面底部才能找到关闭入口或测试开关。
         body.addWidget(self._build_control_card())
         body.addWidget(self._build_test_card())
+        body.addWidget(self._build_upgrade_card())
         body.addWidget(self._build_event_card())
         body.addWidget(self._build_diag_card())
         body.addWidget(self._build_emotion_card())
@@ -483,6 +484,33 @@ class DevPage(QWidget):
         v.addWidget(b)
         self._update_test_btn()
         return card
+
+    # ---- 11b. 模拟升级（测试更新弹窗） ----
+    def _build_upgrade_card(self):
+        card, v = self._card("模拟升级")
+        tip = QLabel("点击后关闭当前程序并以新进程重启，启动时强制弹出「欢迎更新」提示框；"
+                     "用于在不重新打包的情况下测试更新弹窗流程。重启后该提示按正常规则不再重复弹出。")
+        tip.setObjectName("BodyText")
+        tip.setWordWrap(True)
+        v.addWidget(tip)
+        h = QHBoxLayout()
+        b = QPushButton("关闭应用并模拟升级")
+        b.setObjectName("AccentButton")
+        b.setCursor(Qt.PointingHandCursor)
+        b.setMinimumHeight(34)
+        b.clicked.connect(self._on_simulate_upgrade)
+        h.addWidget(b)
+        h.addStretch(1)
+        v.addLayout(h)
+        return card
+
+    def _on_simulate_upgrade(self):
+        try:
+            from core import restart
+            restart.restart_with_update_popup()
+        except Exception as e:  # 兜底：极端情况下至少不崩，记到日志
+            import traceback
+            traceback.print_exc()
 
     def _update_test_btn(self):
         on = bool(self.config.get("use_test_features", False))

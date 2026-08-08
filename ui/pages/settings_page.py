@@ -159,6 +159,20 @@ class SettingsPage(QWidget):
         self._add_row(croot, "开机自动启动", self._autostart_toggle())
         v.addWidget(card)
 
+        # 高级
+        v.addWidget(self._section_title("高级"))
+        card = self._card()
+        croot = QVBoxLayout(card)
+        croot.setContentsMargins(16, 14, 16, 14)
+        croot.setSpacing(12)
+        self._add_row(croot, "使用 UIA 提权", self._uia_elevation_toggle())
+        tip = QLabel("开启后程序会尝试为自身进程启用 uiAccess，从而能读取「以管理员身份运行」的窗口的输入框。"
+                     "该操作需要本程序本身也以管理员身份启动，否则不会生效；默认关闭，不影响其他功能。")
+        tip.setObjectName("Caption")
+        tip.setWordWrap(True)
+        croot.addWidget(tip)
+        v.addWidget(card)
+
         v.addStretch(1)
         self.scroll.setWidget(body)
 
@@ -176,6 +190,7 @@ class SettingsPage(QWidget):
         self.auto_check.toggled.connect(lambda *_a: self._on_apply())
         self.blur_hide_check.toggled.connect(lambda *_a: self._on_apply())
         self.autostart_check.toggled.connect(lambda *_a: self._on_apply())
+        self.uia_elevation_check.toggled.connect(lambda *_a: self._on_apply())
 
     # ---------- 子控件工厂 ----------
     def _section_title(self, text):
@@ -288,11 +303,20 @@ class SettingsPage(QWidget):
             self.autostart_check.setToolTip("仅打包后的 exe 版本支持")
         return self.autostart_check
 
+    def _uia_elevation_toggle(self):
+        self.uia_elevation_check = ToggleSwitch(self._theme)
+        self.uia_elevation_check.setToolTip(
+            "开启后尝试为进程启用 uiAccess，以读取管理员窗口的输入框；"
+            "需本程序也以管理员身份运行才生效，否则无效果"
+        )
+        return self.uia_elevation_check
+
     # ---------- 读取/写入 ----------
     def set_theme(self, theme_obj):
         """主题切换时同步开关/下拉框配色，并强制刷新样式表。"""
         self._theme = theme_obj
-        for t in (self.acrylic_check, self.auto_check, self.autostart_check, self.blur_hide_check):
+        for t in (self.acrylic_check, self.auto_check, self.autostart_check,
+                  self.blur_hide_check, self.uia_elevation_check):
             t.update_theme(theme_obj)
         for c in (self.theme_combo, self.method_combo):
             if c is not None:
@@ -328,6 +352,7 @@ class SettingsPage(QWidget):
             self.blur_hide_check.setChecked(bool(cfg.get("auto_hide_on_blur", True)))
             self.page_spin.setValue(int(cfg.get("page_size", 3)))
             self.autostart_check.setChecked(autostart.is_enabled())
+            self.uia_elevation_check.setChecked(bool(cfg.get("use_uia_elevation", False)))
         finally:
             self._loading = False
 
@@ -475,6 +500,7 @@ class SettingsPage(QWidget):
         new_cfg["auto_hide_on_blur"] = self.blur_hide_check.isChecked()
         new_cfg["page_size"] = self.page_spin.value()
         new_cfg["autostart"] = self.autostart_check.isChecked()
+        new_cfg["use_uia_elevation"] = self.uia_elevation_check.isChecked()
         self.config = new_cfg
         self.config_applied.emit(new_cfg)
 

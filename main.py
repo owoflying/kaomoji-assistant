@@ -28,6 +28,7 @@ try:
 except Exception:               # pragma: no cover - COM 不可用
     uia_text = None
 from core.app_icon import make_icon
+from core import uia_elevation
 from ui.picker_window import PickerWindow
 from ui.unified_window import UnifiedSettingsWindow
 from ui.win11_theme import Theme, set_app_theme
@@ -76,6 +77,7 @@ DEFAULT_CONFIG = {
         "autostart": False,
         "auto_hide_on_blur": True,
         "developer_mode": False,
+        "use_uia_elevation": False,
     }
 
 
@@ -314,6 +316,9 @@ def main():
         return
 
     config = load_config()
+    # 若用户在配置中开启了「使用UIA提权」，启动期为自身进程尝试启用 uiAccess，
+    # 以便读取管理员窗口的输入框。函数内部会先读配置，默认关闭时零副作用。
+    uia_elevation.ensure_uiaccess(config, _append_log)
     # 应用级样式：让所有独立对话框（新增/编辑颜文字等）与统一面板视觉一致
     app.setStyleSheet(Theme(config.get("theme", "light")).style_sheet())
     set_app_theme(config.get("theme", "light"))
@@ -503,6 +508,8 @@ def main():
         window.apply_config(config)
         unified.apply_config(config)
         state.max_recent = int(config.get("max_recent", 30))
+        # 若用户刚开启「使用UIA提权」，立即为当前进程尝试提权，无需重启即生效
+        uia_elevation.ensure_uiaccess(config, _append_log)
         # 自动弹出开关：按需开启/关闭全局监听；若统一窗口仍打开则保持暂停，
         # 等窗口关闭时由 _resume_main 统一恢复。
         if config.get("auto_popup", True):

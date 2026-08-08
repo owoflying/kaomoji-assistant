@@ -134,6 +134,7 @@ SettingsPage / AboutPage / DevPage ──(config_applied)──▶ UnifiedWindow
 > 2. 子页主题广播**不要在每个调用点硬编码** `search/settings/home/trigger/dev` 列表，改为遍历 `self._pages.values()` 并对 `hasattr(page,"set_theme")` 的页面广播——既去重，又自动覆盖 `library` 等"已实现 `set_theme` 却漏调"的页面（此前库浏览页切主题不刷新）。
 > 3. 删未用导入前先用 grep 确认符号在文件内**仅出现在 import 行**（`QSS` 字符串里的 `QStackedWidget` 只是选择器、非引用）；`enable_shadow` 等死函数无调用方才删，删后其专属导入（`QGraphicsDropShadowEffect`/`QColor`）一并移除。
 > 4. 函数体内的 `import re` 等应提到模块顶部。
+> 5. **删 import 的终极校验必须是"实例化 + 跑一遍"，而非单纯 py_compile / import**。`py_compile` 只查语法；`import xxx` 只执行模块顶层，不会执行类体内的 `__init__`/`set_theme`/`apply_config`。若某符号（如 `search_page.py` 的 `QFont`）在类方法里用到、却被误判"未用"而删除，则**构造该页或调用其方法时**才抛 `NameError` 崩溃——模块导入全程安静通过。正确做法：删 import 后用离屏（`QT_QPA_PLATFORM=offscreen`）把涉及窗口 `UnifiedSettingsWindow(...)`、`PickerWindow(...)` 真正建出来并调用 `apply_config`/`set_theme`，确认无 `NameError` 才算干净。
 
 **全局钩子与健壮性**
 热键/键盘/鼠标钩子均在独立线程或系统级回调中运行。UIA 文本读取（`core/uia_text.py`）走 `_UIAWorker` 独立线程 + `join(timeout)` + 忙碌守护，默认超时 0.2~0.35s，超时回退（文本→''、可编辑→True、矩形→None）。

@@ -78,6 +78,7 @@ DEFAULT_CONFIG = {
         "auto_hide_on_blur": True,
         "developer_mode": False,
         "use_uia_elevation": False,
+        "use_test_features": False,
     }
 
 

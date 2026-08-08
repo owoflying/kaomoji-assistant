@@ -393,6 +393,7 @@ class UnifiedSettingsWindow(QMainWindow):
             self.dev_page = DevPage(
                 self.dev_refs, self.config, self.save_config, self.theme.name)
             self.dev_page.developer_mode_disabled.connect(self._disable_dev_tab)
+            self.dev_page.test_features_changed.connect(self._on_test_features_changed)
             self._pages["developer"] = self.dev_page
         for p in self._pages.values():
             self.content.addWidget(p)
@@ -473,6 +474,7 @@ class UnifiedSettingsWindow(QMainWindow):
         self.dev_page = DevPage(
             self.dev_refs, self.config, self.save_config, self.theme.name)
         self.dev_page.developer_mode_disabled.connect(self._disable_dev_tab)
+        self.dev_page.test_features_changed.connect(self._on_test_features_changed)
         self._pages["developer"] = self.dev_page
         self.content.addWidget(self.dev_page)
         self.dev_page.set_theme(self.theme)
@@ -568,6 +570,15 @@ class UnifiedSettingsWindow(QMainWindow):
 
     def _on_settings_applied(self, new_cfg):
         self.config_applied.emit(new_cfg)
+
+    def _on_test_features_changed(self):
+        """开发者页切换「测试功能」总开关后，让设置页重新评估测试项的可见性。
+
+        use_test_features 已由 dev_page 写入共享 config 并存盘，这里仅把最新
+        配置同步给设置页并刷新可见性，避免整页重排带来的额外开销。
+        """
+        self.settings_page.config = self.config
+        self.settings_page.apply_test_feature_visibility()
 
     def _adjusted_content_surface(self):
         """根据 panel_alpha 调整内容区表面透明度。"""

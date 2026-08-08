@@ -62,6 +62,10 @@ class SettingsPage(QWidget):
         # 导致把 self.config 换成中间副本、切断与关于页共享的字典引用，造成
         # “开发者模式”等状态在不同页之间读不一致。用户交互时此标志为 False，自动保存照常触发。
         self._loading = False
+        # 测试功能分组：处于测试模式的设置项在 use_test_features 关闭时整体隐藏。
+        # 新功能默认归入此分组，确认上线后才移出。
+        self._test_widgets = []
+        self._test_section_title = None
         self._theme = Theme(config.get("theme", "light"))
         self._init_ui()
         self.refresh_from_config()
@@ -159,13 +163,15 @@ class SettingsPage(QWidget):
         self._add_row(croot, "开机自动启动", self._autostart_toggle())
         v.addWidget(card)
 
-        # 高级
-        v.addWidget(self._section_title("高级"))
+        # 高级（测试功能分组：use_test_features 关闭时整体隐藏，见 _apply_test_feature_visibility）
+        adv_title = self._section_title("高级")
+        v.addWidget(adv_title)
         card = self._card()
         croot = QVBoxLayout(card)
         croot.setContentsMargins(16, 14, 16, 14)
         croot.setSpacing(12)
-        self._add_row(croot, "使用 UIA 提权", self._uia_elevation_toggle())
+        uia_row = self._add_row(croot, "使用 UIA 提权", self._uia_elevation_toggle(),
+                               test_feature=True)
         tip = QLabel("开启后程序会尝试为自身进程启用 uiAccess，使候选栏成为 UIAccess 顶级窗口，"
                      "从而能与屏幕键盘(osk)等系统窗口处于同一 Z 序层级、互相覆盖。"
                      "该操作需要本程序本身也以管理员身份启动，否则不会生效；默认关闭，不影响其他功能。")
@@ -173,6 +179,11 @@ class SettingsPage(QWidget):
         tip.setWordWrap(True)
         croot.addWidget(tip)
         v.addWidget(card)
+        # 登记：use_test_features 关闭时隐藏整段（标题 + 卡片 + 行 + 说明）。
+        # uia_row 已由 _add_row(test_feature=True) 登记，此处仅补登记卡片与说明文字，
+        # 避免重复登记同一控件。
+        self._test_section_title = adv_title
+        self._test_widgets.extend([card, tip])
 
         v.addStretch(1)
         self.scroll.setWidget(body)
@@ -204,8 +215,12 @@ class SettingsPage(QWidget):
         card.setObjectName("Card")
         return card
 
-    def _add_row(self, layout, label, widget_or_layout):
-        """向卡片中添加一行设置项；用 QWidget 容器保证最小行高，防止被压扁。"""
+    def _add_row(self, layout, label, widget_or_layout, test_feature=False):
+        """向卡片中添加一行设置项；用 QWidget 容器保证最小行高，防止被压扁。
+
+        test_feature=True 时，该行会被登记到测试功能分组，在 use_test_features
+        关闭时自动隐藏（新功能默认归此分组）。
+        """
         row = QHBoxLayout()
         row.setContentsMargins(0, 6, 0, 6)
         row.setSpacing(12)
@@ -226,6 +241,9 @@ class SettingsPage(QWidget):
         container.setAutoFillBackground(False)
         container.setAttribute(Qt.WA_StyledBackground, False)
         layout.addWidget(container)
+        if test_feature:
+            self._test_widgets.append(container)
+        return container
 
     def _theme_combo(self):
         self.theme_combo = FluentComboBox(self._theme)
@@ -359,6 +377,22 @@ class SettingsPage(QWidget):
             self.uia_elevation_check.setChecked(bool(cfg.get("use_uia_elevation", False)))
         finally:
             self._loading = False
+        # 测试功能分组：根据 use_test_features 决定高级分区(UIA 提权等)是否可见
+        self.apply_test_feature_visibility()
+
+    def apply_test_feature_visibility(self):
+        """按 use_test_features 显隐测试功能分组。
+
+        正式环境默认关闭，处于测试模式的新功能不显示；开发者模式里开启
+        「测试功能」后才会显示并可用。新功能默认归入此分组，确认上线后
+        再从此处移出并改为无条件显示。
+        """
+        visible = bool(self.config.get("use_test_features", False))
+        for w in self._test_widgets:
+            if w is not None:
+                w.setVisible(visible)
+        if self._test_section_title is not None:
+            self._test_section_title.setVisible(visible)
 
     def _update_hotkey_label(self, hotkey_str=None):
         if self._captured is not None:

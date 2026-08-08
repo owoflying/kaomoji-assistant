@@ -185,6 +185,7 @@ class EventStream(QWidget):
 # ---------------------------------------------------------------------------
 class DevPage(QWidget):
     developer_mode_disabled = Signal()   # 请求主窗口关闭开发者模式
+    test_features_changed = Signal()     # 测试功能总开关切换，请求设置页重新评估可见性
 
     def __init__(self, dev_refs, config=None, save_config=None,
                  theme_name="light", parent=None):
@@ -241,9 +242,10 @@ class DevPage(QWidget):
         sub.setWordWrap(True)
         body.addWidget(sub)
 
-        # 把「开发者模式控制」放在最上方：这是危险/高频操作，进入标签页就要看到，
-        # 避免用户滚动到长页面底部才能找到关闭入口。
+        # 把「开发者模式控制」「测试功能」放在最上方：危险/高频操作进入标签页就要看到，
+        # 避免用户滚动到长页面底部才能找到关闭入口或测试开关。
         body.addWidget(self._build_control_card())
+        body.addWidget(self._build_test_card())
         body.addWidget(self._build_event_card())
         body.addWidget(self._build_diag_card())
         body.addWidget(self._build_emotion_card())
@@ -463,6 +465,39 @@ class DevPage(QWidget):
         h.addStretch(1)
         v.addLayout(h)
         return card
+
+    # ---- 11. 测试功能总开关 ----
+    def _build_test_card(self):
+        card, v = self._card("测试功能")
+        tip = QLabel("开启后，设置页中处于「测试模式」的新功能（如 UIA 提权）将显示并可用；"
+                     "未开启时这些功能默认隐藏。新开发功能默认归入测试模式，"
+                     "仅确认可正式上线后才移出测试模式并开放给正式环境。")
+        tip.setObjectName("BodyText")
+        tip.setWordWrap(True)
+        v.addWidget(tip)
+        b = QPushButton()
+        b.setMinimumHeight(34)
+        b.setCursor(Qt.PointingHandCursor)
+        b.clicked.connect(self._on_toggle_test)
+        self._test_btn = b
+        v.addWidget(b)
+        self._update_test_btn()
+        return card
+
+    def _update_test_btn(self):
+        on = bool(self.config.get("use_test_features", False))
+        self._test_btn.setText("关闭测试功能" if on else "开启测试功能")
+        self._test_btn.setObjectName("DangerButton" if on else "AccentButton")
+        # 切换 objectName 后强制刷新样式，使 AccentButton / DangerButton 配色生效
+        self._test_btn.style().unpolish(self._test_btn)
+        self._test_btn.style().polish(self._test_btn)
+
+    def _on_toggle_test(self):
+        self.config["use_test_features"] = not bool(self.config.get("use_test_features", False))
+        if self._save_config:
+            self._save_config(self.config)
+        self._update_test_btn()
+        self.test_features_changed.emit()
 
     # ---------- 行为 ----------
     def _on_disable(self):

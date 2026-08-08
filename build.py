@@ -1,14 +1,22 @@
 """打包脚本：把项目构建为 KaomojiAssistant 可执行程序（onedir）。
 
 用法：
-    .venv/Scripts/python.exe build.py
+    .venv/Scripts/python.exe build.py                       # 开发构建（关于页仅显示 commit 短哈希）
+    .venv/Scripts/python.exe build.py --version v1.2        # 正式版本（关于页显示 v1.2(commit)）
+    .venv/Scripts/python.exe build.py --version v1.2 --notes "本次更新：xxx"
+    .venv/Scripts/python.exe build.py --version v1.2 --notes-file CHANGELOG.txt
 
 产物：
     dist/KaomojiAssistant/KaomojiAssistant.exe  （连同依赖 DLL 与 data 资源）
+
+版本信息（BUILD_COMMIT / BUILD_VERSION / BUILD_NOTES）由 build.py 在 PyInstaller
+运行前写入 core/_build_version.py（已加入 .gitignore，自动生成），供打包态（无 git）
+关于页与首次启动「欢迎更新」弹窗使用。
 """
 import os
 import sys
 import subprocess
+import argparse
 
 import PyInstaller.__main__
 from core.app_icon import save_ico
@@ -46,9 +54,11 @@ ARGS = [
 ]
 
 
-def write_build_version():
-    """构建前把当前 commit 短哈希写入 core/_build_version.py，供打包态（无 git）回退显示。
+def write_build_version(version="", notes=""):
+    """构建前把版本信息写入 core/_build_version.py，供打包态（无 git）回退显示。
 
+    version: 人工版本标签（如 v1.2）；空串表示开发构建（关于页仅显示 commit 短哈希）。
+    notes:   更新说明（changelog），将显示在首次启动的「欢迎更新」弹窗。
     该文件由本脚本自动生成，已加入 .gitignore，请勿手改。
     """
     try:
@@ -63,14 +73,35 @@ def write_build_version():
         commit = "unknown"
     path = os.path.join(HERE, "core", "_build_version.py")
     with open(path, "w", encoding="utf-8") as f:
-        f.write('# 由 build.py 自动生成，请勿手改；记录构建所用 commit 短哈希。\n')
+        f.write('# 由 build.py 自动生成，请勿手改；记录构建所用版本信息。\n')
         f.write('BUILD_COMMIT = "%s"\n' % commit)
-    print("[build] 写入构建版本 %s -> %s" % (commit, path))
+        f.write('BUILD_VERSION = "%s"\n' % (version or ""))
+        # 用 repr 安全转义多行/引号，确保生成的是合法 Python 字符串字面量
+        f.write('BUILD_NOTES = %s\n' % repr(notes or ""))
+    print("[build] 写入构建版本 commit=%s version=%s -> %s"
+          % (commit, version or "(dev)", path))
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="构建 KaomojiAssistant（onedir）")
+    parser.add_argument("--version", default="",
+                        help="正式版本标签，如 v1.2；省略则为开发构建（仅显示 commit 短哈希）")
+    parser.add_argument("--notes", default="",
+                        help="更新说明（changelog），显示在首次启动弹窗")
+    parser.add_argument("--notes-file", default="",
+                        help="从文件读取更新说明（优先级高于 --notes）")
+    args = parser.parse_args()
+
+    notes = args.notes
+    if args.notes_file:
+        try:
+            with open(args.notes_file, "r", encoding="utf-8") as nf:
+                notes = nf.read()
+        except Exception as e:
+            print("[build] 读取 notes-file 失败：%s" % e)
+
     # 构建前先生成与托盘同款的 ico 图标
     save_ico(ICO)
-    # 烘焙当前 commit 短哈希，供打包态版本号回退显示
-    write_build_version()
+    # 烘焙版本信息，供关于页与更新弹窗使用
+    write_build_version(version=args.version, notes=notes)
     sys.exit(PyInstaller.__main__.run(ARGS))

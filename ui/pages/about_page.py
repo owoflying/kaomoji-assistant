@@ -227,10 +227,12 @@ class AboutPage(QWidget):
         self._api.download_progress.connect(self._on_dl_progress)
         self._api.download_finished.connect(self._on_dl_finished)
         self._api.download_error.connect(self._on_dl_error)
+        self._api.verifying.connect(self._on_dl_verifying)
 
         self._latest_info = None   # 解析后的发行版信息
         self._dl_url = None        # 待下载资产 URL
         self._dl_name = None       # 待下载资产文件名
+        self._dl_sha256 = None     # 待下载资产服务端 SHA-256（来自 digest）
 
     def _set_busy(self, busy):
         """检查/下载期间禁用触发按钮，避免重复请求。"""
@@ -262,6 +264,7 @@ class AboutPage(QWidget):
         if asset and asset.get("url"):
             self._dl_url = asset["url"]
             self._dl_name = asset.get("name") or "KaomojiAssistant-release"
+            self._dl_sha256 = asset.get("sha256") or None
             display_name = self._dl_name if len(self._dl_name) <= 28 else self._dl_name[:25] + "…"
             self._rel_download.setText("下载 %s" % display_name)
             self._rel_download.setToolTip(self._dl_name)
@@ -288,15 +291,23 @@ class AboutPage(QWidget):
         self._rel_open.setVisible(False)
         self._dl_dest = dest
         self._set_busy(True)
-        self._api.download_asset(self._dl_url, dest)
+        self._api.download_asset(self._dl_url, dest, self._dl_sha256)
 
     def _on_dl_progress(self, pct):
         self._rel_progress.setText("下载进度：%d%%" % pct)
 
+    def _on_dl_verifying(self):
+        self._rel_progress.setText("校验中…")
+        self._rel_status.setText("下载完成，正在校验文件完整性…")
+
     def _on_dl_finished(self, path):
         self._set_busy(False)
-        self._rel_progress.setText("下载完成")
-        self._rel_status.setText("已保存到：%s" % path)
+        if self._dl_sha256:
+            self._rel_progress.setText("✓ 校验通过")
+            self._rel_status.setText("已下载并校验通过：%s" % path)
+        else:
+            self._rel_progress.setText("下载完成")
+            self._rel_status.setText("已保存到：%s" % path)
         self._rel_open.setVisible(True)
 
     def _on_dl_error(self, msg):

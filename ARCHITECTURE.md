@@ -220,7 +220,7 @@ SettingsPage / AboutPage / DevPage ──(config_applied)──▶ UnifiedWindow
 - 可写配置落 `%APPDATA%/KaomojiAssistant`，只读资源从 `_internal` 取（`runtime.resource_path` 多候选回退）；
 - `--add-data` 目标写**目录**（`ui/fonts`），否则资源会嵌深一层导致字体注册失败、图标变豆腐块；
 - 验证：`QT_QPA_PLATFORM=offscreen` 可让源码态与 exe 形态都常驻运行。
-- 版本与更新弹窗：`build.py` 支持 `--version v1.2`（烘焙人工版本标签）与 `--notes`/`--notes-file`（更新说明）；三者写入 `core/_build_version.py`（`BUILD_COMMIT`/`BUILD_VERSION`/`BUILD_NOTES`，已加入 `.gitignore`）。`core/version.py` 的 `get_app_version()` 在带标签时组合显示为 `v1.2(bdb300a)`，关于页与更新弹窗统一从此取；**开发构建（无标签）仅显示 commit 短哈希**。`main.py` 启动后仅当**正式发布构建**（`is_release_build()` 为真）且本次版本与上次已见版本（存 `%APPDATA%/KaomojiAssistant/last_seen_version.txt`）不同，才弹一次「欢迎更新 v1.2(bdb300a)」对话框（`ui/update_dialog.py`）；开发构建与同版本重开均不弹。
+- 版本与更新弹窗：`build.py` 支持 `--version v1.2`（烘焙人工版本标签）与 `--notes`/`--notes-file`（更新说明）；三者写入 `core/_build_version.py`（`BUILD_COMMIT`/`BUILD_VERSION`/`BUILD_NOTES`，已加入 `.gitignore`）。`core/version.py` 的 `get_app_version()` 在带标签时组合显示为 `v1.2(bdb300a)`，关于页与更新弹窗统一从此取；**开发构建（无标签）仅显示 commit 短哈希**。`main.py` 启动后仅当**正式发布构建**（`is_release_build()` 为真）且本次版本与上次已见版本（存 `%APPDATA%/KaomojiAssistant/last_seen_version.txt`）不同，才弹一次「欢迎更新 v1.2(bdb300a)」对话框（`ui/update_dialog.py`）；开发构建与同版本重开均不弹。`build.py` 无命令行参数启动时进入**交互模式**：逐项 input 提示版本标签/更新说明（支持多行或 `@文件`，可全部留空做开发构建），最后确认再构建；传入任意命令行参数则跳过交互、按 argparse 直接编译（保留原路径）。
 
 > **经验提示（打包形态陷阱）**：源码态与冻结态是**两套互不干扰**的路径——`resource_path()` 在 frozen 下指向 `_internal`、源码下指向项目目录。曾因"冻结态已写配置目录、源码态又写项目目录"产生两份配置，排查许久。冻结态可写区务必与只读资源区严格分离。
 

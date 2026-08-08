@@ -84,13 +84,35 @@ def write_build_version(version="", notes=""):
           % (commit, version or "(dev)", path))
 
 
+def _cleanup_build_version():
+    """打包完成后移除源码树里的临时构建文件，避免污染源码态版本号。
+
+    core/_build_version.py 仅用于 PyInstaller 打包期注入（随包分发到 onedir），
+    构建结束后必须删掉；否则源码态程序会因读取它而显示错误的烘焙版本号。
+    该文件已加入 .gitignore，删除不影响仓库。
+    """
+    try:
+        path = os.path.join(HERE, "core", "_build_version.py")
+        if os.path.exists(path):
+            os.remove(path)
+            print("[build] 已清理临时构建版本文件: %s" % path)
+    except Exception as e:
+        print("[build] 清理构建版本文件失败（可忽略）: %s" % e)
+
+
 def _build_with(version, notes):
     """执行实际构建：生成 ico、烘焙版本信息、调用 PyInstaller。"""
     # 构建前先生成与托盘同款的 ico 图标
     save_ico(ICO)
     # 烘焙版本信息，供关于页与更新弹窗使用
     write_build_version(version=version, notes=notes)
-    sys.exit(PyInstaller.__main__.run(ARGS))
+    try:
+        code = PyInstaller.__main__.run(ARGS)
+    finally:
+        # 无论成功失败，打包结束后清除源码树里的临时构建文件，
+        # 否则源码态程序会误读它而导致版本号被覆盖。
+        _cleanup_build_version()
+    sys.exit(code)
 
 
 def _parse_cli_args():

@@ -9,7 +9,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
-from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
+from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QMessageBox
 from PySide6.QtGui import QIcon, QAction
 from PySide6.QtCore import QTimer, QObject, Signal
 
@@ -38,6 +38,9 @@ from ui.log_viewer import show_log_viewer
 # 运行时日志环形缓冲：收集 Qt 消息 + 未捕获异常，供「查看日志」对话框读取。
 LOG_BUFFER = []
 LOG_BUFFER_MAX = 2000
+
+# UIA 提权失败提示一次性标记：避免每次改动其它设置都重复弹窗。
+uia_warn_shown = False
 
 
 def _append_log(level, source, message):
@@ -510,8 +513,20 @@ def main():
         window.apply_config(config)
         unified.apply_config(config)
         state.max_recent = int(config.get("max_recent", 30))
-        # 若用户刚开启「使用UIA提权」，立即为当前进程尝试提权（管理员下会以 UIAccess 令牌重启自身生效）
-        uia_elevation.ensure_uiaccess(config, _append_log)
+        # 若用户开启了「使用UIA提权」，立即为当前进程尝试提权（管理员下会以 UIAccess 令牌重启自身生效）。
+        # 返回 status 字典，便于在“已开启但本次未真正生效（需管理员/失败）”时给用户明确提示，
+        # 杜绝此前“静默失败、无任何提示”的问题；成功重启或已生效则不弹窗。
+        uia_status = uia_elevation.ensure_uiaccess(config, _append_log)
+        if (config.get("use_uia_elevation", False)
+                and not (uia_status.get("granted") or uia_status.get("relaunched"))
+                and not uia_warn_shown):
+            uia_warn_shown = True
+            try:
+                QMessageBox.warning(
+                    unified, "UIA 提权",
+                    uia_status.get("message") or "UIA 提权未生效，请查看日志。")
+            except Exception:
+                pass
         # 自动弹出开关：按需开启/关闭全局监听；若统一窗口仍打开则保持暂停，
         # 等窗口关闭时由 _resume_main 统一恢复。
         if config.get("auto_popup", True):

@@ -790,21 +790,6 @@ class PickerWindow(QWidget):
             "1-9 选字 · ←/→ 移动 · -/= 翻页 · 空格/回车 上屏 · Esc 关闭" % label
         )
 
-    # ---------- 配置热更新 ----------
-    def apply_config(self, config):
-        self.config = config
-        self.page_size = int(config.get("page_size", 3))
-        self._apply_config_visuals()
-        # 切主题后强制重算样式并立即重绘，确保浅/深色切换实时生效
-        self.style().unpolish(self)
-        self.style().polish(self)
-        if len(self._chips) != self.page_size:
-            self._rebuild_chips()
-        self.page = 0
-        self.active = 0
-        self._render()
-        self.repaint()
-
     # ---------- 圆角半透明背景 + 自绘柔和阴影 ----------
     def paintEvent(self, e):
         painter = QPainter(self)

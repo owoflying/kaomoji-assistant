@@ -59,7 +59,7 @@ from ui.win_style import (
     apply_backdrop, apply_dark_mode, _has_dwm,
     DWMSBT_TRANSIENTWINDOW, DWMSBT_NONE,
 )
-from ui.win11_theme import Theme
+from ui.win11_theme import Theme, resolve_theme_name
 from ui.fluent_icons import icon_label, recolor
 from ui.animated_stack import AnimatedStackedWidget
 from ui.pages import (
@@ -227,9 +227,10 @@ class UnifiedSettingsWindow(QMainWindow):
         # 避免与设置页自动保存时的字典替换/刷新相互干扰。
         self._developer_mode = bool(config.get("developer_mode", False))
 
-        self.theme = Theme(config.get("theme", "light"))
+        self.theme = Theme(resolve_theme_name(config.get("theme", "light")))
         self._nav_items = []
-        self._acrylic_on = bool(config.get("acrylic", True)) and _has_dwm
+        # 亚克力模糊为窗口核心视觉效果，始终启用（DWM 不可用时为 no-op）
+        self._acrylic_on = _has_dwm
         self._shadow_color = _parse_color(self.theme.shadow_color)
         self._theme_ss = ""          # 缓存当前主题的完整 QSS，供 _refresh_content_sheet 复用
         # 窗口状态持久化：关闭/隐藏时记住是否最大化，下次 show 时恢复
@@ -373,7 +374,7 @@ class UnifiedSettingsWindow(QMainWindow):
         self.library_page = LibraryPage(self.data)
         self.custom_page = CustomKaomojiPage(self.user_kao)
         self.trigger_page = TriggerPage(self.triggers, self.theme)
-        self.search_page = SearchPage(self.data, self.user_kao, self.config.get("theme", "light"))
+        self.search_page = SearchPage(self.data, self.user_kao, self.theme.name)
         self.settings_page = SettingsPage(self.config)
         self.about_page = AboutPage(self.config, self.state, self.save_config, self.open_log)
 
@@ -551,8 +552,8 @@ class UnifiedSettingsWindow(QMainWindow):
     def apply_config(self, config):
         """外部配置变更后刷新窗口主题与内部页。"""
         self.config = config
-        self.theme = Theme(config.get("theme", "light"))
-        self._acrylic_on = bool(config.get("acrylic", True)) and _has_dwm
+        self.theme = Theme(resolve_theme_name(config.get("theme", "light")))
+        self._acrylic_on = _has_dwm
         self._shadow_color = _parse_color(self.theme.shadow_color)
         self._apply_theme()
         self.settings_page.config = config
@@ -710,10 +711,8 @@ class UnifiedSettingsWindow(QMainWindow):
 
     def _update_backdrop(self):
         hwnd = int(self.winId())
-        if self._acrylic_on:
-            apply_backdrop(hwnd, DWMSBT_TRANSIENTWINDOW)
-        else:
-            apply_backdrop(hwnd, DWMSBT_NONE)
+        # 亚克力模糊为窗口核心视觉效果，始终启用（DWM 不可用时 apply_backdrop 为 no-op）
+        apply_backdrop(hwnd, DWMSBT_TRANSIENTWINDOW)
         apply_dark_mode(hwnd, self.theme.dark)
 
     def _toggle_maximize(self):

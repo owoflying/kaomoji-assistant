@@ -36,6 +36,7 @@ from ui.win_style import (
     apply_backdrop, apply_dark_mode,
     DWMSBT_TRANSIENTWINDOW, DWMSBT_NONE,
 )
+from ui.win11_theme import resolve_theme_name
 
 # 顶层窗口向外留白，用于自绘柔和阴影（阴影画在窗口矩形内，避免 UpdateLayeredWindow 越界报错）
 SHADOW_PAD = 12
@@ -241,14 +242,12 @@ class PickerWindow(QWidget):
         走，闪烁改由 windowOpacity 方案根治（见 _init_window / _prepare_show）。
         """
         hwnd = int(self.winId())
-        if self.config.get("acrylic", True):
-            apply_backdrop(hwnd, DWMSBT_TRANSIENTWINDOW)
-        else:
-            apply_backdrop(hwnd, DWMSBT_NONE)
-        apply_dark_mode(hwnd, self.config.get("theme", "light") == "dark")
+        # 亚克力模糊为窗口核心视觉效果，始终启用（DWM 不可用时为 no-op）
+        apply_backdrop(hwnd, DWMSBT_TRANSIENTWINDOW)
+        apply_dark_mode(hwnd, resolve_theme_name(self.config.get("theme", "light")) == "dark")
 
     def _apply_style(self):
-        theme = self.config.get("theme", "light")
+        theme = resolve_theme_name(self.config.get("theme", "light"))
         pal = PALETTES.get(theme, PALETTES["light"])
         self._palette = pal
         self._applied_theme = theme      # 供 _prepare_show 判断主题是否已同步
@@ -571,7 +570,7 @@ class PickerWindow(QWidget):
         self.setWindowOpacity(0.0)
         # 兜底：万一 config 被外部直接改过（没走 apply_config），这里补一次同步，
         # 保证「显示出来的第一帧」就是当前主题，不会先浅后深或先深后浅。
-        if self.config.get("theme", "light") != getattr(self, "_applied_theme", None):
+        if resolve_theme_name(self.config.get("theme", "light")) != getattr(self, "_applied_theme", None):
             self._apply_config_visuals()
 
     def toggle(self):

@@ -9,7 +9,7 @@ import os
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QFrame, QPushButton, QHBoxLayout,
-    QScrollArea,
+    QScrollArea, QDialog, QPlainTextEdit, QFileDialog,
 )
 from PySide6.QtCore import Qt, QUrl, QTimer, QEvent, Signal
 from PySide6.QtGui import QFont, QDesktopServices
@@ -21,6 +21,94 @@ from core.github_release import ReleasesAPI, pick_windows_asset, downloads_dir
 
 _CLICK_TARGET = 8          # 连续点击版本号多少次解锁开发者模式
 _CLICK_TIMEOUT_MS = 6000    # 两次点击间隔超过该值才清零（放宽到 6s，避免正常节奏点击被误重置导致“要点好久”）
+
+
+class UsageStatsDialog(QDialog):
+    """使用统计详情弹窗：展示累计插入次数与 Top 颜文字排行。"""
+
+    def __init__(self, state, theme, parent=None):
+        super().__init__(parent)
+        self._state = state
+        self._theme = theme
+        self.setWindowTitle("使用统计")
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        self.setMinimumSize(420, 420)
+        self.resize(520, 560)
+        self._init_ui()
+        self._refresh()
+
+    def _init_ui(self):
+        t = self._theme
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 18, 20, 18)
+        root.setSpacing(14)
+
+        title = QLabel("使用统计")
+        title.setObjectName("PageTitle")
+        root.addWidget(title)
+
+        # 累计插入
+        self._total = QLabel("")
+        self._total.setObjectName("SectionTitle")
+        root.addWidget(self._total)
+
+        # 排行文本框
+        self._text = QPlainTextEdit()
+        self._text.setReadOnly(True)
+        self._text.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self._text.setFont(kaomoji_font(14))
+        self._text.setStyleSheet(
+            "QPlainTextEdit{background:%s;border:1px solid %s;border-radius:8px;"
+            "padding:10px 12px;color:%s;}"
+            % (t.card, t.card_border, t.text)
+        )
+        root.addWidget(self._text, 1)
+
+        # 底部按钮
+        bar = QHBoxLayout()
+        bar.addStretch(1)
+        save_btn = QPushButton("保存为文件")
+        save_btn.clicked.connect(self._save)
+        bar.addWidget(save_btn)
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(self.close)
+        bar.addWidget(close_btn)
+        root.addLayout(bar)
+
+        # 用完整主题 QSS 覆盖按钮等样式
+        self.setStyleSheet(t.style_sheet())
+
+    def _refresh(self):
+        total = self._state.total_inserts()
+        self._total.setText("累计插入：%d 次" % total)
+        top = self._state.top_usage(100)
+        if not top:
+            self._text.setPlainText("还没有使用记录，去插入几个颜文字吧～")
+            return
+        lines = ["# 使用统计排行", "累计插入：%d 次" % total, ""]
+        max_text_len = max(len(text) for text, _ in top)
+        for i, (text, cnt) in enumerate(top, 1):
+            lines.append("%2d. %s  %d 次" % (i, text.ljust(max_text_len), cnt))
+        self._text.setPlainText("\n".join(lines))
+
+    def _save(self):
+        total = self._state.total_inserts()
+        top = self._state.top_usage(100)
+        lines = ["累计插入：%d 次" % total, ""]
+        for text, cnt in top:
+            lines.append("%s\t%d" % (text, cnt))
+        text = "\n".join(lines)
+        path, _ = QFileDialog.getSaveFileName(
+            self, "保存使用统计", "kaomoji-usage-stats.txt",
+            "文本文件 (*.txt);;所有文件 (*.*)",
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text + "\n")
+        except Exception:  # pragma: no cover
+            pass
 
 
 class AboutPage(QWidget):
@@ -49,17 +137,17 @@ class AboutPage(QWidget):
         root.addWidget(title)
 
         # 把卡片内容放进可滚动区域：统计行数多时会超出可用高度，
-        # 没有滚动会导致布局被压缩、文字被截断（截图中“使用统计”标题几乎完全消失）。
+        # 没有滚动会导致布局被压缩、文字被截断。
         scroll = QScrollArea()
         scroll.setFrameShape(QScrollArea.NoFrame)
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        # 不在这里单独 setStyleSheet：QScrollArea 的透明规则已由全局 QSS 提供，
-        # 自行 setStyleSheet 会切断级联，导致卡片内 AccentButton 等规则失效。
 
         body = QWidget()
-        body.setObjectName("AboutBody")
+        # 关键：与设置页保持一致，使用 SettingsBody 匹配全局 QSS 的透明规则，
+        # 避免 QScrollArea viewport 的默认浅色背景透出（深色模式下尤其明显）。
+        body.setObjectName("SettingsBody")
         body_layout = QVBoxLayout(body)
         body_layout.setContentsMargins(0, 0, 0, 0)
         body_layout.setSpacing(22)
@@ -85,7 +173,7 @@ class AboutPage(QWidget):
         # 开发者模式徽标（启用前隐藏）
         self._dev_badge = QLabel("● 开发者模式")
         self._dev_badge.setObjectName("Caption")
-        self._dev_badge.setStyleSheet("color:#0a84ff;font-weight:bold;")
+        # 颜色在 set_theme 中按当前主题 accent 设置，避免硬编码导致深浅色下不协调
         self._dev_badge.setVisible(False)
         croot.addWidget(self._dev_badge)
 
@@ -117,39 +205,39 @@ class AboutPage(QWidget):
         # 更新与下载卡片：从 GitHub 直接获取并下载项目发行包
         self._init_release_card(body_layout)
 
-        # 使用统计卡片
+        # 使用统计卡片（摘要 + 详情弹窗）
         if self._state is not None:
             stat_card = QFrame()
             stat_card.setObjectName("Card")
             scard = QVBoxLayout(stat_card)
-            scard.setContentsMargins(24, 28, 24, 22)
-            scard.setSpacing(10)
+            scard.setContentsMargins(24, 22, 24, 22)
+            scard.setSpacing(14)
 
             stitle = QLabel("使用统计")
             stitle.setObjectName("PageTitle")
             scard.addWidget(stitle)
 
-            stotal = QLabel("累计插入：%d 次" % self._state.total_inserts())
-            stotal.setObjectName("BodyText")
-            scard.addWidget(stotal)
+            self._stat_total = QLabel("累计插入：%d 次" % self._state.total_inserts())
+            self._stat_total.setObjectName("BodyText")
+            scard.addWidget(self._stat_total)
 
-            top = self._state.top_usage(10)
+            top = self._state.top_usage(3)
             if top:
-                for text, cnt in top:
-                    row = QHBoxLayout()
-                    row.setContentsMargins(0, 4, 0, 4)
-                    tl = QLabel(text)
-                    tl.setFont(kaomoji_font(14))
-                    cl = QLabel("%d 次" % cnt)
-                    cl.setObjectName("Caption")
-                    row.addWidget(tl)
-                    row.addStretch(1)
-                    row.addWidget(cl)
-                    scard.addLayout(row)
+                preview = QLabel("\n".join("%s  %d 次" % (text, cnt) for text, cnt in top))
+                preview.setObjectName("Caption")
+                scard.addWidget(preview)
             else:
                 empty = QLabel("还没有使用记录，去插入几个颜文字吧～")
                 empty.setObjectName("Caption")
                 scard.addWidget(empty)
+
+            btn_row = QHBoxLayout()
+            btn_row.addStretch(1)
+            detail_btn = QPushButton("查看详情")
+            detail_btn.setObjectName("AccentButton")
+            detail_btn.clicked.connect(self._show_stats_dialog)
+            btn_row.addWidget(detail_btn)
+            scard.addLayout(btn_row)
 
             body_layout.addWidget(stat_card)
 
@@ -160,6 +248,19 @@ class AboutPage(QWidget):
         # 若已处于开发者模式，直接进入启用态
         if self.config.get("developer_mode", False):
             self._enter_developer_mode(announce=False)
+
+    # ---------- 统计详情弹窗 ----------
+    def _show_stats_dialog(self):
+        from ui.win11_theme import Theme, system_theme_name
+        theme_name = self.config.get("theme", "light")
+        # 跟随系统主题时，取实际生效的主题
+        if theme_name == "system":
+            theme_name = system_theme_name()
+        dlg = UsageStatsDialog(self._state, Theme(theme_name), parent=self.window())
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        return dlg
 
     # ---------- 更新与下载（GitHub 发行包） ----------
     def _init_release_card(self, body_layout):
@@ -328,6 +429,16 @@ class AboutPage(QWidget):
         if url:
             QDesktopServices.openUrl(QUrl(url))
 
+    # ---------- 主题切换 ----------
+    def set_theme(self, theme):
+        """主题切换时刷新开发者徽标等硬编码颜色，避免深浅色下不协调。"""
+        self._dev_badge.setStyleSheet("color:%s;font-weight:bold;" % theme.accent)
+        # 版本号点击高亮反馈也跟随主题 accent
+        self._ver_label_flash_style = "color:%s;font-weight:bold;" % theme.accent
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.update()
+
     # ---------- 事件过滤：捕获版本号点击 ----------
     def eventFilter(self, obj, event):
         if obj is self._ver_label and event.type() == QEvent.MouseButtonPress \
@@ -351,7 +462,8 @@ class AboutPage(QWidget):
 
     def _flash_version(self):
         """点击版本号时的轻量视觉反馈：短暂高亮，确认点击已被接收。"""
-        self._ver_label.setStyleSheet("color:#0a84ff;font-weight:bold;")
+        style = getattr(self, "_ver_label_flash_style", "color:#0a84ff;font-weight:bold;")
+        self._ver_label.setStyleSheet(style)
         QTimer.singleShot(150, lambda: self._ver_label.setStyleSheet(""))
 
     def _reset_clicks(self):
@@ -374,7 +486,8 @@ class AboutPage(QWidget):
     def reset_developer_mode(self):
         """由统一窗口在「关闭开发者模式」时调用：清空本页的开发者模式状态，
         使后续再次连点版本号能重新解锁（否则本页仍记着 developer_mode=True，
-        会直接短路点击计数、不再发出 developer_mode_enabled 信号，导致无法二次进入）。"""
+        会直接短路点击计数、不再发出 developer_mode_enabled 信号，导致无法二次进入）。
+        """
         self._click_count = 0
         self._click_timer.stop()
         self._dev_badge.setVisible(False)

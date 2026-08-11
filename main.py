@@ -31,7 +31,7 @@ from core.app_icon import make_icon
 from core import uia_elevation
 from ui.picker_window import PickerWindow
 from ui.unified_window import UnifiedSettingsWindow
-from ui.win11_theme import Theme, set_app_theme
+from ui.win11_theme import Theme, set_app_theme, resolve_theme_name, system_theme_name
 from ui.fluent_icons import ensure_icon_font
 from ui.log_viewer import show_log_viewer
 
@@ -72,7 +72,6 @@ DEFAULT_CONFIG = {
     "theme": "light",
     "panel_alpha": 0.92,
     "opacity": 0.98,
-    "acrylic": True,
     "input_method": "direct",
     "max_recent": 30,
         "auto_popup": True,
@@ -89,7 +88,6 @@ DEFAULT_CONFIG = {
 # 防止「仅隐藏设置 UI」挡不住的测试功能逃逸——已开启的测试项其配置位仍会被功能代码读取并生效。
 _TEST_FEATURE_DEFAULTS = {
     "use_uia_elevation": False,
-    "acrylic": False,
 }
 
 # 输入方式中始终可用的默认项；其余（clipboard/type）属于测试功能，仅 use_test_features=True 时可选，
@@ -341,12 +339,49 @@ def main():
         return
 
     config = load_config()
+
+    # ---------- 系统主题监听（仅「跟随系统」模式启用） ----------
+    _system_theme_timer = QTimer(app)
+    _system_theme_timer.setInterval(3000)
+    _last_system_theme = system_theme_name()
+
+    def _check_system_theme():
+        nonlocal _last_system_theme
+        if config.get("theme", "light") != "system":
+            return
+        current = system_theme_name()
+        if current == _last_system_theme:
+            return
+        _last_system_theme = current
+        effective = resolve_theme_name("system")
+        app.setStyleSheet(Theme(effective).style_sheet())
+        if menu is not None:
+            menu.setStyleSheet(Theme(effective).menu_style())
+        set_app_theme("system")
+        if window is not None:
+            window.apply_config(config)
+        if unified is not None:
+            unified.apply_config(config)
+
+    _system_theme_timer.timeout.connect(_check_system_theme)
+
+    def _update_system_theme_watcher():
+        if config.get("theme", "light") == "system":
+            if not _system_theme_timer.isActive():
+                nonlocal _last_system_theme
+                _last_system_theme = system_theme_name()
+                _system_theme_timer.start()
+        else:
+            _system_theme_timer.stop()
+
     # 若用户在配置中开启了「使用UIA提权」，启动期为自身进程尝试启用 uiAccess，
     # 使候选栏成为 UIAccess 顶级窗口、能与屏幕键盘(osk)等互相覆盖。
     # 函数内部会先读配置，默认关闭时零副作用；管理员运行时才会真正重启进程生效。
     uia_elevation.ensure_uiaccess(config, _append_log)
     # 应用级样式：让所有独立对话框（新增/编辑颜文字等）与统一面板视觉一致
-    app.setStyleSheet(Theme(config.get("theme", "light")).style_sheet())
+    # 配置可能是 "system"，需解析为实际 light/dark 后再构造 Theme
+    _initial_theme = resolve_theme_name(config.get("theme", "light"))
+    app.setStyleSheet(Theme(_initial_theme).style_sheet())
     set_app_theme(config.get("theme", "light"))
     # 让「配置里的 autostart」与注册表实际状态保持一致
     if autostart.is_supported():
@@ -528,9 +563,12 @@ def main():
             autostart.set_enabled(bool(config.get("autostart", False)))
         # 实时应用：换肤等；热键的实际重新注册放到统一窗口关闭时统一处理
         # 应用级样式表也要随主题刷新，否则独立对话框（新增/编辑等）不会跟随新主题
-        app.setStyleSheet(Theme(config.get("theme", "light")).style_sheet())
-        menu.setStyleSheet(Theme(config.get("theme", "light")).menu_style())
+        effective_theme = resolve_theme_name(config.get("theme", "light"))
+        app.setStyleSheet(Theme(effective_theme).style_sheet())
+        menu.setStyleSheet(Theme(effective_theme).menu_style())
         set_app_theme(config.get("theme", "light"))
+        # 主题设为「跟随系统」时启动轮询，否则停止轮询
+        _update_system_theme_watcher()
         window.apply_config(config)
         unified.apply_config(config)
         state.max_recent = int(config.get("max_recent", 30))
@@ -576,7 +614,7 @@ def main():
     app.setWindowIcon(icon)
     tray = QSystemTrayIcon(icon, app)
     menu = QMenu()
-    menu.setStyleSheet(Theme(config.get("theme", "light")).menu_style())
+    menu.setStyleSheet(Theme(resolve_theme_name(config.get("theme", "light"))).menu_style())
     show_action = QAction("唤起面板", app)
     show_action.triggered.connect(window.toggle)
     panel_action = QAction("打开主面板", app)
@@ -591,7 +629,7 @@ def main():
     log_action = QAction("查看日志", app)
     log_action.triggered.connect(
         lambda: show_log_viewer(LOG_BUFFER, parent=unified,
-                                theme_name=config.get("theme", "light"))
+                                theme_name=resolve_theme_name(config.get("theme", "light")))
     )
     # 日志功能整合进开发者模式：未启用时不可访问
     log_action.setVisible(bool(config.get("developer_mode", False)))
@@ -606,12 +644,15 @@ def main():
     tray.setToolTip("颜文字输入辅助器")
     tray.show()
 
+    # 启动系统主题监听（若当前主题为「跟随系统」则开始轮询）
+    _update_system_theme_watcher()
+
     # 正式版本首次启动：弹出「欢迎更新 vX (commit)」提示（仅发布构建且版本较上次变化才弹）
     def _maybe_show_update():
         try:
             from ui.update_dialog import UpdateDialog
             UpdateDialog.maybe_show(
-                parent=unified, theme_name=config.get("theme", "light"))
+                parent=unified, theme_name=resolve_theme_name(config.get("theme", "light")))
         except Exception as e:
             _append_log("warn", "update", "更新弹窗失败：%s" % e)
     QTimer.singleShot(0, _maybe_show_update)

@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QCursor
 
-from ui.win11_theme import Theme
+from ui.win11_theme import Theme, resolve_theme_name
 from ui.fluent_icons import icon_label, recolor
 
 
@@ -19,7 +19,7 @@ class HomePage(QWidget):
         self.user_kao = user_kao
         self.triggers = triggers
         self.data = data
-        self.theme = Theme(config.get("theme", "light"))
+        self.theme = Theme(resolve_theme_name(config.get("theme", "light")))
         self._action_icons = []
         self._init_ui()
 

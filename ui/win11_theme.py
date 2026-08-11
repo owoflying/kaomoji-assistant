@@ -14,12 +14,40 @@ _current_theme_name = "light"
 def set_app_theme(name):
     """设置当前应用主题名，供独立对话框/弹出层在无法遍历父窗口时读取。"""
     global _current_theme_name
-    _current_theme_name = "dark" if str(name).lower() == "dark" else "light"
+    effective = resolve_theme_name(name)
+    _current_theme_name = effective
 
 
 def current_theme_name():
     """返回当前应用主题名（light/dark）。"""
     return _current_theme_name
+
+
+def system_theme_name():
+    r"""读取 Windows 系统当前主题：返回 light 或 dark。
+
+    通过注册表 HKEY_CURRENT_USER\...\Themes\Personalize\AppsUseLightTheme 判断：
+    1=浅色，0=深色。读取失败时默认返回 light。
+    """
+    try:
+        import winreg
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+        )
+        value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+        winreg.CloseKey(key)
+        return "light" if value else "dark"
+    except Exception:
+        return "light"
+
+
+def resolve_theme_name(name):
+    """把配置中的主题名解析为实际生效的 light/dark（system 会跟随系统）。"""
+    n = str(name).lower()
+    if n == "system":
+        return system_theme_name()
+    return "dark" if n == "dark" else "light"
 
 
 class Theme:

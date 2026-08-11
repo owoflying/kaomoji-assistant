@@ -15,7 +15,7 @@ from core import win_utils
 from core import autostart
 from core import uia_elevation
 from core.win_utils import MOD_CONTROL, MOD_ALT, MOD_SHIFT, MOD_WIN
-from ui.win11_theme import Theme
+from ui.win11_theme import Theme, resolve_theme_name
 from ui.toggle_switch import ToggleSwitch
 
 
@@ -67,7 +67,7 @@ class SettingsPage(QWidget):
         # 新功能默认归入此分组，确认上线后才移出。
         self._test_widgets = []
         self._test_section_title = None
-        self._theme = Theme(config.get("theme", "light"))
+        self._theme = Theme(resolve_theme_name(config.get("theme", "light")))
         self._init_ui()
         self.refresh_from_config()
 
@@ -183,19 +183,10 @@ class SettingsPage(QWidget):
         self.uia_status.setObjectName("Caption")
         self.uia_status.setWordWrap(True)
         croot.addWidget(self.uia_status)
-        # 亚克力模糊：与 UIA 提权一并归入测试功能分组（use_test_features 关闭时整段隐藏并归位为关闭）。
-        self._add_row(croot, "亚克力模糊", self._acrylic_toggle(), test_feature=True)
-        ca_tip = QLabel("开启后窗口与候选栏使用 Windows 亚克力模糊背景（需系统支持 DWM 亚克力）。"
-                        "该效果属于实验性外观，仅测试模式可用。")
-        ca_tip.setObjectName("Caption")
-        ca_tip.setWordWrap(True)
-        croot.addWidget(ca_tip)
         v.addWidget(card)
-        # 登记：use_test_features 关闭时隐藏整段（标题 + 卡片 + 行 + 说明）。
-        # uia_row / 亚克力行 已由 _add_row(test_feature=True) 登记，此处仅补登记卡片与说明文字，
-        # 避免重复登记同一控件。
+        # 登记：use_test_features 关闭时隐藏整段（标题 + 卡片 + 说明）。
         self._test_section_title = adv_title
-        self._test_widgets.extend([card, tip, self.uia_status, ca_tip])
+        self._test_widgets.extend([card, tip, self.uia_status])
 
         v.addStretch(1)
         self.scroll.setWidget(body)
@@ -204,7 +195,6 @@ class SettingsPage(QWidget):
         # 外观项不再走 preview（不落盘）机制；滑块拖动时实时更新标签与候选条预览，
         # 释放后再统一保存，避免高频写盘/重绘。
         self.theme_combo.currentIndexChanged.connect(lambda *_a: self._on_apply())
-        self.acrylic_check.toggled.connect(lambda *_a: self._on_apply())
         self.panel_alpha_slider.sliderReleased.connect(lambda *_a: self._on_apply())
         self.opacity_slider.sliderReleased.connect(lambda *_a: self._on_apply())
         # 非外观项改动立即保存
@@ -261,7 +251,8 @@ class SettingsPage(QWidget):
         self.theme_combo = FluentComboBox(self._theme)
         self.theme_combo.addItem("浅色", "light")
         self.theme_combo.addItem("深色", "dark")
-        self.theme_combo.setMinimumWidth(120)
+        self.theme_combo.addItem("跟随系统", "system")
+        self.theme_combo.setMinimumWidth(140)
         return self.theme_combo
 
     def _panel_alpha_row(self):
@@ -291,10 +282,6 @@ class SettingsPage(QWidget):
         row.addWidget(self.opacity_slider, 1)
         row.addWidget(self.opacity_value)
         return row
-
-    def _acrylic_toggle(self):
-        self.acrylic_check = ToggleSwitch(self._theme)
-        return self.acrylic_check
 
     def _method_combo(self):
         self.method_combo = FluentComboBox(self._theme)
@@ -371,7 +358,7 @@ class SettingsPage(QWidget):
     def set_theme(self, theme_obj):
         """主题切换时同步开关/下拉框配色，并强制刷新样式表。"""
         self._theme = theme_obj
-        for t in (self.acrylic_check, self.auto_check, self.autostart_check,
+        for t in (self.auto_check, self.autostart_check,
                   self.blur_hide_check, self.uia_elevation_check):
             t.update_theme(theme_obj)
         for c in (self.theme_combo, self.method_combo):
@@ -399,7 +386,6 @@ class SettingsPage(QWidget):
             op = int(float(cfg.get("opacity", 0.98)) * 100)
             self.opacity_slider.setValue(op)
             self.opacity_value.setText("%d%%" % op)
-            self.acrylic_check.setChecked(bool(cfg.get("acrylic", True)))
             method = cfg.get("input_method", "direct")
             midx = self.method_combo.findData(method)
             self.method_combo.setCurrentIndex(midx if midx >= 0 else 0)
@@ -597,7 +583,6 @@ class SettingsPage(QWidget):
         new_cfg["theme"] = self.theme_combo.currentData()
         new_cfg["panel_alpha"] = self.panel_alpha_slider.value() / 100.0
         new_cfg["opacity"] = self.opacity_slider.value() / 100.0
-        new_cfg["acrylic"] = self.acrylic_check.isChecked()
         new_cfg["input_method"] = self.method_combo.currentData()
         new_cfg["max_recent"] = self.recent_spin.value()
         new_cfg["auto_popup"] = self.auto_check.isChecked()

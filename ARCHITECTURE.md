@@ -200,7 +200,9 @@ SettingsPage / AboutPage / DevPage ──(config_applied)──▶ UnifiedWindow
 - **清单级拒绝**：字段缺失、JSON 解析失败、`api_version > SUPPORTED_API_VERSION` 在 discover/load 阶段直接拒绝，不执行入口；
 - **路径约束**：`entry` 必须位于插件目录内（realpath 前缀校验），防止 manifest 写 `..` 越权加载；
 - **主线程同步执行**：插件可安全操作 UI，但约定 setup/transform 必须毫秒级返回（无超时保护，恶意/劣质插件会卡界面——与 VS Code/浏览器扩展同信任模型：插件代码=用户自装代码，全权限运行）；
-- **门控**：与其它测试功能一致，`use_test_features=False` 时启动不加载任何插件、导航不显示插件页（启用状态保留在 `config["plugins_enabled"]`，重开测试模式自动恢复）。
+- **门控**：与其它测试功能一致，`use_test_features=False` 时启动不加载任何插件、导航不显示插件页（启用状态保留在 `config["plugins_enabled"]`，重开测试模式自动恢复）；
+- **默认启用**：清单可声明 `"default_enabled": true`——用户从未在插件页显式切过开关时按清单默认值（未声明=停用）；一旦手动切过，以 `plugins_enabled` 配置为准（`PluginManager.is_enabled`）；
+- **startup 事件时序**：`main.py` 在主窗口 show、托盘就绪后经 `QTimer.singleShot(0)` 发出（排在「欢迎更新」弹窗之后，避免抢模态），整个生命周期只发一次——中途启用的插件收不到 startup，需重启生效。
 
 **图标**：内置 FluentSystemIcons-Regular.ttf **没有 puzzle_piece 字形**（已全量枚举 cmap 确认），「插件」导航图标由 `ui/fluent_icons.plugin_pixmap()` 用 QPainterPath 程序绘制（圆角方块+凸凹榫、仅描边、线宽随尺寸缩放），`icon_label("plugin", ...)` 自动走该分支，`recolor` 重新生成 pixmap。
 
@@ -208,7 +210,9 @@ SettingsPage / AboutPage / DevPage ──(config_applied)──▶ UnifiedWindow
 - 插件卡片里给 QLabel 设自身样式表时必须连 `color` 一起写（`_PluginCard.name_lbl`），否则切断祖先 QSS 级联，深色模式下黑字不可读（同「QSS 级联切断」坑）；
 - 验证插件页深浅主题要调 `uni.apply_config({...theme...})` 走完整链路，只调 `page.set_theme` 不会刷新窗口级 QSS，会误判"深色没生效"；
 - 插件产出的 widget 若实现了空 `set_theme(theme)`（只 pass），宿主必须**先垫完整 QSS 再回调它**，否则主题切换后插件面板停留在旧主题样式（深色下白底白字，截图审查时抓到过）；
-- offscreen 无字体环境下 `widget.isVisible()` 对整个未 show 的子树恒为 False，断言显隐要用 `isHidden()`；文字不渲染属环境限制，看结构/取色即可。
+- offscreen 无字体环境下 `widget.isVisible()` 对整个未 show 的子树恒为 False，断言显隐要用 `isHidden()`；文字不渲染属环境限制，看结构/取色即可；
+- **Qt6 `QColor("rgba(r,g,b,浮点a)")` 是 invalid，静默回退成黑色**（alpha 必须 0-255 整数）——paintEvent 里对主题令牌取色必须走 `win11_theme.parse_color()`（正则兜底，alpha≤1 时 ×255）。PluginDialog 曾因此整窗发黑（截图审查抓到）；统一窗口的 `_parse_color` 已改为委托同一实现；
+- PluginDialog 的面板基底强制不透明（`window_tint` 固有 alpha 0.85/0.88 若直接用，会比主窗口 `_adjusted_panel_base()` 默认 1.0 明显更透），并复用 DWM `apply_backdrop`/`apply_dark_mode` 保持观感一致。
 
 ---
 

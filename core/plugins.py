@@ -12,7 +12,8 @@ plugin.json 示例：
         "entry": "main.py",
         "author": "someone",
         "description": "追加一个「示例」分类",
-        "api_version": 1
+        "api_version": 1,
+        "default_enabled": true     # 可选：默认启用（未声明或未显式设置=停用）
     }
 
 入口 main.py 示例：
@@ -338,7 +339,19 @@ class PluginManager(QObject):
         return val if isinstance(val, dict) else {}
 
     def is_enabled(self, plugin_id):
-        return bool(self._enabled_map().get(plugin_id, False))
+        """是否启用：显式设置优先；从未设置过时按清单 default_enabled（未声明=停用）。
+
+        这样「把插件目录丢进 plugins 目录」即可让声明了 default_enabled 的插件
+        开箱生效，不必先去插件页手动开一次；用户一旦手动切过开关，就以配置为准。
+        """
+        m = self._enabled_map()
+        if plugin_id in m:
+            return bool(m[plugin_id])
+        rec = self.plugins.get(plugin_id)
+        manifest = rec.get("manifest") if rec else None
+        if isinstance(manifest, dict):
+            return bool(manifest.get("default_enabled", False))
+        return False
 
     def _set_enabled_flag(self, plugin_id, enabled):
         # 拷贝一份再写回：settings_page._on_apply 会整体替换 config 字典，

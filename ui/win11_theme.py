@@ -512,3 +512,23 @@ def apply_child_theme(widget, theme):
         widget.setStyleSheet(child_theme_qss(theme, own))
     except RuntimeError:
         pass  # C++ 对象已销毁
+
+
+def parse_color(spec):
+    """把主题里的 rgba()/hex 颜色字符串安全地转成 QColor。
+
+    Qt6 的 QColor 不接受「rgba(r,g,b,浮点a)」（alpha 必须 0-255 整数），
+    直接 QColor(spec) 会静默得到黑色 —— 必须走这里的正则兜底
+    （alpha <= 1 时按比例映射到 0-255）。
+    """
+    from PySide6.QtGui import QColor
+    import re as _re
+    c = QColor(spec)
+    if c.isValid():
+        return c
+    m = _re.match(r"rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)", str(spec))
+    if m:
+        r, g, b = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        a = float(m.group(4)) if m.group(4) else 1.0
+        return QColor(r, g, b, int(a * 255) if a <= 1.0 else int(a))
+    return QColor(0, 0, 0)

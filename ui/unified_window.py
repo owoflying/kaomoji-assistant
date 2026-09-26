@@ -78,16 +78,9 @@ HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT = 15, 16, 17
 
 
 def _parse_color(spec):
-    """把主题里的 rgba()/hex 颜色字符串安全地转成 QColor。"""
-    c = QColor(spec)
-    if c.isValid():
-        return c
-    m = re.match(r"rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)", spec)
-    if m:
-        r, g, b = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        a = float(m.group(4)) if m.group(4) else 1.0
-        return QColor(r, g, b, int(a * 255) if a <= 1.0 else int(a))
-    return QColor(0, 0, 0)
+    """把主题里的 rgba()/hex 颜色字符串安全地转成 QColor（公共实现见 win11_theme）。"""
+    from ui.win11_theme import parse_color
+    return parse_color(spec)
 
 
 class _NavItem(QWidget):

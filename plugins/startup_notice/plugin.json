@@ -1,0 +1,9 @@
+{
+  "name": "启动提示",
+  "version": "1.0.0",
+  "entry": "main.py",
+  "author": "kaomoji-assistant",
+  "description": "演示 startup 事件 + 主题化弹窗 + 卡片内嵌设置面板：应用启动成功后自动弹出「应用加载成功」。",
+  "api_version": 2,
+  "default_enabled": true
+}

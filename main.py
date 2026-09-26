@@ -696,6 +696,11 @@ def main():
         except Exception as e:
             _append_log("warn", "update", "更新弹窗失败：%s" % e)
     QTimer.singleShot(0, _maybe_show_update)
+    # 插件 startup 事件：必须等主窗口 show、托盘就绪、事件循环跑起来之后再发，
+    # 否则插件在回调里弹窗会抢在界面初始化之前（且拿不到正确的主题）。
+    # 同样是 singleShot(0)，按投递顺序排在 _maybe_show_update 之后执行，
+    # 避免与「欢迎更新」弹窗抢模态。整个应用生命周期只发这一次。
+    QTimer.singleShot(0, lambda: plugins.emit("startup"))
 
     hotkey.start(config.get("hotkey", "<ctrl>+<shift>+k"))
     if config.get("auto_popup", True):

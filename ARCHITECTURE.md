@@ -62,6 +62,7 @@ kaomoji-assistant/
 │   ├── user_kaomoji.py     # 用户颜文字库
 │   ├── user_triggers.py    # 触发词管理
 │   ├── user_state.py       # 用户状态（最近使用等）
+│   ├── plugins.py          # 插件系统（发现/加载/能力注册/事件分发，异常隔离）
 │   ├── version.py          # 版本号（取当前 commit 短哈希，供关于页显示）
 │   ├── github_release.py    # 关于页「更新与下载」：拉取/下载 GitHub 发行包（QNetworkAccessManager 异步）
 │   └── app_icon.py         # 运行时生成/提取应用图标
@@ -79,9 +80,12 @@ kaomoji-assistant/
     ├── fonts/              # 图标字体文件
     ├── dev/
     │   └── dev_page.py     # 开发者模式页（事件流/诊断/测试功能开关）
-    └── pages/              # 业务页面
-        ├── home_page.py / library_page.py / custom_kaomoji_page.py
-        ├── search_page.py / trigger_page.py / settings_page.py / about_page.py
+    ├── pages/              # 业务页面
+    │   ├── home_page.py / library_page.py / custom_kaomoji_page.py
+    │   ├── search_page.py / trigger_page.py / settings_page.py / about_page.py
+    │   └── plugin_page.py  # 插件管理页（测试功能门控）
+├── plugins/                # 插件目录（源码态；冻结态在 %APPDATA%/KaomojiAssistant/plugins）
+    └── example_kaomoji/    # 示例插件（plugin.json + main.py，默认停用）
 ```
 
 ### 3.1 分层原则
@@ -163,7 +167,33 @@ SettingsPage / AboutPage / DevPage ──(config_applied)──▶ UnifiedWindow
 
 - `UnifiedSettingsWindow` 持有唯一权威 `config` 字典与各页引用；
 - 设置项改动经 `SettingsPage.config_applied` → `UnifiedWindow._on_settings_applied` → `main.apply_settings`（落盘+广播）；
-- 开发者页「测试功能」开关经 `DevPage.test_features_changed` → `UnifiedWindow._on_test_features_changed` → 仅刷新设置页可见性（轻量，不触发整页重排）。
+- 开发者页「测试功能」开关经 `DevPage.test_features_changed` → `UnifiedWindow._on_test_features_changed` → 仅刷新设置页可见性（轻量，不触发整页重排）+ `_sync_plugin_tab()` 同步插件页显隐。
+
+### 4.4 插件系统（测试功能）
+
+**形态**：`<plugins_dir>/<plugin_id>/` 目录 = `plugin.json` 清单（name/version/entry/author/description/api_version）+ 入口 `main.py`（必须提供 `setup(api)`）。源码态目录在项目根 `plugins/`，冻结态在 `%APPDATA%/KaomojiAssistant/plugins`；各插件私有配置在 `data/plugin_settings/<id>.json`（源码态）/ `%APPDATA%/.../plugin_settings`（冻结态）。
+
+**能力面（`core/plugins.py::PluginAPI`，按插件隔离实例）**：
+| 能力 | API | 接入点 |
+|------|-----|--------|
+| 数据源 | `api.add_source(分类, 条目)` | 合并进 `KaomojiData.external` 内存视图 → 库页分类/搜索/候选条自动可见；**save() 永远只写内置库**，插件数据不落盘、不污染 kaomoji.json |
+| 输出转换 | `api.register_transform(fn, priority)` | `main.on_selected` 注入前 `run_transforms(text, ctx)`，priority 小者先执行 |
+| 事件 | `api.on(event, fn)` | startup / shutdown / before_insert / after_insert / config_changed |
+| 日志 | `api.log(msg)` | 写入全局 LOG_BUFFER（托盘「查看日志」可见） |
+| 配置 | `api.settings`（活字典）+ `save_settings()`；`api.get_config(key)` 只读主配置 | — |
+
+**健壮性约定**：
+- **异常隔离**：清单校验、入口执行、每次 transform/事件回调全部 try/except 包裹，单插件故障只标记该插件 `state=error`（插件页显示红色错误信息），绝不阻断主流程；
+- **清单级拒绝**：字段缺失、JSON 解析失败、`api_version > SUPPORTED_API_VERSION` 在 discover/load 阶段直接拒绝，不执行入口；
+- **路径约束**：`entry` 必须位于插件目录内（realpath 前缀校验），防止 manifest 写 `..` 越权加载；
+- **主线程同步执行**：插件可安全操作 UI，但约定 setup/transform 必须毫秒级返回（无超时保护，恶意/劣质插件会卡界面——与 VS Code/浏览器扩展同信任模型：插件代码=用户自装代码，全权限运行）；
+- **门控**：与其它测试功能一致，`use_test_features=False` 时启动不加载任何插件、导航不显示插件页（启用状态保留在 `config["plugins_enabled"]`，重开测试模式自动恢复）。
+
+**图标**：内置 FluentSystemIcons-Regular.ttf **没有 puzzle_piece 字形**（已全量枚举 cmap 确认），「插件」导航图标由 `ui/fluent_icons.plugin_pixmap()` 用 QPainterPath 程序绘制（圆角方块+凸凹榫、仅描边、线宽随尺寸缩放），`icon_label("plugin", ...)` 自动走该分支，`recolor` 重新生成 pixmap。
+
+**经验提示**：
+- 插件卡片里给 QLabel 设自身样式表时必须连 `color` 一起写（`_PluginCard.name_lbl`），否则切断祖先 QSS 级联，深色模式下黑字不可读（同「QSS 级联切断」坑）；
+- 验证插件页深浅主题要调 `uni.apply_config({...theme...})` 走完整链路，只调 `page.set_theme` 不会刷新窗口级 QSS，会误判"深色没生效"。
 
 ---
 
@@ -178,7 +208,7 @@ SettingsPage / AboutPage / DevPage ──(config_applied)──▶ UnifiedWindow
 | 数据 | 自定义颜文字库、标签、导入导出 | 否 |
 | 设置 | 主题/不透明度/输入方式/热键/开机自启 | 否 |
 | 提权 | UIAccess 顶级窗口（与屏幕键盘互相覆盖） | **是**（高级分区） |
-| 外观实验 | 亚克力模糊背景（窗口与候选栏） | **是**（高级分区） |
+| 插件 | 插件发现/启用/重载；数据源、输出转换、事件订阅 | **是**（独立导航页） |
 | 开发者 | 事件流/诊断/模拟触发/A-B 注入对比 | 否（需先开开发者模式） |
 | 测试模式 | 总开关控制测试功能可见性 | — |
 

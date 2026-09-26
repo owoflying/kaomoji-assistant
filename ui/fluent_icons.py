@@ -97,6 +97,58 @@ def char(name):
     return chr(GLYPHS.get(name, GLYPHS["home"]))
 
 
+# ---- 程序绘制图标（字体缺字形时的兜底） ----
+#
+# 内置的 FluentSystemIcons-Regular.ttf 没有 puzzle_piece 字形（已全量枚举 cmap
+# 确认），而「插件」导航需要一个拼图图标。这里用 QPainterPath 画一个风格贴近
+# Fluent 线性图标的拼图块：圆角方块 + 上下各一个圆凸/凹榫，仅描边不填充，
+# 线宽随图标尺寸缩放，视觉粗细与 16px 的字形图标一致。
+def _puzzle_path():
+    """24 单位视口下的拼图块路径（圆角方块 + 顶/右凸榫、底/左凹榫）。"""
+    from PySide6.QtGui import QPainterPath
+    base = QPainterPath()
+    base.addRoundedRect(3.0, 3.0, 18.0, 18.0, 3.0, 3.0)
+    tab_top = QPainterPath()
+    tab_top.addEllipse(12.0 - 3.0, 3.0 - 3.0, 6.0, 6.0)
+    tab_right = QPainterPath()
+    tab_right.addEllipse(21.0 - 3.0, 12.0 - 3.0, 6.0, 6.0)
+    notch_bottom = QPainterPath()
+    notch_bottom.addEllipse(12.0 - 3.0, 21.0 - 3.0, 6.0, 6.0)
+    notch_left = QPainterPath()
+    notch_left.addEllipse(3.0 - 3.0, 12.0 - 3.0, 6.0, 6.0)
+    path = base.united(tab_top).united(tab_right)
+    path = path.subtracted(notch_bottom).subtracted(notch_left)
+    return path
+
+
+def plugin_pixmap(size, color):
+    """绘制 size px 的拼图图标（透明底，color 描边），供「插件」导航使用。"""
+    from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QTransform
+    from PySide6.QtCore import Qt as _Qt
+    dpr = 2  # 2x 渲染再缩回，保证高 DPI 下线条锐利
+    pm = QPixmap(int(size) * dpr, int(size) * dpr)
+    pm.fill(_Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    pen = QPen(QColor(color))
+    pen.setWidthF(max(1.2, size * 0.11))
+    pen.setCapStyle(_Qt.RoundCap)
+    pen.setJoinStyle(_Qt.RoundJoin)
+    p.setPen(pen)
+    # 24 单位视口 -> (size - 线宽) 的目标区域，留出半线宽边距避免描边被裁
+    margin = pen.widthF() / 2.0 + 0.5
+    scale = (size - margin * 2) / 24.0
+    p.setTransform(QTransform(scale, 0, 0, scale, margin, margin))
+    p.drawPath(_puzzle_path())
+    p.end()
+    pm.setDevicePixelRatio(dpr)
+    return pm
+
+
+def _is_drawn_icon(name):
+    return name not in GLYPHS
+
+
 def _icon_qss(size, color=None):
     """图标 QLabel 的内联样式。
 
@@ -121,17 +173,28 @@ def _icon_qss(size, color=None):
 def icon_label(name, size=16, color=None, parent=None):
     """生成一个带官方图标的 QLabel。
 
-    name   : GLYPHS 中的图标名
+    name   : GLYPHS 中的图标名；不在 GLYPHS 里时走程序绘制（如 "plugin" 拼图）
     size   : 像素字号（图标随字号缩放）
     color  : 可选颜色（CSS 颜色字符串），默认跟随父级
     """
-    lb = QLabel(char(name), parent)
+    lb = QLabel(parent)
+    lb.setAlignment(Qt.AlignCenter)
+    if _is_drawn_icon(name):
+        # 程序绘制路径：pixmap 比字体字形多 4px 余量，视觉尺寸对齐同 px 字形
+        pm_size = int(size) + 4
+        col = color or "#888888"
+        lb.setPixmap(plugin_pixmap(pm_size, col))
+        lb.setFixedSize(pm_size + 4, pm_size + 4)
+        lb.setProperty("_drawn_icon", name)
+        lb.setProperty("_icon_px", int(size))
+        lb.setProperty("_icon_color", col)
+        return lb
+    lb.setText(char(name))
     f = QFont(ensure_icon_font())
     f.setPixelSize(size)
     # 图标字形不希望被抗锯齿之外的文本 hint 影响；关闭粗体避免变形
     f.setWeight(QFont.Weight.Normal)
     lb.setFont(f)
-    lb.setAlignment(Qt.AlignCenter)
     # 记住字号，recolor 时要连字体一起重写（否则会被全局 QSS 抢回去）
     lb.setProperty("_icon_px", int(size))
     lb.setStyleSheet(_icon_qss(size, color))
@@ -144,6 +207,14 @@ def recolor(label, color):
     注意必须重写完整样式（含 font-family），只写 color 会把图标字体丢掉。
     """
     if label is None:
+        return
+    if label.property("_drawn_icon"):
+        # 程序绘制图标：重新生成 pixmap
+        size = label.property("_icon_px") or 16
+        col = color or "#888888"
+        pm_size = int(size) + 4
+        label.setPixmap(plugin_pixmap(pm_size, col))
+        label.setProperty("_icon_color", col)
         return
     size = label.property("_icon_px") or 16
     label.setStyleSheet(_icon_qss(size, color))

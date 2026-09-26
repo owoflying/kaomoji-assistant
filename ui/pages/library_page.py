@@ -71,6 +71,20 @@ class LibraryPage(QWidget):
         if hasattr(self, "cat_combo") and self.cat_combo is not None:
             self.cat_combo.set_theme(theme)
 
+    def reload_categories(self):
+        """重建分类下拉（插件启用/停用后分类集合可能变化），尽量保留当前选择。"""
+        if self.cat_combo is None:
+            return
+        current = self.cat_combo.currentText()
+        self.cat_combo.blockSignals(True)
+        self.cat_combo.clear()
+        self.cat_combo.addItem("全部")
+        self.cat_combo.addItems(self.data.get_category_names())
+        idx = self.cat_combo.findText(current)
+        self.cat_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.cat_combo.blockSignals(False)
+        self._refresh_list()
+
     def _refresh_list(self):
         cat = self.cat_combo.currentText()
         items = self.data.get_items(None if cat == "全部" else cat)

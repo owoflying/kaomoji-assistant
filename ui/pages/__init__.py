@@ -5,8 +5,10 @@ from .trigger_page import TriggerPage
 from .search_page import SearchPage
 from .settings_page import SettingsPage
 from .about_page import AboutPage
+from .plugin_page import PluginPage
 
 __all__ = [
     "HomePage", "LibraryPage", "CustomKaomojiPage",
     "TriggerPage", "SearchPage", "SettingsPage", "AboutPage",
+    "PluginPage",
 ]

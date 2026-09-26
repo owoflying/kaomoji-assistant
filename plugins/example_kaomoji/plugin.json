@@ -1,0 +1,8 @@
+{
+  "name": "示例插件",
+  "version": "1.0.0",
+  "entry": "main.py",
+  "author": "kaomoji-assistant",
+  "description": "演示插件三种能力：追加「示例」分类、可选的尾部加星转换、插入事件日志。",
+  "api_version": 1
+}

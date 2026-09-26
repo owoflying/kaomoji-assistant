@@ -64,7 +64,7 @@ from ui.fluent_icons import icon_label, recolor
 from ui.animated_stack import AnimatedStackedWidget
 from ui.pages import (
     HomePage, LibraryPage, CustomKaomojiPage, TriggerPage,
-    SearchPage, SettingsPage, AboutPage,
+    SearchPage, SettingsPage, AboutPage, PluginPage,
 )
 from ui.dev import DevPage  # 开发者模式标签页（仅 developer_mode 时显示）
 
@@ -213,7 +213,8 @@ class UnifiedSettingsWindow(QMainWindow):
     _TITLEBAR_H = 40
 
     def __init__(self, data, config, state, user_kao, triggers,
-                 save_config=None, open_log=None, dev_refs=None, parent=None):
+                 save_config=None, open_log=None, dev_refs=None,
+                 plugins=None, parent=None):
         super().__init__(parent)
         self.data = data
         self.config = config
@@ -223,6 +224,7 @@ class UnifiedSettingsWindow(QMainWindow):
         self.save_config = save_config
         self.open_log = open_log
         self.dev_refs = dev_refs or {}
+        self.plugins = plugins      # PluginManager（可为 None：插件功能整体禁用）
         # 开发者模式权威状态：用独立标志位，不依赖 self.config["developer_mode"]，
         # 避免与设置页自动保存时的字典替换/刷新相互干扰。
         self._developer_mode = bool(config.get("developer_mode", False))
@@ -351,6 +353,9 @@ class UnifiedSettingsWindow(QMainWindow):
         # 开发者模式专属导航项：仅当已解锁才出现（插入到末尾的 stretch 之前）
         if self.config.get("developer_mode", False):
             self._add_dev_nav_item(nvbox)
+        # 测试功能专属导航项：「插件」页（use_test_features 门控，见 _sync_plugin_tab）
+        if self.plugins is not None and self.config.get("use_test_features", False):
+            self._add_plugin_nav_item(nvbox)
         nvbox.addStretch(1)
         sroot.addWidget(self._nav_container, 1)
 
@@ -394,8 +399,16 @@ class UnifiedSettingsWindow(QMainWindow):
             self.dev_page.developer_mode_disabled.connect(self._disable_dev_tab)
             self.dev_page.test_features_changed.connect(self._on_test_features_changed)
             self._pages["developer"] = self.dev_page
+        # 插件页：测试功能开启且传入 PluginManager 时创建
+        self.plugin_page = None
+        if self.plugins is not None and self.config.get("use_test_features", False):
+            self.plugin_page = PluginPage(self.plugins, self.theme.name)
+            self._pages["plugin"] = self.plugin_page
         for p in self._pages.values():
             self.content.addWidget(p)
+        # 插件集合变化（启用/停用/重载/重扫）时刷新库页分类与插件页列表
+        if self.plugins is not None:
+            self.plugins.changed.connect(self._on_plugins_changed)
 
         # 信号
         self.home_page.nav_request.connect(self._set_page)
@@ -437,6 +450,54 @@ class UnifiedSettingsWindow(QMainWindow):
             self.home_page.refresh_stats()
         if key == "search":
             self.search_page.focus_query()
+
+    # ---------- 插件标签（测试功能门控） ----------
+    def _add_plugin_nav_item(self, nav_layout):
+        """在导航栏末尾（stretch 之前）插入「插件」项（拼图为程序绘制图标）。"""
+        item = _NavItem("plugin", "插件", self.theme)
+        item.clicked.connect(lambda: self._set_page("plugin"))
+        nav_layout.insertWidget(nav_layout.count() - 1, item)
+        self._nav_items.append(("plugin", item))
+
+    def _on_plugins_changed(self):
+        """插件集合变化：库页分类与插件页列表需要重建。"""
+        try:
+            self.library_page.reload_categories()
+        except Exception:
+            pass
+        if self.plugin_page is not None:
+            self.plugin_page.refresh()
+
+    def _sync_plugin_tab(self):
+        """测试功能开关变化后同步「插件」导航项与页面的显隐。"""
+        if self.plugins is None:
+            return
+        wanted = bool(self.config.get("use_test_features", False))
+        has = "plugin" in self._pages
+        if wanted and not has:
+            self._add_plugin_nav_item(self._nav_container.layout())
+            self.plugin_page = PluginPage(self.plugins, self.theme.name)
+            self._pages["plugin"] = self.plugin_page
+            self.content.addWidget(self.plugin_page)
+            self.plugin_page.set_theme(self.theme)
+            self.sidebar.update()
+        elif not wanted and has:
+            leaving = self.content.currentWidget() is self._pages["plugin"]
+            nav_layout = self._nav_container.layout()
+            for i, (k, item) in enumerate(self._nav_items):
+                if k == "plugin":
+                    self._nav_items.pop(i)
+                    nav_layout.removeWidget(item)
+                    item.setParent(None)
+                    item.deleteLater()
+                    break
+            nav_layout.update()
+            self.sidebar.update()
+            self.content.removeWidget(self._pages["plugin"])
+            del self._pages["plugin"]
+            self.plugin_page = None
+            if leaving:
+                self._set_page("home")
 
     # ---------- 开发者标签 ----------
     def _add_dev_nav_item(self, nav_layout):
@@ -562,6 +623,8 @@ class UnifiedSettingsWindow(QMainWindow):
         # 在页间读不一致（二次解锁失效）。
         self.about_page.config = config
         self.settings_page.refresh_from_config()
+        # 测试功能可见性可能随外部应用配置变化（如关闭测试模式），同步插件页显隐
+        self._sync_plugin_tab()
         self._apply_theme_to_pages(self.theme)
         self._update_backdrop()
 
@@ -582,6 +645,8 @@ class UnifiedSettingsWindow(QMainWindow):
         """
         self.settings_page.config = self.config
         self.settings_page.apply_test_feature_visibility()
+        # 「插件」页同属测试功能：开关切换后同步其导航项与页面显隐
+        self._sync_plugin_tab()
 
     def _adjusted_content_surface(self):
         """根据 panel_alpha 调整内容区表面透明度。"""

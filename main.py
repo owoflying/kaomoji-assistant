@@ -20,6 +20,7 @@ from core.injector import KaomojiInjector
 from core.user_state import UserState
 from core.user_kaomoji import UserKaomoji
 from core.user_triggers import UserTriggers
+from core.plugins import PluginManager
 from core import runtime
 from core import autostart
 from core import win_utils
@@ -81,6 +82,8 @@ DEFAULT_CONFIG = {
         "developer_mode": False,
         "use_uia_elevation": False,
         "use_test_features": False,
+        # 插件启用状态表：{"<plugin_id>": True/False}；未出现的插件视为停用
+        "plugins_enabled": {},
     }
 
 # 处于测试模式的功能项（默认归属测试分组，确认上线后移出）；值为「关闭态默认」。
@@ -388,6 +391,22 @@ def main():
         if bool(config.get("autostart", False)) != autostart.is_enabled():
             autostart.set_enabled(bool(config.get("autostart", False)))
     data = KaomojiData()
+    # ---------- 插件系统（测试功能）：发现 -> 加载已启用插件 -> 合并数据源 ----------
+    # 插件必须在 UserState 之前加载：其提供的颜文字要进入「最近/收藏白名单」。
+    plugins = PluginManager(
+        plugins_dir=runtime.plugins_dir(),
+        config=config,
+        save_config=save_config,
+        log=_append_log,
+        settings_dir=runtime.plugin_settings_dir(),
+    )
+    plugins.discover()
+    # 测试模式门控：与其它测试功能一致，use_test_features 关闭时不加载任何插件
+    # （启用状态仍保留在配置里，重新开启测试模式后自动恢复）。
+    n_loaded_plugins = plugins.load_all() if config.get("use_test_features", False) else 0
+    plugins.refresh_sources(data)
+    if n_loaded_plugins:
+        _append_log("info", "plugins", "已加载 %d 个插件" % n_loaded_plugins)
     # 用户自定义颜文字 / 快捷短语（可写，独立于只读库）
     user_kao = UserKaomoji()
     triggers = UserTriggers()
@@ -401,6 +420,11 @@ def main():
     def _refresh_valid():
         state.valid_items = set(data.get_items() + user_kao.get_all())
     user_kao.changed.connect(_refresh_valid)
+    # 插件集合变化（启用/停用/重载）后：重合并数据源 + 刷新白名单
+    def _on_plugins_changed():
+        plugins.refresh_sources(data)
+        _refresh_valid()
+    plugins.changed.connect(_on_plugins_changed)
 
     injector = KaomojiInjector()
 
@@ -431,21 +455,27 @@ def main():
 
     def on_selected(text, ctx=None):
         method = config.get("input_method", "clipboard")
+        ctx = dict(ctx or {})
+        # 插件输出转换：上屏前的文本改写（priority 小者先执行；
+        # 单个插件异常已在 run_transforms 内部隔离，不会阻断注入）
+        text = plugins.run_transforms(text, ctx)
         # 先告知监听器「这段文本是我们自己送进去的」：
         # 进入静默期 + 后续采样时把它剔除，否则颜文字里的 "?"「哇」等字符
         # 会被当成用户新输入的情绪词，导致上屏后又弹一次。
         monitor.notify_injected(text)
         bus.log("注入", "主程序", "注入颜文字：%s（方式=%s）" % (text, method))
+        plugins.emit("before_insert", text, ctx)
         # 快捷短语选项：应用后删除用户刚输入的触发词本身。
         # 仅当该短语显式开启 delete_trigger 且能拿到触发词时才处理；
         # 其它来源（情绪 / 手动 / 库页 / 搜索）一律不删，保持原有逻辑。
-        trigger_word = (ctx or {}).get("trigger_word") or ""
-        delete_trigger = bool((ctx or {}).get("delete_trigger"))
+        trigger_word = ctx.get("trigger_word") or ""
+        delete_trigger = bool(ctx.get("delete_trigger"))
         if delete_trigger and trigger_word:
             _apply_trigger_with_delete(text, method, trigger_word)
         else:
             # 延迟一点，确保面板隐藏、焦点已回到原窗口后再注入文本
             QTimer.singleShot(0, lambda: injector.inject(text, method))
+        plugins.emit("after_insert", text, ctx)
         # 使用统计（任何来源的插入都在此汇聚）：放到注入调度之后并兜底捕获异常，
         # 确保统计逻辑的任何意外都不会阻断颜文字注入（避免「剪贴板模式失效」）。
         try:
@@ -503,7 +533,7 @@ def main():
 
     window.selected.connect(on_selected)
 
-    # 统一主面板：整合 主页/库/我的颜文字/快捷短语/搜索/设置/关于
+    # 统一主面板：整合 主页/库/我的颜文字/快捷短语/搜索/设置/关于/插件
     unified = UnifiedSettingsWindow(
         data, config, state, user_kao, triggers,
         save_config=save_config,
@@ -513,8 +543,9 @@ def main():
         dev_refs={
             "hotkey": hotkey, "monitor": monitor, "injector": injector,
             "data": data, "config": config, "window": window, "bus": bus,
-            "log_buffer": LOG_BUFFER,
+            "log_buffer": LOG_BUFFER, "plugins": plugins,
         },
+        plugins=plugins,
     )
 
     def _resume_main():
@@ -572,6 +603,8 @@ def main():
         window.apply_config(config)
         unified.apply_config(config)
         state.max_recent = int(config.get("max_recent", 30))
+        # 插件订阅的配置变更事件（设置保存并应用后触发）
+        plugins.emit("config_changed", config)
         # 若用户开启了「使用UIA提权」，立即为当前进程尝试提权（管理员下会以 UIAccess 令牌重启自身生效）。
         # 返回 status 字典，便于在“已开启但本次未真正生效（需管理员/失败）”时给用户明确提示，
         # 杜绝此前“静默失败、无任何提示”的问题；成功重启或已生效则不弹窗。
@@ -666,6 +699,8 @@ def main():
     app.aboutToQuit.connect(state.flush)
     app.aboutToQuit.connect(user_kao.flush)
     app.aboutToQuit.connect(triggers.flush)
+    # 插件 shutdown 事件：主程序退出前通知（emit 内部已逐个隔离异常）
+    app.aboutToQuit.connect(lambda: plugins.emit("shutdown"))
     app.aboutToQuit.connect(lambda: _append_log("info", "app", "应用程序退出。"))
 
     sys.exit(app.exec())

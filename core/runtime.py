@@ -87,3 +87,21 @@ def user_triggers_path():
     if is_frozen():
         return os.path.join(app_data_dir(), "user_triggers.json")
     return os.path.join(source_base_dir(), "data", "user_triggers.json")
+
+
+def plugins_dir():
+    """插件根目录（可写）：每个插件是其下的一个子目录（含 plugin.json + 入口 py）。
+
+    冻结态放 %APPDATA%/KaomojiAssistant/plugins（安装目录可能只读）；
+    源码态放项目根目录 plugins/，便于开发调试与随仓库分发示例插件。
+    """
+    if is_frozen():
+        return os.path.join(app_data_dir(), "plugins")
+    return os.path.join(source_base_dir(), "plugins")
+
+
+def plugin_settings_dir():
+    """各插件的私有配置目录（可写）：<dir>/<plugin_id>.json。"""
+    if is_frozen():
+        return os.path.join(app_data_dir(), "plugin_settings")
+    return os.path.join(source_base_dir(), "data", "plugin_settings")

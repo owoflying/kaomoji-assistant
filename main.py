@@ -399,6 +399,8 @@ def main():
         save_config=save_config,
         log=_append_log,
         settings_dir=runtime.plugin_settings_dir(),
+        # 主题提供者：插件的弹窗/消息框据此取当前深浅色（避免 core 反向依赖 ui）
+        theme_provider=lambda: resolve_theme_name(config.get("theme", "light")),
     )
     plugins.discover()
     # 测试模式门控：与其它测试功能一致，use_test_features 关闭时不加载任何插件
@@ -676,6 +678,11 @@ def main():
 
     tray.setToolTip("颜文字输入辅助器")
     tray.show()
+    # 插件 UI 能力所需的宿主回调（托盘通知）；托盘此刻才就绪，故后置注入
+    plugins.set_ui_hooks(
+        notify=lambda title, message, ms: tray.showMessage(
+            title, message, QSystemTrayIcon.MessageIcon.NoIcon, int(ms))
+    )
 
     # 启动系统主题监听（若当前主题为「跟随系统」则开始轮询）
     _update_system_theme_watcher()
@@ -701,6 +708,8 @@ def main():
     app.aboutToQuit.connect(triggers.flush)
     # 插件 shutdown 事件：主程序退出前通知（emit 内部已逐个隔离异常）
     app.aboutToQuit.connect(lambda: plugins.emit("shutdown"))
+    # 先关掉插件可能残留的弹窗，再走各自的 flush：避免退出时弹窗回调打到已销毁对象
+    app.aboutToQuit.connect(plugins.close_plugin_dialogs)
     app.aboutToQuit.connect(lambda: _append_log("info", "app", "应用程序退出。"))
 
     sys.exit(app.exec())

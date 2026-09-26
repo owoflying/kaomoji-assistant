@@ -59,7 +59,7 @@ from ui.win_style import (
     apply_backdrop, apply_dark_mode, _has_dwm,
     DWMSBT_TRANSIENTWINDOW, DWMSBT_NONE,
 )
-from ui.win11_theme import Theme, resolve_theme_name
+from ui.win11_theme import Theme, resolve_theme_name, apply_child_theme
 from ui.fluent_icons import icon_label, recolor
 from ui.animated_stack import AnimatedStackedWidget
 from ui.pages import (
@@ -225,6 +225,9 @@ class UnifiedSettingsWindow(QMainWindow):
         self.open_log = open_log
         self.dev_refs = dev_refs or {}
         self.plugins = plugins      # PluginManager（可为 None：插件功能整体禁用）
+        # 插件通过 api.register_page() 注册的侧边栏页：key -> QWidget / nav item
+        self._plugin_pages = {}
+        self._plugin_nav = {}
         # 开发者模式权威状态：用独立标志位，不依赖 self.config["developer_mode"]，
         # 避免与设置页自动保存时的字典替换/刷新相互干扰。
         self._developer_mode = bool(config.get("developer_mode", False))
@@ -409,6 +412,9 @@ class UnifiedSettingsWindow(QMainWindow):
         # 插件集合变化（启用/停用/重载/重扫）时刷新库页分类与插件页列表
         if self.plugins is not None:
             self.plugins.changed.connect(self._on_plugins_changed)
+            # UI 登记项变化（注册/注销设置面板、独立页）时同步界面
+            self.plugins.ui_changed.connect(self._sync_plugin_pages)
+            self._sync_plugin_pages()
 
         # 信号
         self.home_page.nav_request.connect(self._set_page)
@@ -459,6 +465,105 @@ class UnifiedSettingsWindow(QMainWindow):
         nav_layout.insertWidget(nav_layout.count() - 1, item)
         self._nav_items.append(("plugin", item))
 
+    # ---------- 插件扩展页（侧边栏，api.register_page） ----------
+    def _sync_plugin_pages(self):
+        """按 PluginManager 的 UI 注册表增删插件侧边栏页。
+
+        约定：manager 只登记 spec/factory，widget 实例由本窗口创建、插入
+        QStackedWidget 并在插件卸载（registry 里查不到）时自动移除销毁，
+        避免出现「插件已卸载但页面还在」的悬垂界面。
+        """
+        if self.plugins is None:
+            return
+        nav_layout = self._nav_container.layout()
+        try:
+            specs = self.plugins.plugin_pages()
+        except Exception:
+            specs = {}
+        # 测试模式关闭时，插件页整体不可用：清掉所有插件扩展页
+        if not self.config.get("use_test_features", False):
+            specs = {}
+        # 1) 新增
+        for key, spec in specs.items():
+            if key in self._plugin_pages:
+                continue
+            widget = self._build_plugin_page(key, spec)
+            if widget is None:
+                continue
+            self._plugin_pages[key] = widget
+            self.content.addWidget(widget)
+            self._pages[key] = widget
+            item = _NavItem(spec.get("icon") or "plugin", spec.get("title") or "插件页",
+                            self.theme)
+            item.clicked.connect(lambda k=key: self._set_page(k))
+            nav_layout.insertWidget(max(0, nav_layout.count() - 1), item)
+            self._nav_items.append((key, item))
+            self._plugin_nav[key] = item
+        # 2) 移除：registry 里已不存在（插件停用/卸载/重扫丢失）
+        leaving_key = None
+        if self.content.currentWidget() in self._plugin_pages.values():
+            leaving_key = next((k for k, w in self._plugin_pages.items()
+                                if w is self.content.currentWidget()), None)
+        for key in [k for k in self._plugin_pages if k not in specs]:
+            self._remove_plugin_page(key, nav_layout)
+        if leaving_key and leaving_key not in self._plugin_pages:
+            self._set_page("home")
+        if specs and nav_layout is not None:
+            nav_layout.update()
+            self.sidebar.update()
+
+    def _build_plugin_page(self, key, spec):
+        """调用插件 factory 构建页面；失败时返回 None（不占侧边栏位置）。"""
+        try:
+            widget = spec["factory"](self.content)
+        except Exception as e:
+            self._note_plugin_page_error(key, spec, e)
+            return None
+        if not isinstance(widget, QWidget):
+            self._note_plugin_page_error(key, spec, TypeError("factory 未返回 QWidget"))
+            return None
+        try:
+            apply_child_theme(widget, self.theme)
+            widget.setProperty("pluginId", spec.get("plugin", ""))
+        except Exception:
+            pass
+        return widget
+
+    def _note_plugin_page_error(self, key, spec, exc):
+        msg = ("插件 %s 的页面 %r 构建失败：%s: %s"
+               % (spec.get("plugin", "?"), spec.get("title") or key,
+                  type(exc).__name__, exc))
+        try:
+            self.plugins._log("error", "plugins", msg)
+        except Exception:
+            pass
+
+    def _remove_plugin_page(self, key, nav_layout=None):
+        """从导航与内容栈中移除并销毁一个插件扩展页。"""
+        widget = self._plugin_pages.pop(key, None)
+        self._pages.pop(key, None)
+        item = self._plugin_nav.pop(key, None)
+        if nav_layout is None:
+            nav_layout = self._nav_container.layout()
+        for i, (k, it) in enumerate(self._nav_items):
+            if k == key:
+                self._nav_items.pop(i)
+                break
+        if item is not None:
+            try:
+                nav_layout.removeWidget(item)
+                item.setParent(None)
+                item.deleteLater()
+            except RuntimeError:
+                pass
+        if widget is not None:
+            try:
+                self.content.removeWidget(widget)
+                widget.setParent(None)
+                widget.deleteLater()
+            except RuntimeError:
+                pass
+
     def _on_plugins_changed(self):
         """插件集合变化：库页分类与插件页列表需要重建。"""
         try:
@@ -498,6 +603,9 @@ class UnifiedSettingsWindow(QMainWindow):
             self.plugin_page = None
             if leaving:
                 self._set_page("home")
+        # 关闭测试模式时，插件的侧边栏扩展页也必须一并移除（否则会逃逸到正式环境）
+        if not wanted:
+            self._sync_plugin_pages()
 
     # ---------- 开发者标签 ----------
     def _add_dev_nav_item(self, nav_layout):
@@ -605,6 +713,12 @@ class UnifiedSettingsWindow(QMainWindow):
         # 导航项刷新主题
         for _, item in self._nav_items:
             item.update_theme(t)
+        # 把「已解析」的主题名同步给插件管理器，供插件弹窗/消息框取深浅色
+        if self.plugins is not None:
+            try:
+                self.plugins.set_theme_name(t.name)
+            except Exception:
+                pass
         # 子页中的自定义控件（搜索框、开关、主页图标）跟随主题
         self._apply_theme_to_pages(t)
         self._update_backdrop()
@@ -630,6 +744,13 @@ class UnifiedSettingsWindow(QMainWindow):
 
     def _apply_theme_to_pages(self, t):
         """把主题广播给所有暴露 set_theme 的子页，避免 _apply_theme/apply_config 各写一遍。"""
+        # 插件扩展页：先重垫「完整主题 QSS + 插件自定义」（幂等），保证原生控件
+        # 的深浅色规则始终最新；随后页面的 set_theme(theme)（若有）再做额外定制。
+        for w in list(self._plugin_pages.values()):
+            try:
+                apply_child_theme(w, t)
+            except Exception:
+                pass
         for page in self._pages.values():
             if hasattr(page, "set_theme"):
                 page.set_theme(t)

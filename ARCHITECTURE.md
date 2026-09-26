@@ -77,6 +77,7 @@ kaomoji-assistant/
     ├── fluent_icons.py     # Fluent 图标字体注册
     ├── animated_stack.py   # 栈式页面容器（淡入淡出）
     ├── log_viewer.py       # 运行日志查看器
+    ├── plugin_dialog.py    # 主题化无边框弹窗（插件 UI 扩展共用容器）
     ├── fonts/              # 图标字体文件
     ├── dev/
     │   └── dev_page.py     # 开发者模式页（事件流/诊断/测试功能开关）
@@ -174,6 +175,7 @@ SettingsPage / AboutPage / DevPage ──(config_applied)──▶ UnifiedWindow
 **形态**：`<plugins_dir>/<plugin_id>/` 目录 = `plugin.json` 清单（name/version/entry/author/description/api_version）+ 入口 `main.py`（必须提供 `setup(api)`）。源码态目录在项目根 `plugins/`，冻结态在 `%APPDATA%/KaomojiAssistant/plugins`；各插件私有配置在 `data/plugin_settings/<id>.json`（源码态）/ `%APPDATA%/.../plugin_settings`（冻结态）。
 
 **能力面（`core/plugins.py::PluginAPI`，按插件隔离实例）**：
+
 | 能力 | API | 接入点 |
 |------|-----|--------|
 | 数据源 | `api.add_source(分类, 条目)` | 合并进 `KaomojiData.external` 内存视图 → 库页分类/搜索/候选条自动可见；**save() 永远只写内置库**，插件数据不落盘、不污染 kaomoji.json |
@@ -181,6 +183,17 @@ SettingsPage / AboutPage / DevPage ──(config_applied)──▶ UnifiedWindow
 | 事件 | `api.on(event, fn)` | startup / shutdown / before_insert / after_insert / config_changed |
 | 日志 | `api.log(msg)` | 写入全局 LOG_BUFFER（托盘「查看日志」可见） |
 | 配置 | `api.settings`（活字典）+ `save_settings()`；`api.get_config(key)` 只读主配置 | — |
+| **UI：设置面板** (v2) | `api.register_settings_widget(factory, title)` | 插件页自身卡片下方的可折叠设置区；懒加载（首次展开才调 factory），实例由 `PluginPage._settings_cache` 复用（刷新页面不丢输入），插件停用即销毁 |
+| **UI：独立页** (v2) | `api.register_page(page_id, title, factory)` | 侧边栏追加插件页（key=`plugin:<id>:<page_id>`），进 QStackedWidget 统一托管；`UnifiedWindow._sync_plugin_pages()` 按注册表增删，卸载/停用/关测试模式自动移除销毁 |
+| **UI：弹窗/通知** (v2) | `api.show_dialog / show_message / ask / notify` | 统一走 `ui/plugin_dialog.py` 的自绘无边框弹窗（圆角+阴影+完整主题 QSS）；notify 走托盘气泡（`plugins.set_ui_hooks` 注入，托盘就绪后由 main 注入） |
+| **UI：主题令牌** (v2) | `api.theme_tokens()` | 只读颜色字典（dark/accent/card…），供插件自绘控件着色 |
+
+**UI 扩展的所有权与安全约定**（api_version >= 2 才可调用 UI 系列方法，v1 插件调用直接抛 `PluginError`）：
+- **manager 只登记 spec/factory，绝不持有 QWidget**：widget 由宿主（PluginPage / UnifiedWindow / PluginDialog）创建、挂布局、销毁；manager 在 `_detach` 里撤销登记并 emit `ui_changed`，宿主据此回收自己的 widget——避免 core 层持 Qt 对象导致悬垂；
+- **主题注入**：宿主用 `win11_theme.apply_child_theme(widget, theme)` 把「完整主题 QSS」垫在插件 widget 上（插件自己的样式追加在后，保住级联不断）；该方法幂等（首次把插件原始样式记进 `_own_qss` 属性，之后基于原始样式重建），重复套用不会累积；插件可选实现 `set_theme(theme)` 做额外定制，**宿主先垫 QSS 再回调**，插件空实现也不会漏底；
+- **弹窗回收**：插件开的弹窗登记在 `PluginManager._dialogs`，`_detach`/退出（`close_plugin_dialogs`）时统一 close+deleteLater，防止插件已卸载而窗口回调打空；
+- **限流**：单插件最多注册 8 个侧边栏页（`_MAX_PLUGIN_PAGES`），page_id 仅允许 `[A-Za-z0-9_-]`；
+- **时序坑（已修）**：`setup()` 执行期间 emit `ui_changed` 时插件 `state` 还不是 loaded，宿主按「已加载」过滤会把刚注册的 UI 全部滤掉——表现为「新启用插件的页面不出现、重载一次才出现」。修复：`load()` 置 `state=loaded` 之后再补发一次 `ui_changed`；setup 半途抛异常时 `_detach` 清理半注册的脏能力。
 
 **健壮性约定**：
 - **异常隔离**：清单校验、入口执行、每次 transform/事件回调全部 try/except 包裹，单插件故障只标记该插件 `state=error`（插件页显示红色错误信息），绝不阻断主流程；
@@ -193,7 +206,9 @@ SettingsPage / AboutPage / DevPage ──(config_applied)──▶ UnifiedWindow
 
 **经验提示**：
 - 插件卡片里给 QLabel 设自身样式表时必须连 `color` 一起写（`_PluginCard.name_lbl`），否则切断祖先 QSS 级联，深色模式下黑字不可读（同「QSS 级联切断」坑）；
-- 验证插件页深浅主题要调 `uni.apply_config({...theme...})` 走完整链路，只调 `page.set_theme` 不会刷新窗口级 QSS，会误判"深色没生效"。
+- 验证插件页深浅主题要调 `uni.apply_config({...theme...})` 走完整链路，只调 `page.set_theme` 不会刷新窗口级 QSS，会误判"深色没生效"；
+- 插件产出的 widget 若实现了空 `set_theme(theme)`（只 pass），宿主必须**先垫完整 QSS 再回调它**，否则主题切换后插件面板停留在旧主题样式（深色下白底白字，截图审查时抓到过）；
+- offscreen 无字体环境下 `widget.isVisible()` 对整个未 show 的子树恒为 False，断言显隐要用 `isHidden()`；文字不渲染属环境限制，看结构/取色即可。
 
 ---
 
@@ -208,7 +223,7 @@ SettingsPage / AboutPage / DevPage ──(config_applied)──▶ UnifiedWindow
 | 数据 | 自定义颜文字库、标签、导入导出 | 否 |
 | 设置 | 主题/不透明度/输入方式/热键/开机自启 | 否 |
 | 提权 | UIAccess 顶级窗口（与屏幕键盘互相覆盖） | **是**（高级分区） |
-| 插件 | 插件发现/启用/重载；数据源、输出转换、事件订阅 | **是**（独立导航页） |
+| 插件 | 插件发现/启用/重载；数据源、输出转换、事件订阅、UI 扩展（设置面板/独立页/弹窗/通知） | **是**（独立导航页） |
 | 开发者 | 事件流/诊断/模拟触发/A-B 注入对比 | 否（需先开开发者模式） |
 | 测试模式 | 总开关控制测试功能可见性 | — |
 

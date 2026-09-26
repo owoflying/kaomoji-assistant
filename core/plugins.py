@@ -21,6 +21,16 @@ plugin.json 示例：
         api.register_transform(lambda text, ctx: text + " ★", priority=100)
         api.on("after_insert", lambda text, ctx: api.log("已插入"))
 
+API 版本：v1 提供数据/转换/事件/配置；**v2 追加 UI 扩展能力**
+（register_settings_widget / register_page / show_dialog / show_message / ask /
+notify / theme_tokens）。UI 系列方法会校验清单里的 api_version，v1 插件调用会
+直接抛 PluginError（而不是静默失效）。
+
+UI 扩展的所有权约定（重要）：**manager 只登记 factory 与元信息，不持有 QWidget**。
+widget 实例由 UI 宿主（PluginPage / UnifiedSettingsWindow / PluginDialog）创建、
+插入布局并在插件卸载时销毁；manager 只负责在注册/卸载时 emit ui_changed 通知宿主
+重新同步。这样避免了 core 层持有 Qt 对象导致的生命周期悬垂。
+
 设计要点（安全与健壮性）：
 - **异常隔离**：插件的加载、每次回调都在 try/except 中执行，任何插件抛异常
   只会标记该插件为 error 状态并记日志，绝不影响主程序与其它插件。
@@ -42,9 +52,19 @@ import sys
 from PySide6.QtCore import QObject, Signal
 
 # 当前支持的插件 API 版本；清单里声明更高版本时拒绝加载（提示升级主程序）
-SUPPORTED_API_VERSION = 1
+# v1：数据源 / 转换 / 事件 / 配置；v2：追加 UI 扩展（设置面板 / 独立页 / 弹窗 / 通知）
+SUPPORTED_API_VERSION = 2
+
+# UI 扩展能力所需的最低 API 版本
+_MIN_API_FOR_UI = 2
 
 _ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
+
+# 插件页 id 约束（用于侧边栏 key，避免与内置页 key 冲突时被误解析）
+_PAGE_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,32}$")
+
+# 单个插件允许注册的侧边栏页数上限（防止恶意插件刷爆侧边栏）
+_MAX_PLUGIN_PAGES = 8
 
 # 清单必填字段；缺任一即判定清单无效
 _MANIFEST_REQUIRED = ("name", "version", "entry")
@@ -154,27 +174,150 @@ class PluginAPI:
         """把 self.settings 持久化到 <settings_dir>/<id>.json。"""
         self._manager._save_settings(self.id, self.settings)
 
+    # ------------------------------------------------------------------
+    # 以下为 UI 扩展能力（需要清单声明 api_version >= 2）
+    # ------------------------------------------------------------------
+    def _require_ui(self):
+        ver = int(self._manifest.get("api_version", 1) or 1)
+        if ver < _MIN_API_FOR_UI:
+            raise PluginError(
+                "UI 扩展需要插件声明 api_version >= 2（当前 %d）；"
+                "请在 plugin.json 中加入 \"api_version\": 2" % ver)
+
+    # ---- 能力 6：卡片内嵌设置面板 ----
+    def register_settings_widget(self, factory, title="插件设置"):
+        """在插件页自己的卡片下方嵌入一块设置区。
+
+        factory(parent) -> QWidget；首次展开时才调用（懒加载），同一实例会被复用
+        （不会因插件页刷新丢失未保存的输入）。factory 抛异常时卡片内显示错误占位，
+        不影响主程序与其它插件。
+        """
+        self._require_ui()
+        if not callable(factory):
+            raise PluginError("register_settings_widget 需要 factory(parent) 可调用对象")
+        key = self._manager._add_settings_widget(
+            self.id, factory, str(title or "插件设置"))
+        return key
+
+    # ---- 能力 7：侧边栏独立页 ----
+    def register_page(self, page_id, title, factory, icon=None):
+        """往主窗口侧边栏注册一个插件自己的页面。
+
+        factory(parent) -> QWidget。页面由统一窗口托管（加入 QStackedWidget），
+        插件卸载/停用时自动移除并销毁。返回侧边栏 key（形如 plugin:<id>:<page_id>）。
+        """
+        self._require_ui()
+        if not callable(factory):
+            raise PluginError("register_page 需要 factory(parent) 可调用对象")
+        pid = str(page_id or "").strip()
+        if not _PAGE_ID_RE.match(pid):
+            raise PluginError("page_id 只能含字母/数字/下划线/连字符（最长 32）")
+        return self._manager._add_page(
+            self.id, pid, str(title or pid), factory, icon)
+
+    # ---- 能力 8：主题化弹窗 / 消息框 ----
+    def show_dialog(self, factory=None, title="", width=0, height=0, modal=True):
+        """弹出一个与主窗口同风格（无边框+圆角+亚克力色）的对话框。
+
+        factory(parent) -> QWidget 提供内容；modal=True 时同步阻塞，返回 1/0。
+        """
+        self._require_ui()
+        if factory is not None and not callable(factory):
+            raise PluginError("show_dialog 的 factory 必须是可调用对象或 None")
+        return self._manager._open_dialog(
+            self.id, factory, str(title or self.name),
+            int(width), int(height), bool(modal))
+
+    def show_message(self, text, title="提示", ok_text="确定", cancel_text=None):
+        """轻量消息框。带 cancel_text 时返回 True/False，否则恒 True。"""
+        self._require_ui()
+        return self._manager._open_message(
+            self.id, str(text or ""), str(title or self.name),
+            str(ok_text or "确定"),
+            str(cancel_text) if cancel_text else None)
+
+    def ask(self, text, title="确认", yes_text="确定", no_text="取消"):
+        """是/否 询问框，返回 bool。"""
+        self._require_ui()
+        return self._manager._open_message(
+            self.id, str(text or ""), str(title or "确认"),
+            str(yes_text or "确定"), str(no_text or "取消"))
+
+    # ---- 能力 9：系统托盘通知 ----
+    def notify(self, title, message, ms=4000):
+        """发一条托盘气泡通知；托盘不可用时静默失败。"""
+        self._require_ui()
+        return self._manager._notify(
+            str(title or self.name), str(message or ""), int(ms))
+
+    # ---- 能力 10：主题令牌（供插件自着色） ----
+    def theme_tokens(self):
+        """返回当前主题的只读颜色令牌字典（dark/text/accent/card 等）。
+
+        插件自建控件若想跟随深浅色，可读取这里的色值自行 setStyleSheet；
+        更省事的做法是什么都不做——宿主会把完整主题 QSS 垫在插件 widget 上。
+        """
+        return self._manager._theme_tokens()
+
 
 class PluginManager(QObject):
     """插件生命周期管理：发现 -> 校验 -> 加载 -> 注册能力 -> 事件分发。"""
 
     # 插件集合发生变化（启用/停用/重载/扫描），UI 侧（插件页/库页）据此刷新
     changed = Signal()
+    # UI 登记项变化（插件注册了设置面板 / 独立页，或被卸载），
+    # 宿主（PluginPage / UnifiedSettingsWindow）据此增删对应 widget。
+    ui_changed = Signal()
 
     def __init__(self, plugins_dir, config, save_config=None,
-                 log=None, settings_dir=None, parent=None):
+                 log=None, settings_dir=None, theme_provider=None, parent=None):
         super().__init__(parent)
         self.plugins_dir = plugins_dir
         self._config = config                      # 主配置的权威字典引用（只读写 plugins_enabled）
         self._save_config = save_config
         self._log_fn = log or (lambda *a, **k: None)
         self.settings_dir = settings_dir
+        # 当前主题名提供者（由 main 注入，避免 core 反向依赖 ui.win11_theme）
+        self._theme_provider = theme_provider
         # plugin_id -> 记录 dict；见 discover()
         self.plugins = {}
         # 运行期能力注册表
         self._sources = {}        # plugin_id -> [{"name":..., "items":[...]}]
         self._transforms = []     # [{"plugin","fn","priority"}]
         self._listeners = {}      # event -> [{"plugin","fn"}]
+        # UI 注册表：只登记 spec/factory，widget 实例由 UI 宿主持有
+        self._settings_widgets = {}   # plugin_id -> {"factory","title"}
+        self._plugin_pages = {}       # page_key -> {"plugin","page_id","title","factory","icon"}
+        self._dialogs = {}            # plugin_id -> [PluginDialog]
+        self._notify_fn = None        # 托盘气泡回调（main 注入）
+        self._theme_override = None   # UI 侧显式同步的主题名（优先于 provider）
+
+    # ---------- 提供给外部（main）的 UI 钩子 ----------
+    def set_ui_hooks(self, notify=None):
+        """注入 UI 相关回调（目前只有托盘通知）。
+
+        托盘在 main 里比 PluginManager 晚创建，因此用后置注入而不是构造参数。
+        """
+        if notify is not None:
+            self._notify_fn = notify
+
+    def set_theme_name(self, name):
+        """显式同步当前主题名（已解析过的 light/dark，不含 "system"）。
+
+        theme_provider 是启动时的闭包，若主程序的 config 字典在设置应用时被整体
+        替换，闭包可能读到旧值；UI 侧每次应用新主题时再显式同步一次，双保险。
+        """
+        if isinstance(name, str) and name and name != "system":
+            self._theme_override = name
+
+    def current_theme_name(self):
+        if getattr(self, "_theme_override", None):
+            return self._theme_override
+        try:
+            name = self._theme_provider() if callable(self._theme_provider) else None
+        except Exception:
+            name = None
+        return name or "light"
 
     # ---------- 日志 ----------
     def _log(self, level, source, message):
@@ -310,6 +453,9 @@ class PluginManager(QObject):
             rec["error"] = "%s: %s" % (type(e).__name__, e)
             rec["module"] = None
             rec["api"] = None
+            # setup 可能执行到一半才抛异常：此时数据源/转换/监听器/UI 登记都可能有
+            # 半成品，必须回收，否则脏能力会一直留在注册表里（下次重载还会叠加）。
+            self._detach(plugin_id)
             self._log("error", "plugins", "插件 %s 加载失败：%s" % (plugin_id, rec["error"]))
             self.changed.emit()
             return False
@@ -323,6 +469,11 @@ class PluginManager(QObject):
                      len(self._sources.get(plugin_id, [])),
                      sum(1 for t in self._transforms if t["plugin"] == plugin_id)))
         self.changed.emit()
+        # setup 执行期间注册 UI 能力时会 emit ui_changed，但那时 rec["state"] 还是
+        # disabled，宿主的 plugin_pages()/settings_widgets() 按「已加载」过滤会把它们
+        # 滤掉（表现为「新启用插件的独立页/设置面板不出现，重载一次才出现」）。
+        # 这里在置为 loaded 之后再补发一次，保证宿主能看到完整的 UI 登记。
+        self.ui_changed.emit()
         return True
 
     def unload(self, plugin_id):
@@ -399,7 +550,12 @@ class PluginManager(QObject):
         return module, api
 
     def _detach(self, plugin_id):
-        """回收某插件注册的全部能力（数据源/转换/监听器）。"""
+        """回收某插件注册的全部能力（数据源/转换/监听器/UI 登记/弹窗）。
+
+        UI widget 本身不由 manager 持有（宿主持有并负责从布局摘除），这里只撤销
+        spec 登记并 emit ui_changed，宿主收到后会发现自己的 widget 已不在注册表里
+        从而销毁它——避免 manager 直接动 Qt 对象导致的悬垂引用。
+        """
         self._sources.pop(plugin_id, None)
         self._transforms = [t for t in self._transforms if t["plugin"] != plugin_id]
         for event in list(self._listeners):
@@ -407,6 +563,19 @@ class PluginManager(QObject):
                 l for l in self._listeners[event] if l["plugin"] != plugin_id]
             if not self._listeners[event]:
                 del self._listeners[event]
+        had_settings = self._settings_widgets.pop(plugin_id, None) is not None
+        killed_pages = [k for k, v in self._plugin_pages.items()
+                        if v["plugin"] == plugin_id]
+        for k in killed_pages:
+            del self._plugin_pages[k]
+        # 该插件开着的弹窗必须关掉，否则插件已卸载而窗口还在，回调会打到空气上
+        self.close_plugin_dialogs(plugin_id)
+        if had_settings or killed_pages:
+            self.ui_changed.emit()
+        # 该插件开着的弹窗必须关掉，否则插件已卸载而窗口还在，回调会打到空气上
+        self.close_plugin_dialogs(plugin_id)
+        if had_settings or killed_pages:
+            self.ui_changed.emit()
 
     # ---------- 能力注册（由 PluginAPI 调用） ----------
     def _add_source(self, plugin_id, category, items):
@@ -430,6 +599,100 @@ class PluginManager(QObject):
 
     def _add_listener(self, plugin_id, event, fn):
         self._listeners.setdefault(event, []).append({"plugin": plugin_id, "fn": fn})
+
+    # ---------- UI 能力登记（由 PluginAPI 调用） ----------
+    def _add_settings_widget(self, plugin_id, factory, title):
+        self._settings_widgets[plugin_id] = {"factory": factory, "title": title}
+        self.ui_changed.emit()
+        return "%s:settings" % plugin_id
+
+    def _add_page(self, plugin_id, page_id, title, factory, icon=None):
+        owned = sum(1 for v in self._plugin_pages.values() if v["plugin"] == plugin_id)
+        if owned >= _MAX_PLUGIN_PAGES:
+            raise PluginError("单个插件最多注册 %d 个侧边栏页" % _MAX_PLUGIN_PAGES)
+        key = "plugin:%s:%s" % (plugin_id, page_id)
+        self._plugin_pages[key] = {
+            "plugin": plugin_id, "page_id": page_id, "title": title,
+            "factory": factory, "icon": icon,
+        }
+        self.ui_changed.emit()
+        return key
+
+    # ---------- UI 注册表的只读视图（供宿主同步） ----------
+    def settings_widgets(self):
+        """{plugin_id: {"factory","title"}}（只含当前已加载插件的）。"""
+        return {pid: spec for pid, spec in self._settings_widgets.items()
+                if self._is_loaded(pid)}
+
+    def plugin_pages(self):
+        """{page_key: spec}（只含当前已加载插件的，按插件 id 与页 id 排序）。"""
+        items = [(k, v) for k, v in self._plugin_pages.items()
+                 if self._is_loaded(v["plugin"])]
+        return dict(sorted(items, key=lambda kv: (kv[1]["plugin"], kv[1]["page_id"])))
+
+    def _is_loaded(self, plugin_id):
+        rec = self.plugins.get(plugin_id)
+        return bool(rec and rec.get("state") == "loaded")
+
+    # ---------- 弹窗 / 消息框 / 通知 ----------
+    def _open_dialog(self, plugin_id, factory, title, width, height, modal):
+        # 延迟 import：core 层不在模块顶层依赖 ui.*（保持分层，也利于离屏测试）
+        from ui.plugin_dialog import show_plugin_dialog
+        from ui.win11_theme import Theme, apply_child_theme
+
+        theme = Theme(self.current_theme_name())
+        body = None
+        if factory is not None:
+            body = factory(None)
+            # 插件自建 body 若带样式表会切断祖先级联，这里把完整主题 QSS 垫在前
+            apply_child_theme(body, theme)
+        dlg = show_plugin_dialog(body, title, theme, None, width, height, modal)
+        self._dialogs.setdefault(plugin_id, []).append(dlg)
+        return dlg.result() if modal else dlg
+
+    def _open_message(self, plugin_id, text, title, ok_text, cancel_text):
+        from ui.plugin_dialog import show_message
+        from ui.win11_theme import Theme
+
+        return show_message(text, title, Theme(self.current_theme_name()),
+                            None, ok_text, cancel_text)
+
+    def _notify(self, title, message, ms):
+        fn = self._notify_fn
+        if not callable(fn):
+            return False
+        try:
+            fn(title, message, ms)
+            return True
+        except Exception as e:
+            self._log("warn", "plugins", "托盘通知失败：%r" % (e,))
+            return False
+
+    def _theme_tokens(self):
+        from ui.win11_theme import Theme
+
+        t = Theme(self.current_theme_name())
+        return {
+            "dark": t.dark, "name": t.name,
+            "text": t.text, "text_secondary": t.text_secondary,
+            "text_tertiary": t.text_tertiary,
+            "accent": t.accent, "accent_hover": t.accent_hover,
+            "card": t.card, "card_hover": t.card_hover,
+            "card_border": t.card_border, "divider": t.divider,
+            "input_bg": t.input_bg, "input_border": t.input_border,
+            "nav_hover": t.nav_hover, "nav_selected": t.nav_selected,
+        }
+
+    def close_plugin_dialogs(self, plugin_id=None):
+        """关闭插件弹窗；plugin_id 为 None 时关闭全部。"""
+        targets = [plugin_id] if plugin_id else list(self._dialogs)
+        for pid in targets:
+            for dlg in list(self._dialogs.pop(pid, [])):
+                try:
+                    dlg.close()
+                    dlg.deleteLater()
+                except RuntimeError:
+                    pass    # C++ 对象已销毁
 
     # ---------- 数据源合并 ----------
     def refresh_sources(self, data):

@@ -477,3 +477,38 @@ def kaomoji_font(size=14):
     ])
     f.setPointSize(size)
     return f
+
+
+def child_theme_qss(theme, own_stylesheet=""):
+    """给外部（插件）提供的子控件拼出「完整主题 QSS + 自身规则」的样式表。
+
+    Qt 行为：带自身 setStyleSheet 的控件，其派生控件不再继承更上层祖先的样式表。
+    因此直接 `child.setStyleSheet("background:red")` 会让 child 内部的按钮/滑块/
+    开关全部掉回原生样式（本项目已踩三次）。这里把完整主题 QSS 垫在前面、
+    插件自己的规则追加在后，保证级联不断且自定义仍生效。
+    """
+    base = theme.style_sheet()
+    own = (own_stylesheet or "").strip()
+    return base + ("\n" + own if own else "")
+
+
+def apply_child_theme(widget, theme):
+    """把 widget 现有的自定义样式重排到「完整主题 QSS 之后」，保住级联。
+
+    用于插件产出的 QWidget（设置面板 / 独立页 / 弹窗内容）：无论插件是否给自身
+    设过样式，都能拿到完整主题规则。
+
+    幂等：插件自己的那部分样式只会在首次调用时被记到 `_own_qss` 属性里，
+    之后每次主题切换都基于「新的完整 QSS + 原始自定义」重建，
+    避免把上一次垫进去的 base 反复叠加导致样式表越来越长。
+    """
+    if widget is None:
+        return
+    try:
+        own = widget.property("_own_qss")
+        if not isinstance(own, str):
+            own = widget.styleSheet() or ""
+            widget.setProperty("_own_qss", own)
+        widget.setStyleSheet(child_theme_qss(theme, own))
+    except RuntimeError:
+        pass  # C++ 对象已销毁

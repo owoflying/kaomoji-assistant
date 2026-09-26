@@ -1,8 +1,8 @@
 {
   "name": "示例插件",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "entry": "main.py",
   "author": "kaomoji-assistant",
-  "description": "演示插件三种能力：追加「示例」分类、可选的尾部加星转换、插入事件日志。",
-  "api_version": 1
+  "description": "演示插件全部能力：数据源、输出转换、事件订阅，以及 UI 扩展（卡片内嵌设置面板、侧边栏独立页、主题化弹窗与托盘通知）。",
+  "api_version": 2
 }

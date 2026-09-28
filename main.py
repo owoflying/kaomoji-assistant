@@ -12,6 +12,14 @@ if BASE_DIR not in sys.path:
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QMessageBox
 from PySide6.QtGui import QIcon, QAction
 from PySide6.QtCore import QTimer, QObject, Signal
+try:                                    # 判断窗口 C++ 对象是否仍然有效
+    from shiboken6 import isValid as shiboken_is_valid
+except Exception:                       # pragma: no cover - 极端环境兜底
+    def shiboken_is_valid(obj):
+        try:
+            return bool(obj)
+        except RuntimeError:
+            return False
 
 from core.kaomoji_data import KaomojiData
 from core.hotkey import NativeHotkeyManager
@@ -535,13 +543,31 @@ def main():
 
     window.selected.connect(on_selected)
 
+    # 日志窗口：全程复用同一实例（此前每次点击都新建一个，关闭后仍挂在父窗口上
+    # 越堆越多），并在主题切换时同步换肤。
+    _log_viewer = {"w": None}
+
+    def open_log_viewer():
+        name = resolve_theme_name(config.get("theme", "light"))
+        w = _log_viewer["w"]
+        # 关闭时窗口自带 WA_DeleteOnClose，destroyed 会把引用置空；这里再兜一层
+        # 有效性判断，防止极端时序下拿到已销毁的 C++ 对象。
+        if not (w is not None and shiboken_is_valid(w)):
+            w = show_log_viewer(LOG_BUFFER, parent=unified, theme_name=name)
+            _log_viewer["w"] = w
+            w.destroyed.connect(lambda: _log_viewer.__setitem__("w", None))
+        else:
+            w.set_theme(name)
+        w.show()
+        w.raise_()
+        w.activateWindow()
+        return w
+
     # 统一主面板：整合 主页/库/我的颜文字/快捷短语/搜索/设置/关于/插件
     unified = UnifiedSettingsWindow(
         data, config, state, user_kao, triggers,
         save_config=save_config,
-        open_log=lambda: show_log_viewer(
-            LOG_BUFFER, parent=unified,
-            theme_name=config.get("theme", "light")),
+        open_log=open_log_viewer,
         dev_refs={
             "hotkey": hotkey, "monitor": monitor, "injector": injector,
             "data": data, "config": config, "window": window, "bus": bus,
@@ -600,6 +626,9 @@ def main():
         app.setStyleSheet(Theme(effective_theme).style_sheet())
         menu.setStyleSheet(Theme(effective_theme).menu_style())
         set_app_theme(config.get("theme", "light"))
+        # 已打开的日志窗口同步换肤（否则它会停留在启动时的主题）
+        if _log_viewer["w"] is not None and shiboken_is_valid(_log_viewer["w"]):
+            _log_viewer["w"].set_theme(effective_theme)
         # 主题设为「跟随系统」时启动轮询，否则停止轮询
         _update_system_theme_watcher()
         window.apply_config(config)
@@ -662,10 +691,7 @@ def main():
     menu.addAction(panel_action)
     menu.addAction(settings_action)
     log_action = QAction("查看日志", app)
-    log_action.triggered.connect(
-        lambda: show_log_viewer(LOG_BUFFER, parent=unified,
-                                theme_name=resolve_theme_name(config.get("theme", "light")))
-    )
+    log_action.triggered.connect(open_log_viewer)
     # 日志功能整合进开发者模式：未启用时不可访问
     log_action.setVisible(bool(config.get("developer_mode", False)))
     menu.addAction(log_action)

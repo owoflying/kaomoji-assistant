@@ -17,7 +17,7 @@ from PySide6.QtGui import (
     QPen, QLinearGradient, QRegion, QTransform,
 )
 
-from ui.win11_theme import Theme
+from ui.win11_theme import Theme, parse_color, resolve_theme_name
 from ui.fluent_icons import icon_label, recolor
 
 
@@ -37,7 +37,10 @@ class LogViewer(QWidget):
         self._buffer = buffer
         self._shown = 0           # 已渲染到文本框的行数
         self._drag_pos = None
-        self._theme = Theme(theme_name)
+        # 配置里可能是 "system"，统一解析成实际 light/dark，避免主题名未解析
+        # 时落到默认分支（表现为窗口配色与主体不一致）。
+        self._theme = Theme(resolve_theme_name(theme_name))
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
         self._init_window()
         self._init_ui()
         self._refresh()
@@ -117,11 +120,6 @@ class LogViewer(QWidget):
         self._text.setLineWrapMode(QPlainTextEdit.NoWrap)
         mono_name = "Consolas" if "Consolas" in QFontDatabase.families() else "Courier New"
         self._text.setFont(QFont(mono_name, 12))
-        self._text.setStyleSheet(
-            "QPlainTextEdit{background:%s;border:1px solid %s;border-radius:8px;"
-            "padding:10px 12px;color:%s;}"
-            % (t.card, t.card_border, t.text)
-        )
         body_layout.addWidget(self._text, 1)
 
         # 底部工具条
@@ -148,8 +146,28 @@ class LogViewer(QWidget):
         body_layout.addLayout(bar)
         root.addWidget(body, 1)
 
+        self._apply_theme()
+
+    def _apply_theme(self):
+        """把当前主题完整应用到窗口与子控件（构造与换肤共用）。"""
+        t = self._theme
         # 应用完整主题 QSS，确保按钮/复选框/标签样式一致
         self.setStyleSheet(t.style_sheet())
+        self._text.setStyleSheet(
+            "QPlainTextEdit{background:%s;border:1px solid %s;border-radius:8px;"
+            "padding:10px 12px;color:%s;}"
+            % (t.card, t.card_border, t.text)
+        )
+        recolor(self._icon, t.accent)
+
+    def set_theme(self, theme_name):
+        """换肤：主题名（可含 system）解析后重刷窗口，避免开着窗口改主题不跟随。"""
+        name = resolve_theme_name(theme_name)
+        if self._theme.name == name:
+            return
+        self._theme = Theme(name)
+        self._apply_theme()
+        self.update()
 
     # ---------- 行为 ----------
     def _on_auto_changed(self, state):
@@ -215,7 +233,10 @@ class LogViewer(QWidget):
         panel = QRect(_PAD, _PAD, self.width() - 2 * _PAD, self.height() - 2 * _PAD)
 
         # 柔和外阴影
-        sc = QColor(t.shadow_color)
+        # 注意：主题里的 rgba(r,g,b,浮点a) 字符串在 Qt6 下 QColor() 解析失败会
+        # 静默变成「不透明黑色」，窗口会整个发黑（表现为「日志窗口永远是深色」）。
+        # 必须走 parse_color() 正则兜底解析，不可直接 QColor(spec)。
+        sc = parse_color(t.shadow_color)
         base = sc.alpha()
         for d in range(_PAD, 0, -1):
             a = max(1, int(base * (1 - (d - 1) / _PAD) * 0.35))
@@ -228,17 +249,21 @@ class LogViewer(QWidget):
         # 面板基底
         pp = QPainterPath()
         pp.addRoundedRect(QRectF(panel), _RADIUS, _RADIUS)
-        tint = QColor(t.window_tint)
+        # 面板基底：window_tint 固有 alpha 仅 0.85/0.88，且本窗口不带 DWM 亚克力，
+        # 半透会直接透出桌面（浅色主题下被暗色桌面压暗）→ 与主窗口/插件弹窗一致
+        # 取等效实色。
+        tint = parse_color(t.window_tint)
+        tint.setAlpha(255)
         p.fillPath(pp, tint)
 
         # 细微竖向渐变
         grad = QLinearGradient(0, panel.top(), 0, panel.bottom())
-        grad.setColorAt(0, QColor(t.window_grad_top))
-        grad.setColorAt(1, QColor(t.window_grad_bottom))
+        grad.setColorAt(0, parse_color(t.window_grad_top))
+        grad.setColorAt(1, parse_color(t.window_grad_bottom))
         p.fillPath(pp, grad)
 
         # 1px 圆角边框
-        pen = QPen(QColor(t.window_border))
+        pen = QPen(parse_color(t.window_border))
         pen.setWidth(1)
         p.strokePath(pp, pen)
 

@@ -211,8 +211,10 @@ SettingsPage / AboutPage / DevPage ──(config_applied)──▶ UnifiedWindow
 - 验证插件页深浅主题要调 `uni.apply_config({...theme...})` 走完整链路，只调 `page.set_theme` 不会刷新窗口级 QSS，会误判"深色没生效"；
 - 插件产出的 widget 若实现了空 `set_theme(theme)`（只 pass），宿主必须**先垫完整 QSS 再回调它**，否则主题切换后插件面板停留在旧主题样式（深色下白底白字，截图审查时抓到过）；
 - offscreen 无字体环境下 `widget.isVisible()` 对整个未 show 的子树恒为 False，断言显隐要用 `isHidden()`；文字不渲染属环境限制，看结构/取色即可；
-- **Qt6 `QColor("rgba(r,g,b,浮点a)")` 是 invalid，静默回退成黑色**（alpha 必须 0-255 整数）——paintEvent 里对主题令牌取色必须走 `win11_theme.parse_color()`（正则兜底，alpha≤1 时 ×255）。PluginDialog 曾因此整窗发黑（截图审查抓到）；统一窗口的 `_parse_color` 已改为委托同一实现；
-- PluginDialog 的面板基底强制不透明（`window_tint` 固有 alpha 0.85/0.88 若直接用，会比主窗口 `_adjusted_panel_base()` 默认 1.0 明显更透），并复用 DWM `apply_backdrop`/`apply_dark_mode` 保持观感一致。
+- **Qt6 `QColor("rgba(r,g,b,浮点a)")` 是 invalid，静默回退成黑色**（alpha 必须 0-255 整数）——paintEvent 里对主题令牌取色必须走 `win11_theme.parse_color()`（正则兜底，alpha≤1 时 ×255）。已两次踩到：① PluginDialog 整窗发黑；② **LogViewer 整窗发黑，表现为「查看日志永远是深色模式」**（浅色主题下 `window_tint=rgba(255,255,255,0.88)` 解析失败 → 纯黑面板，深浅主题观感一样）。统一窗口的 `_parse_color` 已改为委托同一实现；`FluentCheckBox` 的 `input_border` 同理（勾框会变成一圈黑线）。
+- 自绘窗口的面板基底一律强制不透明（`window_tint` 固有 alpha 0.85/0.88 若直接用，会比主窗口 `_adjusted_panel_base()` 默认 1.0 明显更透，无 DWM 亚克力时还会透出桌面被压暗），并复用 DWM `apply_backdrop`/`apply_dark_mode` 保持观感一致。
+- **独立窗口的主题名必须先 `resolve_theme_name()` 再构造 `Theme`**：配置里的 `"system"` 若不解析会落到默认分支，与主窗口配色不一致（LogViewer 的构造与 `set_theme` 已统一解析）。
+- **复用型独立窗口（日志）**：`main.open_log_viewer()` 全程复用同一实例并 `WA_DeleteOnClose` + `destroyed` 清空引用（此前每次点击都新建一个、关闭后仍挂在父窗口上堆积）；主题切换时 `apply_settings` 里显式 `set_theme(effective_theme)`，否则开着窗口换肤不跟随。
 
 ---
 

@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QCheckBox, QStyle, QStyleOptionButton
 from PySide6.QtCore import Qt, QRect, QPoint
 from PySide6.QtGui import QPainter, QPen, QColor
 
-from ui.win11_theme import Theme
+from ui.win11_theme import Theme, parse_color
 
 
 class FluentCheckBox(QCheckBox):
@@ -59,7 +59,9 @@ class FluentCheckBox(QCheckBox):
             pen_w = 1.5
         else:
             fill = QColor(0, 0, 0, 0)  # 透明 -> 空白方框（不填充）
-            border = QColor(t.input_border)
+            # input_border 是 rgba(r,g,b,浮点a)，Qt6 直接 QColor() 会解析失败变
+            # 成不透明黑，勾框会变成一圈黑线 —— 必须走 parse_color()。
+            border = parse_color(t.input_border)
             pen_w = 1
             if hovered:
                 border = QColor(t.accent)

@@ -9,10 +9,17 @@ __pycache__/
 *$py.class
 *.pyd
 
-# 运行时用户数据（最近使用 / 收藏 / 自定义颜文字 / 快捷短语，按用户生成）
+# 运行时用户数据（最近使用 / 收藏 / 自定义颜文字 / 快捷短语 / 插件私有配置，按用户生成）
 data/user_state.json
 data/user_kaomoji.json
 data/user_triggers.json
+data/plugin_settings/
+
+# 自检产物（python main.py --diag）
+diag.txt
+
+# 项目内工具目录（本地记忆/会话数据）
+.workbuddy/
 
 # 日志
 *.log

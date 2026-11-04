@@ -39,13 +39,6 @@ MOD_NAMES = {
     "alt": MOD_ALT,
     "cmd": MOD_WIN, "super": MOD_WIN, "win": MOD_WIN,
 }
-MOD_PYNPUT = {
-    MOD_CONTROL: "<ctrl>",
-    MOD_SHIFT: "<shift>",
-    MOD_ALT: "<alt>",
-    MOD_WIN: "<cmd>",
-}
-
 # 设置 API 参数类型，避免 ctypes 默认推断错误
 user32.GetForegroundWindow.argtypes = []
 user32.GetForegroundWindow.restype = wintypes.HWND
@@ -83,34 +76,6 @@ def _vk_from_char(ch):
     return res & 0xFF
 
 
-def parse_pynput(hotkey_str):
-    """解析 pynput 风格字符串 -> (modifiers:int, vk:int)。
-
-    例如 "<ctrl>+<shift>+k" -> (MOD_CONTROL | MOD_SHIFT, 0x4B)
-    """
-    mods = 0
-    vk = 0
-    for part in (hotkey_str or "").lower().split("+"):
-        part = part.strip()
-        if not part:
-            continue
-        if part.startswith("<") and part.endswith(">"):
-            name = part[1:-1]
-            if name in MOD_NAMES:
-                mods |= MOD_NAMES[name]
-                continue
-            key = name  # 命名主键，如 <f1> <up>
-        else:
-            key = part
-        if key in NAMED_VK:
-            vk = NAMED_VK[key]
-        elif len(key) == 1:
-            vk = _vk_from_char(key)
-        elif key:
-            vk = _vk_from_char(key[0])
-    return mods, vk
-
-
 def format_pynput(mods, vk):
     """把 (modifiers, vk) 还原成 pynput 风格配置字符串。"""
     parts = []
@@ -133,25 +98,17 @@ def format_pynput(mods, vk):
     return "+".join(parts)
 
 
+# 修饰键 -> 展示名（顺序即显示顺序）
+_MOD_LABELS = (
+    (MOD_CONTROL, "Ctrl"), (MOD_ALT, "Alt"),
+    (MOD_SHIFT, "Shift"), (MOD_WIN, "Win"),
+)
+
+
 def hotkey_label_from(mods, vk):
     """生成给人看的标签，如 'Ctrl+Shift+K'。"""
-    parts = []
-    if mods & MOD_CONTROL:
-        parts.append("Ctrl")
-    if mods & MOD_ALT:
-        parts.append("Alt")
-    if mods & MOD_SHIFT:
-        parts.append("Shift")
-    if mods & MOD_WIN:
-        parts.append("Win")
-    if vk in VK_NAMED:
-        parts.append(VK_NAMED[vk].upper())
-    elif 0x41 <= vk <= 0x5A:
-        parts.append(chr(vk))
-    elif 0x30 <= vk <= 0x39:
-        parts.append(chr(vk))
-    else:
-        parts.append("?")
+    parts = [name for bit, name in _MOD_LABELS if mods & bit]
+    parts.append(_vk_label(vk))
     return "+".join(parts)
 
 
@@ -374,25 +331,31 @@ def set_keyboard_layout(hwnd, hkl):
 WM_CHAR = 0x0102
 
 
+def get_class_name(hwnd):
+    """取窗口类名（如 Edit / RichEdit50W / Chrome_RenderWidgetHostHWND）；失败返回 ''。"""
+    if not hwnd:
+        return ""
+    try:
+        buf = ctypes.create_unicode_buffer(256)
+        if user32.GetClassNameW(hwnd, buf, 256) <= 0:
+            return ""
+        return buf.value or ""
+    except Exception:
+        return ""
+
+
 def get_focused_control_hwnd():
     """拿到当前真正拥有焦点的控件 hwnd（用于直接投递 WM_CHAR）。
 
     优先用 GetGUIThreadInfo 取前台线程的焦点控件（编辑框本身）；
     取不到时退回整个前台窗口。任何失败都静默退回前台窗口，绝不抛错。
     """
-    try:
-        fg = user32.GetForegroundWindow()
-        if not fg:
-            return None
-        tid = user32.GetWindowThreadProcessId(fg, ctypes.byref(wintypes.DWORD(0)))
-        info = _GUITHREADINFO()
-        info.cbSize = ctypes.sizeof(_GUITHREADINFO)
-        if tid and user32.GetGUIThreadInfo(tid, ctypes.byref(info)):
-            if info.hwndFocus:
-                return info.hwndFocus
-        return fg
-    except Exception:
+    fg, info = get_foreground_thread_info()
+    if not fg:
         return None
+    if info is not None and info.hwndFocus:
+        return info.hwndFocus
+    return fg
 
 
 def get_focused_control_class():
@@ -400,17 +363,7 @@ def get_focused_control_class():
 
     取不到时返回 ''。开发者模式用于展示“焦点原始流”，确认焦点判定是否正确。
     """
-    hwnd = get_focused_control_hwnd()
-    if not hwnd:
-        return ""
-    try:
-        buf = ctypes.create_unicode_buffer(256)
-        n = user32.GetClassNameW(hwnd, buf, 256)
-        if n <= 0:
-            return ""
-        return buf.value or ""
-    except Exception:
-        return ""
+    return get_class_name(get_focused_control_hwnd())
 
 
 def is_native_edit(hwnd):
@@ -421,17 +374,8 @@ def is_native_edit(hwnd):
     （只能拿到窗口标题等无效文本），必须交给 UIA 读取。
     任何失败都静默返回 False（保守地回退到 UIA 路径）。
     """
-    if not hwnd:
-        return False
-    try:
-        buf = ctypes.create_unicode_buffer(256)
-        n = user32.GetClassNameW(hwnd, buf, 256)
-        if n <= 0:
-            return False
-        cls = (buf.value or "").lower()
-        return cls == "edit" or cls.startswith("richedit")
-    except Exception:
-        return False
+    cls = get_class_name(hwnd).lower()
+    return cls == "edit" or cls.startswith("richedit")
 
 
 def post_wm_char(hwnd, text):
@@ -480,6 +424,29 @@ class _GUITHREADINFO(ctypes.Structure):
     ]
 
 
+def get_foreground_thread_info():
+    """取前台窗口与其线程的 GUITHREADINFO -> ``(fg_hwnd, info_or_None)``。
+
+    本文件原先有三个函数各自抄了一遍「GetForegroundWindow -> GetWindowThreadProcessId
+    -> 填 cbSize -> GetGUIThreadInfo」，任何一处漏改都会让三者行为漂移，故收敛至此。
+    info 取不到时为 None（调用方自行决定回退），fg 为 None 表示压根没有前台窗口。
+    """
+    try:
+        fg = user32.GetForegroundWindow()
+        if not fg:
+            return None, None
+        tid = user32.GetWindowThreadProcessId(fg, ctypes.byref(wintypes.DWORD(0)))
+        if not tid:
+            return fg, None
+        info = _GUITHREADINFO()
+        info.cbSize = ctypes.sizeof(_GUITHREADINFO)
+        if not user32.GetGUIThreadInfo(tid, ctypes.byref(info)):
+            return fg, None
+        return fg, info
+    except Exception:
+        return None, None
+
+
 def get_caret_screen_pos():
     """返回候选条应当贴附的“输入位置”屏幕坐标 (QPoint)，取不到则返回 None。
 
@@ -491,13 +458,8 @@ def get_caret_screen_pos():
     """
     try:
         from PySide6.QtCore import QPoint
-        gui = _GUITHREADINFO()
-        gui.cbSize = ctypes.sizeof(_GUITHREADINFO)
-        fg = user32.GetForegroundWindow()
-        if not fg:
-            return None
-        tid = user32.GetWindowThreadProcessId(fg, ctypes.byref(wintypes.DWORD(0)))
-        if not user32.GetGUIThreadInfo(tid, ctypes.byref(gui)):
+        fg, gui = get_foreground_thread_info()
+        if not fg or gui is None:
             return None
         if gui.hwndCaret:
             pt = _POINT(gui.rcCaret.left, gui.rcCaret.top)
@@ -531,13 +493,8 @@ def get_focused_text(max_len=200):
     密码框（ES_PASSWORD）会被跳过，避免读取敏感内容。
     """
     try:
-        fg = user32.GetForegroundWindow()
-        if not fg:
-            return ""
-        gui = _GUITHREADINFO()
-        gui.cbSize = ctypes.sizeof(_GUITHREADINFO)
-        tid = user32.GetWindowThreadProcessId(fg, ctypes.byref(wintypes.DWORD(0)))
-        if not user32.GetGUIThreadInfo(tid, ctypes.byref(gui)):
+        _fg, gui = get_foreground_thread_info()
+        if gui is None:
             return ""
         # 仅当焦点落在真正的可编辑控件（hwndFocus / hwndCaret）时才读取；
         # 两者皆空说明焦点不在编辑区（在桌面 / 窗口自身），不要回退去读顶层窗口标题，

@@ -6,8 +6,6 @@
 
 映射到的分类名需与 data/kaomoji.json 中的 category.name 完全一致。
 """
-from typing import Optional
-
 # 情绪关键词库（与现有颜文字分类对齐）。命中顺序即优先级（靠前的先匹配）。
 EMOTION_KEYWORDS = {
     "开心": [
@@ -48,20 +46,6 @@ EMOTION_KEYWORDS = {
         "累死", "乏", "困死",
     ],
 }
-
-
-def detect(text: str) -> Optional[str]:
-    """在一段输入文本里检测情绪，返回分类名；未命中返回 None。
-
-    按 EMOTION_KEYWORDS 的声明顺序取第一个命中项（保留旧行为，供外部调用）。
-    """
-    if not text:
-        return None
-    for emotion, keywords in EMOTION_KEYWORDS.items():
-        for kw in keywords:
-            if kw in text:
-                return emotion
-    return None
 
 
 def detect_last(text: str):

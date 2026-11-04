@@ -73,6 +73,13 @@ _MANIFEST_REQUIRED = ("name", "version", "entry")
 # 允许订阅的事件；on() 里做白名单校验，防止插件拼写错误后静默失效
 KNOWN_EVENTS = ("startup", "shutdown", "before_insert", "after_insert", "config_changed")
 
+# 插件记录状态（唯一权威取值，UI 侧一律用这里的常量比较，别再手写字符串）
+STATE_DISABLED = "disabled"     # 未加载：从未启用 / 已停用
+STATE_LOADED = "loaded"         # 入口已执行，能力已注册
+STATE_ERROR = "error"           # 清单校验失败，或入口执行抛异常
+
+STATE_TEXT = {STATE_LOADED: "已启用", STATE_DISABLED: "已停用", STATE_ERROR: "错误"}
+
 
 class PluginError(Exception):
     """插件加载/校验失败。message 面向用户展示（会出现在插件页错误区）。"""
@@ -421,19 +428,20 @@ class PluginManager(QObject):
                 with open(manifest_path, "r", encoding="utf-8") as f:
                     manifest = json.load(f)
             except Exception as e:
-                found[name] = self._record(name, pdir, None, "error",
-                                           "plugin.json 解析失败：%s" % e)
+                found[name] = self._record(
+                    name, pdir, None, STATE_ERROR,
+                    "plugin.json 解析失败：%s" % e, "manifest")
                 broken.append(name)
                 continue
             err = _validate_manifest(manifest)
             if err:
-                found[name] = self._record(name, pdir, manifest, "error", err)
+                found[name] = self._record(name, pdir, manifest, STATE_ERROR, err, "manifest")
                 broken.append(name)
                 continue
             prev = old.get(name)
             if prev is None:
                 # 新发现的插件默认停用
-                found[name] = self._record(name, pdir, manifest, "disabled", None)
+                found[name] = self._record(name, pdir, manifest, STATE_DISABLED, None)
                 continue
             rec = self._record(name, pdir, manifest, prev["state"], prev["error"])
             rec["module"] = prev.get("module")
@@ -442,7 +450,8 @@ class PluginManager(QObject):
         # 需要回收能力的插件：目录被删掉的，以及清单在运行期间被改坏（此前已加载）的。
         # 不回收的话，其数据源/转换/监听器会继续生效（插件页却已经显示为错误或消失）。
         stale = [pid for pid in old if pid not in found]
-        stale += [pid for pid in broken if pid in old and old[pid]["state"] == "loaded"]
+        stale += [pid for pid in broken
+                  if pid in old and old[pid]["state"] == STATE_LOADED]
         self.plugins = found
         for pid in stale:
             mod = old[pid].get("module")
@@ -451,13 +460,16 @@ class PluginManager(QObject):
             self._detach(pid)
             self._log("info", "plugins", "插件 %s 已失效（目录移除或清单损坏），已回收其能力" % pid)
 
-    def _record(self, plugin_id, pdir, manifest, state, error):
+    def _record(self, plugin_id, pdir, manifest, state, error, error_kind=None):
         return {
             "id": plugin_id,
             "dir": pdir,
             "manifest": manifest or {},
-            "state": state,        # disabled / loaded / error
+            "state": state,            # STATE_DISABLED / STATE_LOADED / STATE_ERROR
             "error": error,
+            # 错误来源："manifest"=清单校验（重试无意义，必须改文件）；
+            # "runtime"=入口执行抛异常（可以点一次启用/重载来重试）
+            "error_kind": error_kind,
             "module": None,
             "api": None,
         }
@@ -468,9 +480,9 @@ class PluginManager(QObject):
         rec = self.plugins.get(plugin_id)
         if rec is None:
             return False
-        if rec["state"] == "loaded":
+        if rec["state"] == STATE_LOADED:
             return True
-        if rec["state"] == "error" and rec["error"]:
+        if rec["state"] == STATE_ERROR and rec.get("error_kind") == "manifest":
             # 清单级拒绝（字段缺失 / api_version 过新 / JSON 解析失败）：
             # 不尝试执行入口，直接按失败返回（错误信息保留在 rec["error"]）
             self._log("warn", "plugins", "插件 %s 已被清单校验拒绝：%s"
@@ -482,8 +494,9 @@ class PluginManager(QObject):
         try:
             module, api = self._exec_plugin(rec)
         except Exception as e:
-            rec["state"] = "error"
+            rec["state"] = STATE_ERROR
             rec["error"] = "%s: %s" % (type(e).__name__, e)
+            rec["error_kind"] = "runtime"
             rec["module"] = None
             rec["api"] = None
             # setup 可能执行到一半才抛异常：此时数据源/转换/监听器/UI 登记都可能有
@@ -492,8 +505,9 @@ class PluginManager(QObject):
             self._log("error", "plugins", "插件 %s 加载失败：%s" % (plugin_id, rec["error"]))
             self.changed.emit()
             return False
-        rec["state"] = "loaded"
+        rec["state"] = STATE_LOADED
         rec["error"] = None
+        rec["error_kind"] = None
         rec["module"] = module
         rec["api"] = api
         self._log("info", "plugins",
@@ -519,8 +533,12 @@ class PluginManager(QObject):
                 sys.modules.pop(getattr(mod, "__name__", None), None)
             rec["module"] = None
             rec["api"] = None
-            rec["state"] = "disabled"
-            rec["error"] = None
+            rec["state"] = STATE_DISABLED
+            # 清单级错误（字段缺失 / JSON 损坏）不是「卸载」能修好的，
+            # 保留错误信息让用户还看得到原因；入口执行期的错误才随卸载失去意义。
+            if rec.get("error_kind") != "manifest":
+                rec["error"] = None
+                rec["error_kind"] = None
         self.changed.emit()
 
     def reload(self, plugin_id):
@@ -528,9 +546,11 @@ class PluginManager(QObject):
         enabled = self.is_enabled(plugin_id)
         self.unload(plugin_id)
         self.discover()
-        self._set_enabled_flag(plugin_id, enabled)
-        if enabled:
-            return self.load(plugin_id)
+        # 目录已被删除时不要再往配置里写幽灵键（会随每次重载累积）
+        if plugin_id in self.plugins:
+            self._set_enabled_flag(plugin_id, enabled)
+            if enabled:
+                return self.load(plugin_id)
         self.changed.emit()
         return True
 
@@ -611,7 +631,13 @@ class PluginManager(QObject):
         if not name or not items:
             return
         bucket = self._sources.setdefault(plugin_id, [])
+        # 传单个字符串时**整体**算一条：直接迭代会把它拆成一个个汉字/字符，
+        # 插件作者写 add_source("笑", "(◕‿◕)") 会得到 10 个单字符分类项。
+        if isinstance(items, str):
+            items = [items]
         clean = [str(x) for x in items if isinstance(x, (str, int))]
+        if not clean:
+            return
         for cat in bucket:
             if cat["name"] == name:
                 for it in clean:
@@ -660,7 +686,7 @@ class PluginManager(QObject):
 
     def _is_loaded(self, plugin_id):
         rec = self.plugins.get(plugin_id)
-        return bool(rec and rec.get("state") == "loaded")
+        return bool(rec and rec.get("state") == STATE_LOADED)
 
     # ---------- 弹窗 / 消息框 / 通知 ----------
     def _open_dialog(self, plugin_id, factory, title, width, height, modal):
@@ -777,7 +803,7 @@ class PluginManager(QObject):
 
     # ---------- 统计（供主页/开发者页展示） ----------
     def stats(self):
-        loaded = [r for r in self.plugins.values() if r["state"] == "loaded"]
+        loaded = [r for r in self.plugins.values() if r["state"] == STATE_LOADED]
         return {
             "total": len(self.plugins),
             "loaded": len(loaded),

@@ -17,11 +17,15 @@ from PySide6.QtCore import Qt
 
 from ui.toggle_switch import ToggleSwitch
 from ui.fluent_icons import plugin_pixmap
+from ui.pages._scaffold import (
+    caption, card, card_layout, page_layout, page_title,
+)
 from ui.win11_theme import Theme, apply_child_theme
+from core.plugins import STATE_DISABLED, STATE_ERROR, STATE_LOADED, STATE_TEXT
 
 
 def _state_text(state):
-    return {"loaded": "已启用", "disabled": "已停用", "error": "错误"}.get(state, state)
+    return STATE_TEXT.get(state, state)
 
 
 class _PluginCard(QFrame):
@@ -70,7 +74,7 @@ class _PluginCard(QFrame):
 
         self.toggle = ToggleSwitch(theme)
         self.toggle.setChecked(
-            rec["state"] == "loaded" or manager.is_enabled(rec["id"]))
+            rec["state"] == STATE_LOADED or manager.is_enabled(rec["id"]))
         self.toggle.toggled.connect(self._on_toggle)
         top.addWidget(self.toggle)
         root.addLayout(top)
@@ -193,9 +197,9 @@ class _PluginCard(QFrame):
         self._theme = t
         err_color = "#ff99a4" if t.dark else "#c42b1c"
         state_color, state_bg = {
-            "loaded": (t.accent, t.accent_bg),
-            "disabled": (t.text_tertiary, "transparent"),
-            "error": (err_color, "transparent"),
+            STATE_LOADED: (t.accent, t.accent_bg),
+            STATE_DISABLED: (t.text_tertiary, "transparent"),
+            STATE_ERROR: (err_color, "transparent"),
         }.get(self.rec["state"], (t.text_secondary, "transparent"))
         self.state_lbl.setText(_state_text(self.rec["state"]))
         self.state_lbl.setStyleSheet(
@@ -304,25 +308,16 @@ class PluginPage(QWidget):
 
     # ---------- UI ----------
     def _init_ui(self):
-        root = QVBoxLayout(self)
-        root.setContentsMargins(36, 28, 36, 28)
-        root.setSpacing(22)
-
-        title = QLabel("插件")
-        title.setObjectName("PageTitle")
-        root.addWidget(title)
+        root = page_layout(self)
+        root.addWidget(page_title("插件"))
 
         # 顶部说明卡：插件目录 + 操作
-        tip_card = QFrame()
-        tip_card.setObjectName("Card")
-        tip_root = QVBoxLayout(tip_card)
-        tip_root.setContentsMargins(16, 14, 16, 14)
-        tip_root.setSpacing(10)
-        tip = QLabel(
+        tip_card = card()
+        tip_root = card_layout(tip_card, spacing=10)
+        tip = caption(
             "把插件文件夹放进插件目录即可被识别（需包含 plugin.json 与入口 main.py）。\n"
             "插件可以追加颜文字分类、注册上屏前的文本转换、订阅插入等事件；\n"
             "声明 api_version 2 后还能扩展界面：卡片内嵌设置面板、侧边栏独立页、主题化弹窗与托盘通知。")
-        tip.setObjectName("Caption")
         tip.setWordWrap(True)
         tip_root.addWidget(tip)
 
@@ -368,14 +363,14 @@ class PluginPage(QWidget):
         # 先把留存的插件设置面板摘出卡片树，否则下面的 deleteLater 会连带析构它
         self.release_settings()
         # 清空旧卡片
-        for card in self._cards:
-            card.setParent(None)
-            card.deleteLater()
+        for old in self._cards:
+            old.setParent(None)
+            old.deleteLater()
         self._cards = []
 
         recs = sorted(self.manager.plugins.values(), key=lambda r: r["id"])
         t = self._theme or Theme("light")
-        n_loaded = sum(1 for r in recs if r["state"] == "loaded")
+        n_loaded = sum(1 for r in recs if r["state"] == STATE_LOADED)
         self.count_lbl.setText("共 %d 个 · 已启用 %d" % (len(recs), n_loaded) if recs else "")
 
         if not recs:
@@ -420,9 +415,9 @@ class PluginPage(QWidget):
     # ---------- 主题 ----------
     def set_theme(self, theme):
         self._theme = theme
-        for card in self._cards:
-            if isinstance(card, _PluginCard):
-                card.set_theme(theme)
+        for page_card in self._cards:
+            if isinstance(page_card, _PluginCard):
+                page_card.set_theme(theme)
         # 插件自建的设置面板：先重垫完整主题 QSS（幂等，不累积），再回调插件可选的
         # set_theme(theme)。顺序很重要——插件哪怕实现了空 set_theme，QSS 也已刷新，
         # 不会出现「深色下停留在浅色样式」的白底漏底。

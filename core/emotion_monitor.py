@@ -92,9 +92,15 @@ class EmotionMonitor(QObject):
         self._listener = kb.Listener(on_press=on_press)
         self._listener.start()
 
-        self._stop_evt.clear()
+        # 每轮启动都用**全新**的停止事件，并把事件对象作为参数交给线程。
+        # 旧实现复用同一个 Event（start 里 clear、stop 里 set），若上一轮线程
+        # 还没退出就被 clear 掉，它会“复活”继续跑 —— 于是两条采样线程同时存在，
+        # 同一次按键被采样两遍、情绪被重复判定。
+        stop_evt = threading.Event()
+        self._stop_evt = stop_evt
         self._thread = threading.Thread(
-            target=self._sample_loop, name="emotion-sampler", daemon=True
+            target=self._sample_loop, args=(stop_evt,),
+            name="emotion-sampler", daemon=True,
         )
         self._thread.start()
 
@@ -107,7 +113,9 @@ class EmotionMonitor(QObject):
             except Exception:
                 pass
             self._listener = None
-        self._thread = None
+        th, self._thread = self._thread, None
+        if th is not None and th.is_alive():
+            th.join(timeout=1.0)       # 等它真正退出，别让下一轮 start 与它并存
         self._paused = True
         self._buffer = ""
 
@@ -212,28 +220,28 @@ class EmotionMonitor(QObject):
                 text = text.replace(kao, "")
         return text
 
-    def _sample_loop(self):
-        while not self._stop_evt.is_set():
+    def _sample_loop(self, stop_evt):
+        while not stop_evt.is_set():
             # 无人打字时阻塞等待，几乎不占 CPU
             if not self._typed_evt.wait(0.5):
                 continue
             self._typed_evt.clear()
-            if self._stop_evt.is_set():
+            if stop_evt.is_set():
                 break
             if self._paused:
                 continue
             # 上屏静默期：注入器正在模拟按键 / 粘贴，此刻读到的都是自己写的内容
             remain = self._quiet_until - time.time()
             if remain > 0:
-                self._stop_evt.wait(min(remain, 1.0))
+                stop_evt.wait(min(remain, 1.0))
                 continue
             # 驻留轮询：连采几次，捕捉 IME 组字完成后的中文，
             # 避免“打完关键词还得再多按一键才弹”。
-            self._dwell_sample()
+            self._dwell_sample(stop_evt)
             # 节流：一次采样后至少间隔 _interval 再采下一次
-            self._stop_evt.wait(self._interval)
+            stop_evt.wait(self._interval)
 
-    def _dwell_sample(self):
+    def _dwell_sample(self, stop_evt):
         """一次唤醒后连采若干次：覆盖 IME 提交中文的滞后窗口。
 
         进入连采前先算一次焦点 hwnd 与原生判定（一次按键内不会换窗口），
@@ -246,14 +254,14 @@ class EmotionMonitor(QObject):
         native = win_utils.is_native_edit(hwnd) if hwnd else False
         last_text = None
         for _ in range(self._dwell_count):
-            if self._stop_evt.is_set() or self._paused:
+            if stop_evt.is_set() or self._paused:
                 return
             remain = self._quiet_until - time.time()
             if remain > 0:
-                self._stop_evt.wait(min(remain, 1.0))
+                stop_evt.wait(min(remain, 1.0))
                 return
             # 等刚敲下的字符先落进目标控件再读：keydown 瞬间读取会落后一个字符。
-            self._stop_evt.wait(self._settle)
+            stop_evt.wait(self._settle)
             try:
                 text = self._read_focus_text(hwnd, native)
             except Exception:
@@ -269,7 +277,7 @@ class EmotionMonitor(QObject):
             if text and text == last_text:
                 return
             last_text = text
-            self._stop_evt.wait(self._dwell_gap)
+            stop_evt.wait(self._dwell_gap)
 
     # ---------- 情绪判定 ----------
     def _evaluate(self, text):

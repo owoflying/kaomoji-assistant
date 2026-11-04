@@ -17,6 +17,7 @@
 应放到独立的轮询线程里节流调用（见 core/emotion_monitor.py）。
 """
 import ctypes
+import queue
 import threading
 from ctypes import (
     POINTER, byref, c_void_p, c_int, c_long, c_short, c_ushort, c_uint,
@@ -25,7 +26,7 @@ from ctypes import (
 
 # ---------- 超时保护：UIA 调用绝不能阻塞调用方线程 ----------
 class _UIAWorker:
-    """把可能阻塞的 UIA/COM 调用放到独立线程里跑，并设置超时上限。
+    """把可能阻塞的 UIA/COM 调用串行交给**一个常驻后台线程**执行，并设超时上限。
 
     为什么必须这么做：UI Automation 是跨进程 COM 调用，当目标程序（浏览器 / Electron /
     VSCode / 微信……）卡死或无响应时，UIA 调用可能无限期挂起。若在主线程调用
@@ -33,16 +34,44 @@ class _UIAWorker:
     表现为“按了热键候选条死活不弹”；若在采样线程调用，会拖死自动弹出的采样线程，
     导致一次卡顿后自动弹出彻底失效。
 
-    设计要点：
-      * 任何时刻最多只有一个 UIA 调用在飞（_busy 守护），避免目标持续假死时线程越积越多；
-      * 调用方线程只在 join(timeout) 内等待，超时即放弃本轮、回退默认值，
-        绝不被目标程序的卡顿拖住；
-      * 跑 UIA 的线程是 daemon，即便超时返回、真正的 COM 调用仍悬着，也会在目标恢复后自行结束。
+    为什么是**常驻**线程而不是「每次调用起一个线程」（曾经的写法）：
+      IUIAutomation 实例缓存在线程局部（threading.local）里。线程一换就得重新
+      CoInitialize + CoCreateInstance，而旧实例的引用计数永远等不到 Release ——
+      而采样线程每按一次键都可能调一次 UIA，等于按 keystroke 泄漏一个 COM 对象
+      加一份跨进程节点缓存。常驻线程只初始化一次，之后复用同一个实例。
+
+    行为约束（与旧实现一致，别退化）：
+      * 任何时刻最多只有一个调用在飞（_busy 守护），目标持续假死时任务不会越积越多；
+      * 调用方只在 ``Event.wait(timeout)`` 内等待，超时即放弃本轮、回退默认值，
+        绝不被目标程序的卡顿拖住；被放弃的那一轮仍会在后台线程里自行收尾。
     """
 
     def __init__(self):
+        self._queue = queue.Queue()
         self._lock = threading.Lock()
         self._busy = False
+        self._thread = None
+
+    def _ensure_thread(self):
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._thread = threading.Thread(
+            target=self._loop, name="uia-worker", daemon=True)
+        self._thread.start()
+
+    def _loop(self):
+        while True:
+            task = self._queue.get()
+            if task is None:            # 退出信号（当前未使用，留给将来显式收尾）
+                break
+            fn, holder, done, default = task
+            try:
+                holder["v"] = fn()
+            except Exception:
+                holder["v"] = default
+            finally:
+                self._busy = False
+                done.set()
 
     def call(self, fn, timeout, default):
         # 另一处调用正在尝试获取锁（极短窗口）-> 直接放弃本轮
@@ -52,24 +81,16 @@ class _UIAWorker:
             if self._busy:
                 return default
             self._busy = True
+            self._ensure_thread()
             holder = {"v": default}
-
-            def runner():
-                try:
-                    holder["v"] = fn()
-                except Exception:
-                    holder["v"] = default
-                finally:
-                    self._busy = False
-
-            th = threading.Thread(target=runner, daemon=True)
-            th.start()
-            th.join(timeout)
-            if th.is_alive():
+            done = threading.Event()
+            self._queue.put((fn, holder, done, default))
+            if not done.wait(timeout):
                 return default      # 仍卡着：放弃本轮，留给后台线程自行收尾
             return holder.get("v", default)
         finally:
             self._lock.release()
+
 
 
 _uia_worker = _UIAWorker()

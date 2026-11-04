@@ -138,8 +138,13 @@ class KaomojiInjector:
 
     def _inject_clipboard(self, text):
         clipboard = QApplication.clipboard()
-        # 先快照（独立副本），再替换剪贴板，确保恢复时用的不是悬空指针
-        saved = self._snapshot_clipboard(clipboard)
+        # 若上一轮粘贴还没走完“恢复原剪贴板”，此刻剪贴板里放着的是上一个颜文字。
+        # 再快照一次就会把那份颜文字当成“用户原始内容”记下来，用户真实剪贴板内容
+        # 永久丢失（连续快速选两个颜文字时必现）。故沿用那一轮已经存好的快照。
+        pending = self._restore_ctx
+        saved = pending.get("saved") if pending else None
+        if saved is None:
+            saved = self._snapshot_clipboard(clipboard)
         clipboard.setText(text)
         # 关键延时：Qt/Windows 的剪贴板写入并非完全同步到系统。
         # 若立刻发送 Ctrl+V，目标程序可能读到旧剪贴板内容（表现为“无论选什么颜文字

@@ -1,6 +1,7 @@
 import json
 import os
 
+from core.applog import append_log
 from core.runtime import kaomoji_path
 
 DATA_PATH = kaomoji_path()
@@ -74,9 +75,18 @@ class KaomojiData:
         self.external = ext
 
     def load(self):
-        with open(self.path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        self.categories = data.get("categories", [])
+        try:
+            with open(self.path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            # 只读库缺失 / JSON 损坏时，绝不能让整个程序起不来（本方法在启动装配期
+            # 被调用，抛异常等于关掉 AppRuntime）。留空库 + 记日志即可。
+            # 注意此处**不回写磁盘**：覆盖会把用户还可能手工修复的原文件清空。
+            self.categories = []
+            self._all = []
+            append_log("error", "data", "颜文字库读取失败（%s）：%r" % (self.path, e))
+            return
+        self.categories = data.get("categories") or []
         self._all = []
         dropped = 0
         for cat in self.categories:
@@ -104,8 +114,8 @@ class KaomojiData:
                     {"categories": self.categories},
                     f, ensure_ascii=False, indent=2,
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            append_log("warn", "data", "颜文字库写盘失败（%s）：%r" % (self.path, e))
 
     def get_category_names(self):
         names = [c.get("name", "") for c in self.categories]

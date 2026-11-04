@@ -18,7 +18,8 @@ from ctypes import wintypes
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import QWidget
 
-from core.win_utils import user32, WM_HOTKEY, parse_hotkey
+from core.applog import append_log
+from core.win_utils import user32, WM_HOTKEY, format_hotkey, parse_hotkey
 
 # 修饰键的 VK（在序列检测中忽略，避免污染序列缓冲）
 _MOD_VKS = frozenset([16, 17, 18, 91, 92, 160, 161, 162, 163, 164])
@@ -106,6 +107,13 @@ class NativeHotkeyManager(QObject):
             if ok:
                 self._active = True
                 self._mode = "simple"
+            else:
+                # 注册失败（多为组合键已被别的程序占用）：必须留下痕迹，
+                # 否则用户只看到「按热键毫无反应」，日志里也查不到任何线索。
+                name = parse_hotkey(hotkey_str)
+                append_log("warn", "hotkey",
+                           "热键注册失败（可能已被其它程序占用）：%s"
+                           % (format_hotkey(name) or hotkey_str))
         elif parsed["type"] == "sequence":
             self._seq = list(parsed["keys"])
             if not self._seq:
@@ -114,6 +122,10 @@ class NativeHotkeyManager(QObject):
             if self._listener is not None:
                 self._active = True
                 self._mode = "sequence"
+            else:
+                append_log("warn", "hotkey",
+                           "序列热键需要 pynput 按键监听，但监听器启动失败：%s"
+                           % (hotkey_str or ""))
 
     def _start_seq_listener(self):
         try:

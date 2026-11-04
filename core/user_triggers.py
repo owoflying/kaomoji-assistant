@@ -66,6 +66,21 @@ class UserTriggers(QObject):
     def get_all(self):
         return [dict(it) for it in self.items]
 
+    def outputs(self):
+        """全部输出文本（去重、保序）。
+
+        用途：这些输出同样是「用户真的会上屏的内容」，必须进 UserState 的合法集合，
+        否则使用统计里由触发词产生的计数会在下次启动载入时被当成脏数据清掉。
+        """
+        out = []
+        seen = set()
+        for it in self.items:
+            o = it.get("output")
+            if o and o not in seen:
+                seen.add(o)
+                out.append(o)
+        return out
+
     def match(self, text):
         """返回尾部命中触发词对应的条目 dict（含 trigger/output/delete_trigger）；无命中返回 None。
 

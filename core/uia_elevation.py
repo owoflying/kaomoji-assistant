@@ -525,8 +525,6 @@ def _install_argtypes():
 
     psapi.EnumProcesses.argtypes = [POINTER(wintypes.DWORD), wintypes.DWORD, POINTER(wintypes.DWORD)]
     psapi.EnumProcesses.restype = wintypes.BOOL
-    psapi.GetProcessImageFileNameW.argtypes = [wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD]
-    psapi.GetProcessImageFileNameW.restype = wintypes.DWORD
 
 
 _install_argtypes()

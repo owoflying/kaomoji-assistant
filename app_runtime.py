@@ -59,6 +59,19 @@ SYSTEM_THEME_POLL_MS = 3000
 DISMISS_GUARD_SEC = 0.4
 
 
+def _valid_item_pool(data, user_kao, triggers):
+    """「合法条目」集合：内置库 + 插件数据源 + 我的颜文字 + 快捷短语输出。
+
+    这是 UserState 的「自净」白名单：不在集合里的最近使用/收藏/统计条目会被丢弃。
+    快捷短语的输出必须算进来 —— 它们同样是用户真的上屏过的内容，漏掉就会出现
+    「统计里明明有，重启后凭空少了几条」。
+    """
+    pool = list(data.get_items()) + list(user_kao.get_all())
+    if triggers is not None:
+        pool += triggers.outputs()
+    return pool
+
+
 class DevEventBus(QObject):
     """开发者模式事件总线：把核心组件的关键事件聚合为统一信号，供开发者标签页订阅。
 
@@ -165,7 +178,7 @@ class AppRuntime:
         # 任何脏数据（测试残留、手改 JSON 出错）都会在载入时被自动清掉
         self.state = UserState(
             max_recent=int(self.config.get("max_recent", 30)),
-            valid_items=self.data.get_items() + self.user_kao.get_all(),
+            valid_items=_valid_item_pool(self.data, self.user_kao, self.triggers),
         )
         self.injector = KaomojiInjector()
         self.bus = DevEventBus()
@@ -301,7 +314,12 @@ class AppRuntime:
         # 替换对象会让它继续读写一份已被丢弃的旧字典。
         self.config.clear()
         self.config.update(new_cfg)
-        save_config(self.config)
+        try:
+            save_config(self.config)
+        except Exception as e:
+            # 磁盘只读 / 被占用 / 目录不可写时，不能因为落盘失败就中断整个「应用设置」：
+            # 内存配置已更新，先让各项功能按新值生效，写盘失败单独记一条日志。
+            append_log("error", "config", "配置落盘失败：%r" % (e,))
 
         if autostart.is_supported():
             autostart.set_enabled(bool(self.config.get("autostart", False)))
@@ -369,8 +387,8 @@ class AppRuntime:
             pass
 
     def _refresh_valid_items(self):
-        self.state.valid_items = set(
-            self.data.get_items() + self.user_kao.get_all())
+        self.state.valid_items = set(_valid_item_pool(
+            self.data, self.user_kao, self.triggers))
 
     def _on_plugins_changed(self):
         self.plugins.refresh_sources(self.data)

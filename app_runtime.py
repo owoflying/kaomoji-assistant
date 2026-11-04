@@ -1,0 +1,562 @@
+"""应用装配层：把配置、核心组件、窗口、托盘、热键接线成一个可运行的应用。
+
+为什么不再写在 `main()` 里：原先入口函数一个人干了 400 多行，内部十几个闭包
+互相引用（`on_selected` 调 `_apply_trigger_with_delete`、`apply_settings` 调
+`_warn_uia_once`、主题轮询回调又要摸 `menu`/`window`/`unified`），结果是
+**无法单独测试任何一个环节**，也没法说清某个函数到底依赖哪些组件。
+现在这些状态与行为成为实例属性/方法，`main()` 只负责"建窗口程序 → 交给运行时 →
+进事件循环"。
+
+装配顺序是有讲究的（改动前请先读）：
+  1. UIA 提权必须最早——它可能直接重启进程，后面的组件都不必建；
+  2. 插件必须在 UserState 之前加载——插件提供的颜文字要进「最近/收藏」白名单；
+  3. 托盘最后建——插件 UI 能力（托盘气泡）需要它已就绪，故用后置注入
+     （`plugins.set_ui_hooks`）而不是构造参数；
+  4. 「欢迎更新」弹窗与插件 startup 事件都用 `QTimer.singleShot(0)` 投递，
+     靠投递顺序保证前者先弹，避免两个模态框抢焦点。
+"""
+from PySide6.QtCore import QObject, QTimer, Signal
+from PySide6.QtGui import QAction
+from PySide6.QtWidgets import QMenu, QMessageBox, QSystemTrayIcon
+
+from core import autostart, runtime, uia_elevation, win_utils
+from core.app_icon import make_icon
+from core.applog import LOG_BUFFER, append_log
+from core.config_store import DEFAULT_CONFIG, load_config, save_config
+from core.emotion_monitor import EmotionMonitor
+from core.hotkey import NativeHotkeyManager
+from core.injector import KaomojiInjector
+from core.kaomoji_data import KaomojiData
+from core.plugins import PluginManager
+from core.user_kaomoji import UserKaomoji
+from core.user_state import UserState
+from core.user_triggers import UserTriggers
+from ui.log_viewer import show_log_viewer
+from ui.picker_window import PickerWindow
+from ui.unified_window import UnifiedSettingsWindow
+from ui.win11_theme import (
+    Theme, resolve_theme_name, set_app_theme, system_theme_name,
+)
+
+try:                                    # 判断窗口 C++ 对象是否仍然有效
+    from shiboken6 import isValid as shiboken_is_valid
+except Exception:                       # pragma: no cover - 极端环境兜底
+    def shiboken_is_valid(obj):
+        try:
+            return bool(obj)
+        except RuntimeError:
+            return False
+
+try:
+    from core import uia_text   # 浏览器/Electron 读取真实焦点文本；非 Windows 下为 None
+except Exception:               # pragma: no cover - COM 不可用
+    uia_text = None
+
+HOTKEY_DEFAULT = DEFAULT_CONFIG["hotkey"]
+# 「跟随系统」主题的轮询间隔：系统主题变化没有可靠的回调，只能低频轮询
+SYSTEM_THEME_POLL_MS = 3000
+# 因外部点击/继续打字关闭面板后，热键在此时长内视为同一次关闭，避免抖动重开
+DISMISS_GUARD_SEC = 0.4
+
+
+class DevEventBus(QObject):
+    """开发者模式事件总线：把核心组件的关键事件聚合为统一信号，供开发者标签页订阅。
+
+    event: (level, source, message)
+    """
+    event = Signal(str, str, str)
+
+    def log(self, level, source, message):
+        self.event.emit(level, source, message)
+
+
+class AppRuntime:
+    """持有全部运行期组件，并负责它们之间的信号接线与配置应用。"""
+
+    def __init__(self, app, config):
+        self.app = app
+        self.config = config          # 权威配置字典：**原地更新**，引用始终不变
+        self._uia_warn_shown = False
+        self._log_viewer = None
+
+        self.data = None
+        self.plugins = None
+        self.user_kao = None
+        self.triggers = None
+        self.state = None
+        self.injector = None
+        self.hotkey = None
+        self.monitor = None
+        self.bus = None
+        self.window = None            # 候选条
+        self.unified = None           # 统一主面板
+        self.tray = None
+        self.menu = None
+
+        # 系统主题轮询（仅「跟随系统」模式启用）
+        self._last_system_theme = system_theme_name()
+        self._system_theme_timer = QTimer(app)
+        self._system_theme_timer.setInterval(SYSTEM_THEME_POLL_MS)
+        self._system_theme_timer.timeout.connect(self._check_system_theme)
+
+        self._build()
+
+    # ------------------------------------------------------------------
+    # 装配
+    # ------------------------------------------------------------------
+    def _build(self):
+        self._ensure_uiaccess_at_startup()
+        self._apply_initial_theme()
+        self._sync_autostart()
+        self._build_core()
+        self._build_windows()
+        self._wire_components()
+        self._build_tray()
+        self._update_system_theme_watcher()
+        self._schedule_startup_hooks()
+        self._start_services()
+        self._install_quit_hooks()
+
+    def _ensure_uiaccess_at_startup(self):
+        """配置开启「使用 UIA 提权」时，在启动期为自身进程尝试 UIAccess。
+
+        成功时会以 UIAccess 令牌重启自身（本进程随即退出），失败/未开启时
+        零副作用——函数内部先读配置。
+        """
+        uia_elevation.ensure_uiaccess(self.config, append_log)
+
+    def _apply_initial_theme(self):
+        """应用级样式表：让独立对话框与统一面板视觉一致（含 "system" 解析）。"""
+        effective = resolve_theme_name(self.config.get("theme", "light"))
+        self.app.setStyleSheet(Theme(effective).style_sheet())
+        set_app_theme(self.config.get("theme", "light"))
+
+    def _sync_autostart(self):
+        """让「配置里的 autostart」与注册表实际状态保持一致（仅 exe 形态）。"""
+        if not autostart.is_supported():
+            return
+        want = bool(self.config.get("autostart", False))
+        if want != autostart.is_enabled():
+            autostart.set_enabled(want)
+
+    def _build_core(self):
+        self.data = KaomojiData()
+        self.plugins = PluginManager(
+            plugins_dir=runtime.plugins_dir(),
+            config=self.config,
+            save_config=save_config,
+            log=append_log,
+            settings_dir=runtime.plugin_settings_dir(),
+            # 主题提供者：插件弹窗据此取当前深浅色（避免 core 反向依赖 ui）
+            theme_provider=lambda: resolve_theme_name(self.config.get("theme", "light")),
+        )
+        self.plugins.discover()
+        # 测试模式门控：关闭时不加载任何插件（启用状态仍保留在配置里）
+        if self.config.get("use_test_features", False):
+            n_loaded = self.plugins.load_all()
+            if n_loaded:
+                append_log("info", "plugins", "已加载 %d 个插件" % n_loaded)
+        self.plugins.refresh_sources(self.data)
+
+        # 用户自定义颜文字 / 快捷短语（可写，独立于只读库）
+        self.user_kao = UserKaomoji()
+        self.triggers = UserTriggers()
+        # 传入颜文字库作为白名单：最近/收藏只保留库中真实存在的条目，
+        # 任何脏数据（测试残留、手改 JSON 出错）都会在载入时被自动清掉
+        self.state = UserState(
+            max_recent=int(self.config.get("max_recent", 30)),
+            valid_items=self.data.get_items() + self.user_kao.get_all(),
+        )
+        self.injector = KaomojiInjector()
+        self.bus = DevEventBus()
+
+    def _build_windows(self):
+        self.window = PickerWindow(
+            self.data, self.config, self.state, self.user_kao)
+        self.hotkey = NativeHotkeyManager()
+        self.monitor = EmotionMonitor(triggers=self.triggers)
+        self.unified = UnifiedSettingsWindow(
+            self.data, self.config, self.state, self.user_kao, self.triggers,
+            save_config=save_config,
+            open_log=self.open_log_viewer,
+            dev_refs={
+                "hotkey": self.hotkey, "monitor": self.monitor,
+                "injector": self.injector, "data": self.data,
+                "config": self.config, "window": self.window, "bus": self.bus,
+                "log_buffer": LOG_BUFFER, "plugins": self.plugins,
+            },
+            plugins=self.plugins,
+        )
+
+    def _wire_components(self):
+        w = self.window
+        self.hotkey.hotkey_pressed.connect(w.toggle)
+        self.monitor.emotion_detected.connect(w.show_for_emotion)
+        self.monitor.trigger_detected.connect(w.show_for_output)
+        # 候选条可见时暂停监听、隐藏时恢复（避免把候选条自身当输入）
+        w.isVisibleChanged.connect(
+            lambda v: self.monitor.pause() if v else self.monitor.resume())
+        # 面板因某情绪弹出后立即锁定该情绪，避免同一句话被反复推荐
+        w.emotion_shown.connect(self.monitor.notify_shown)
+        w.selected.connect(self.on_selected)
+        w.settings_requested.connect(lambda: self.open_unified("settings"))
+
+        # 开发者事件流
+        self.hotkey.hotkey_pressed.connect(
+            lambda: self.bus.log("事件", "热键", "热键触发"))
+        self.monitor.emotion_detected.connect(
+            lambda e: self.bus.log("情绪", "监听", "命中情绪：%s" % e))
+        self.monitor.trigger_detected.connect(
+            lambda out, tw, dt: self.bus.log(
+                "触发", "监听",
+                "命中短语：%s（触发词=%s，应用后删除=%s）" % (out, tw, dt)))
+        self.monitor.diagnostic.connect(
+            lambda d: self.bus.log("诊断", "监听", d))
+        w.emotion_shown.connect(
+            lambda e: self.bus.log("弹出", "面板", "候选条弹出（情绪=%s）" % e))
+
+        # 配置与页面联动
+        self.unified.config_applied.connect(self.apply_settings)
+        self.unified.finished.connect(self.resume_global_hooks)
+        self.unified.output_selected.connect(self._on_unified_output)
+        self.unified.settings_page.opacity_preview.connect(
+            self._preview_picker_opacity)
+
+        # 数据源变化：用户新增/编辑自定义颜文字、插件启用/停用都要刷新白名单
+        self.user_kao.changed.connect(self._refresh_valid_items)
+        self.plugins.changed.connect(self._on_plugins_changed)
+
+    def _build_tray(self):
+        icon = make_icon()
+        self.app.setWindowIcon(icon)
+        self.tray = QSystemTrayIcon(icon, self.app)
+        self.menu = QMenu()
+        self.menu.setStyleSheet(
+            Theme(resolve_theme_name(self.config.get("theme", "light"))).menu_style())
+
+        show_action = QAction("唤起面板", self.app)
+        show_action.triggered.connect(self.window.toggle)
+        panel_action = QAction("打开主面板", self.app)
+        panel_action.triggered.connect(self.open_unified)
+        settings_action = QAction("设置", self.app)
+        settings_action.triggered.connect(lambda: self.open_unified("settings"))
+        quit_action = QAction("退出", self.app)
+        quit_action.triggered.connect(self.app.quit)
+        # 日志入口整合进开发者模式：未启用时不可访问。菜单每次弹出时重新判定，
+        # 因为用户可能刚在设置里开关过开发者模式。
+        log_action = QAction("查看日志", self.app)
+        log_action.triggered.connect(self.open_log_viewer)
+        log_action.setVisible(self._developer_mode())
+
+        for act in (show_action, panel_action, settings_action, log_action):
+            self.menu.addAction(act)
+        self.menu.addSeparator()
+        self.menu.addAction(quit_action)
+        self.menu.aboutToShow.connect(
+            lambda: log_action.setVisible(self._developer_mode()))
+        self.tray.setContextMenu(self.menu)
+
+        self.tray.setToolTip("颜文字输入辅助器")
+        self.tray.show()
+        # 插件 UI 能力所需的宿主回调（托盘通知）；托盘此刻才就绪
+        self.plugins.set_ui_hooks(
+            notify=lambda title, message, ms: self.tray.showMessage(
+                title, message, QSystemTrayIcon.MessageIcon.NoIcon, int(ms)))
+
+    def _schedule_startup_hooks(self):
+        """投递「欢迎更新」弹窗与插件 startup 事件（顺序敏感）。
+
+        两者都走 `QTimer.singleShot(0)`，按投递顺序执行：先弹更新框，再发 startup
+        事件，避免插件在回调里弹窗抢在界面初始化之前、或与更新框抢模态。
+        startup 整个生命周期只发一次——中途启用的插件收不到，需重启生效。
+        """
+        QTimer.singleShot(0, self._maybe_show_update)
+        QTimer.singleShot(0, lambda: self.plugins.emit("startup"))
+
+    def _start_services(self):
+        self.hotkey.start(self.config.get("hotkey", HOTKEY_DEFAULT))
+        if self.config.get("auto_popup", True):
+            self.monitor.start()
+
+    def _install_quit_hooks(self):
+        q = self.app.aboutToQuit
+        q.connect(self.hotkey.stop)
+        q.connect(self.monitor.stop)
+        q.connect(self.window.shutdown)
+        q.connect(self.state.flush)
+        q.connect(self.user_kao.flush)
+        q.connect(self.triggers.flush)
+        # 插件 shutdown 事件：主程序退出前通知（emit 内部已逐个隔离异常）
+        q.connect(lambda: self.plugins.emit("shutdown"))
+        # 先关掉插件可能残留的弹窗，再走各自的 flush：避免退出时弹窗回调打到已销毁对象
+        q.connect(self.plugins.close_plugin_dialogs)
+        q.connect(lambda: append_log("info", "app", "应用程序退出。"))
+
+    # ------------------------------------------------------------------
+    # 配置应用
+    # ------------------------------------------------------------------
+    def apply_settings(self, new_cfg):
+        """配置变更的唯一落盘 + 广播入口。"""
+        # 原地更新：config 这个 dict 的身份必须保持不变——PluginManager 持有引用，
+        # 替换对象会让它继续读写一份已被丢弃的旧字典。
+        self.config.clear()
+        self.config.update(new_cfg)
+        save_config(self.config)
+
+        if autostart.is_supported():
+            autostart.set_enabled(bool(self.config.get("autostart", False)))
+
+        effective_theme = resolve_theme_name(self.config.get("theme", "light"))
+        self.app.setStyleSheet(Theme(effective_theme).style_sheet())
+        self.menu.setStyleSheet(Theme(effective_theme).menu_style())
+        set_app_theme(self.config.get("theme", "light"))
+        # 已打开的日志窗口同步换肤（否则它会停留在启动时的主题）
+        self._theme_log_viewer(effective_theme)
+        self._update_system_theme_watcher()
+
+        self.window.apply_config(self.config)
+        self.unified.apply_config(self.config)
+        self.plugins.set_theme_name(effective_theme)
+        self.state.max_recent = int(self.config.get("max_recent", 30))
+        self.plugins.emit("config_changed", self.config)
+
+        self._handle_uia_status()
+        self._sync_auto_popup()
+
+    def _handle_uia_status(self):
+        """开启了 UIA 提权但本次没生效时，给出一次性提示。"""
+        status = uia_elevation.ensure_uiaccess(self.config, append_log)
+        if not self.config.get("use_uia_elevation", False):
+            return
+        if status.get("granted") or status.get("relaunched"):
+            return
+        self._warn_uia_once(status)
+
+    def _warn_uia_once(self, uia_status):
+        """「已开启 UIA 提权但本次未生效」只提示一次。
+
+        必须用 self._uia_warn_shown（而不是函数内局部变量）：原先是模块级标记 +
+        函数内赋值却漏写 global，`if not uia_warn_shown` 会抛 UnboundLocalError，
+        异常从 apply_settings 中途抛出，把它后面的「自动弹出监听启停」整段跳过，
+        表现为开过 UIA 提权之后改自动弹出开关不生效。
+        """
+        if self._uia_warn_shown:
+            return
+        self._uia_warn_shown = True
+        try:
+            QMessageBox.warning(
+                self.unified, "UIA 提权",
+                uia_status.get("message") or "UIA 提权未生效，请查看日志。")
+        except Exception:
+            pass
+
+    def _sync_auto_popup(self):
+        """按「自动弹出」开关启停监听；统一窗口仍打开时保持暂停。"""
+        if self.config.get("auto_popup", True):
+            self.monitor.start()
+            if self.window.isVisible() or self.unified.isVisible():
+                self.monitor.pause()
+        else:
+            self.monitor.stop()
+
+    def _preview_picker_opacity(self, value):
+        """候选条不透明度实时预览（拖动滑块时即时生效，落盘仍走 apply_settings）。"""
+        try:
+            if getattr(self.window, "_panel_bg", None) is not None:
+                self.window._panel_bg.setAlphaF(max(0.3, min(1.0, value)))
+                self.window.repaint()
+        except Exception:
+            pass
+
+    def _refresh_valid_items(self):
+        self.state.valid_items = set(
+            self.data.get_items() + self.user_kao.get_all())
+
+    def _on_plugins_changed(self):
+        self.plugins.refresh_sources(self.data)
+        self._refresh_valid_items()
+
+    def _developer_mode(self):
+        return bool(self.config.get("developer_mode", False))
+
+    # ------------------------------------------------------------------
+    # 主题跟随
+    # ------------------------------------------------------------------
+    def _check_system_theme(self):
+        """轮询系统深浅色；仅在配置为「跟随系统」时生效。"""
+        if self.config.get("theme", "light") != "system":
+            return
+        current = system_theme_name()
+        if current == self._last_system_theme:
+            return
+        self._last_system_theme = current
+        effective = resolve_theme_name("system")
+        self.app.setStyleSheet(Theme(effective).style_sheet())
+        if self.menu is not None:
+            self.menu.setStyleSheet(Theme(effective).menu_style())
+        set_app_theme("system")
+        if self.window is not None:
+            self.window.apply_config(self.config)
+        if self.unified is not None:
+            self.unified.apply_config(self.config)
+        self._theme_log_viewer(effective)
+
+    def _update_system_theme_watcher(self):
+        if self.config.get("theme", "light") == "system":
+            if not self._system_theme_timer.isActive():
+                self._last_system_theme = system_theme_name()
+                self._system_theme_timer.start()
+        else:
+            self._system_theme_timer.stop()
+
+    def _theme_log_viewer(self, theme_name):
+        """给开着的日志窗口换肤（销毁过/从没开过则跳过）。"""
+        w = self._log_viewer
+        if w is not None and shiboken_is_valid(w):
+            w.set_theme(theme_name)
+
+    # ------------------------------------------------------------------
+    # 注入链路
+    # ------------------------------------------------------------------
+    def on_selected(self, text, ctx=None):
+        """候选/库页/搜索页选中颜文字后的统一上屏入口。"""
+        method = self.config.get("input_method", "clipboard")
+        ctx = dict(ctx or {})
+        # 插件输出转换：上屏前的文本改写（priority 小者先执行；
+        # 单个插件异常已在 run_transforms 内部隔离，不会阻断注入）
+        text = self.plugins.run_transforms(text, ctx)
+        # 先告知监听器「这段文本是我们自己送进去的」：进入静默期 + 后续采样时剔除，
+        # 否则颜文字里的 "?"「哇」等字符会被当成用户新输入，导致上屏后又弹一次
+        self.monitor.notify_injected(text)
+        self.bus.log("注入", "主程序", "注入颜文字：%s（方式=%s）" % (text, method))
+        self.plugins.emit("before_insert", text, ctx)
+
+        trigger_word = ctx.get("trigger_word") or ""
+        if ctx.get("delete_trigger") and trigger_word:
+            self._apply_trigger_with_delete(text, method, trigger_word)
+        else:
+            # 延迟一拍，确保面板隐藏、焦点已回到原窗口后再注入文本
+            QTimer.singleShot(
+                0, lambda: self.injector.inject(text, method))
+        self.plugins.emit("after_insert", text, ctx)
+        # 使用统计（任何来源的插入都在此汇聚）：放到注入调度之后并兜底捕获异常，
+        # 确保统计逻辑的任何意外都不会阻断注入（曾导致「剪贴板模式失效」）
+        try:
+            self.state.record_usage(text)
+        except Exception:
+            pass
+
+    def _cursor_tail_equals(self, word):
+        """最佳努力确认光标左侧「恰好是触发词」，避免误删其它内容。
+
+        原生编辑框走 WM_GETTEXT（亚毫秒）；浏览器 / Electron 走 UI Automation（带超时）。
+        任一读取失败或结尾不匹配都返回 False —— 此时保守地不删除、只注入，
+        宁可保留触发词，也绝不误删用户已写下的其它文字。
+        """
+        if not word:
+            return False
+        n = len(word)
+        try:
+            text = win_utils.get_focused_text(n)
+            if text and text[-n:] == word:
+                return True
+        except Exception:
+            pass
+        if uia_text is not None:
+            try:
+                text = uia_text.get_focused_text(n, timeout=0.15)
+                if text and text[-n:] == word:
+                    return True
+            except Exception:
+                pass
+        return False
+
+    def _apply_trigger_with_delete(self, text, method, trigger_word):
+        """先安全删掉触发词，再注入颜文字；任何不确定都只注入不删除。"""
+        n = len(trigger_word)
+
+        def _do():
+            if self._cursor_tail_equals(trigger_word):
+                # 必须在「注入颜文字之前」删除：删完后光标回到触发词起点，
+                # 再注入颜文字，最终只留下颜文字本身。反过来先注入再退格，
+                # 退格会吃掉颜文字尾部字符，造成乱码。
+                self.injector.delete_chars(n)
+                QTimer.singleShot(
+                    max(80, n * 12),
+                    lambda: self.injector.inject(text, method))
+            else:
+                # 结尾已变化 / 无法确认：保守只注入，不删除
+                self.injector.inject(text, method)
+
+        QTimer.singleShot(0, _do)     # 等面板完全隐藏、焦点回到原窗口
+
+    # ------------------------------------------------------------------
+    # 窗口开关
+    # ------------------------------------------------------------------
+    def open_unified(self, page_key=None):
+        """打开统一主面板（可指定页面）。"""
+        self.pause_global_hooks()
+        if page_key:
+            self.unified._set_page(page_key)
+        self.unified.show()
+        self.unified.raise_()
+        self.unified.activateWindow()
+
+    def pause_global_hooks(self):
+        """打开统一窗口前暂停热键与监听，避免操作冲突。"""
+        self.hotkey.stop()
+        if self.window.isVisible():
+            # 用 hide_now 而不是 dismiss：这里要求隐藏“同步完成”，
+            # 因为紧跟其后的 monitor.pause() 依赖 hide 触发的 resume 已经跑完。
+            self.window.hide_now()
+        # 注意：hide_now() 会经 isVisibleChanged(False) → monitor.resume() 把监听
+        # 重新打开，因此 monitor.pause() 必须放在 hide 之后，否则暂停会被刚才的
+        # resume 抵消（仅在候选条当时正显示时触发），导致面板打开期间监听仍在跑。
+        self.monitor.pause()
+
+    def resume_global_hooks(self):
+        """统一窗口关闭后恢复全局热键与自动弹出监听。"""
+        self.hotkey.start(self.config.get("hotkey", HOTKEY_DEFAULT))
+        if self.config.get("auto_popup", True):
+            self.monitor.resume()
+
+    def _on_unified_output(self, text):
+        """统一窗口内的搜索/库页选中颜文字：隐藏窗口、注入文本。"""
+        self.unified.hide()
+        # 先通知监听器注入，再恢复监听，避免把注入内容误判为用户输入
+        self.on_selected(text)
+        self.resume_global_hooks()
+
+    def open_log_viewer(self):
+        """打开（或复用）日志窗口。"""
+        name = resolve_theme_name(self.config.get("theme", "light"))
+        w = self._log_viewer
+        # 关闭时窗口自带 WA_DeleteOnClose，destroyed 会把引用置空；这里再兜一层
+        # 有效性判断，防止极端时序下拿到已销毁的 C++ 对象。
+        if not (w is not None and shiboken_is_valid(w)):
+            w = show_log_viewer(LOG_BUFFER, parent=self.unified, theme_name=name)
+            self._log_viewer = w
+            w.destroyed.connect(self._forget_log_viewer)
+        else:
+            w.set_theme(name)
+        w.show()
+        w.raise_()
+        w.activateWindow()
+        return w
+
+    def _forget_log_viewer(self):
+        self._log_viewer = None
+
+    def _maybe_show_update(self):
+        try:
+            from ui.update_dialog import UpdateDialog
+            UpdateDialog.maybe_show(
+                parent=self.unified,
+                theme_name=resolve_theme_name(self.config.get("theme", "light")))
+        except Exception as e:
+            append_log("warn", "update", "更新弹窗失败：%s" % e)
+
+
+def create_runtime(app, config=None):
+    """按当前磁盘配置构建运行时（供入口与测试共用）。"""
+    return AppRuntime(app, config if config is not None else load_config())

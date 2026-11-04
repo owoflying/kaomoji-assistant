@@ -21,8 +21,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal, QPoint, QRect, QRectF, QEvent, QPropertyAnimation, QEasingCurve, QTimer
 from PySide6.QtGui import (
-    QFont, QColor, QPainter, QPainterPath, QPen, QLinearGradient,
-    QRegion, QTransform,
+    QFont, QColor, QPainter, QPainterPath, QRegion, QTransform,
 )
 
 
@@ -57,8 +56,9 @@ def _ui_font(size, weight=QFont.Weight.Normal):
 
 from ui.win_style import (
     apply_backdrop, apply_dark_mode, _has_dwm,
-    DWMSBT_TRANSIENTWINDOW, DWMSBT_NONE,
+    DWMSBT_TRANSIENTWINDOW,
 )
+from ui.frameless_panel import paint_frameless_panel
 from ui.win11_theme import Theme, resolve_theme_name, apply_child_theme
 from ui.fluent_icons import icon_label, recolor
 from ui.animated_stack import AnimatedStackedWidget
@@ -591,8 +591,17 @@ class UnifiedSettingsWindow(QMainWindow):
                     break
             nav_layout.update()
             self.sidebar.update()
-            self.content.removeWidget(self._pages["plugin"])
-            del self._pages["plugin"]
+            # 页面必须真正销毁：removeWidget 只是移出栈，widget 仍挂在 content 上，
+            # 且 PluginPage 连着 manager.ui_changed——反复开关测试模式会越积越多，
+            # 每次插件变动都被多个僵尸页面重复刷新。
+            page = self._pages.pop("plugin")
+            self.content.removeWidget(page)
+            page.setParent(None)
+            try:
+                page.shutdown()          # 释放插件设置面板缓存
+            except Exception:
+                pass
+            page.deleteLater()
             self.plugin_page = None
             if leaving:
                 self._set_page("home")
@@ -673,10 +682,13 @@ class UnifiedSettingsWindow(QMainWindow):
                 break
         nav_layout.update()
         self.sidebar.update()
-        # 从栈与页面表中移除开发者页
+        # 从栈与页面表中移除开发者页（并真正销毁，避免反复开关堆积僵尸页面）
         if "developer" in self._pages:
-            self.content.removeWidget(self._pages["developer"])
-            del self._pages["developer"]
+            page = self._pages.pop("developer")
+            self.content.removeWidget(page)
+            page.setParent(None)
+            page.deleteLater()
+        self.dev_page = None
         # 跳回设置页（保留与进入一致的淡入动画体验）
         self._set_page("settings")
         # 保存放到 UI 更新之后：即使落盘异常，也不能让页签继续显示在界面上。
@@ -1074,6 +1086,7 @@ class UnifiedSettingsWindow(QMainWindow):
         """自绘：亚克力基底（由 DWM 提供模糊）+ 细微竖向渐变 + 1px 圆角边框 + 柔和外阴影。
 
         最大化时取消阴影、圆角与边框，让面板贴合屏幕工作区。
+        具体笔法见 ui/frameless_panel（与日志窗口/插件弹窗共用同一实现）。
         """
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
@@ -1081,43 +1094,20 @@ class UnifiedSettingsWindow(QMainWindow):
         P = 0 if maximized else self._PAD
         r = 0 if maximized else self._RADIUS
         t = self.theme
-
         if maximized:
             panel = QRect(0, 0, self.width(), self.height())
-            pp = QPainterPath()
-            pp.addRect(QRectF(panel))
         else:
             panel = QRect(P, P, self.width() - 2 * P, self.height() - 2 * P)
-            pp = QPainterPath()
-            pp.addRoundedRect(QRectF(panel), r, r)
 
-            # 1) 柔和外阴影（多层圆角矩形，落在窗口矩形内侧留白内）
-            base = self._shadow_color.alpha()
-            for d in range(P, 0, -1):
-                a = max(1, int(base * (1 - (d - 1) / P) * 0.35))
-                col = QColor(self._shadow_color.red(), self._shadow_color.green(),
-                             self._shadow_color.blue(), a)
-                rr = r + d * 0.5
-                sp = QPainterPath()
-                sp.addRoundedRect(QRectF(panel.adjusted(-d, -d, d, d)), rr, rr)
-                p.fillPath(sp, col)
-
-        # 2) 面板基底：半透明 tint（亚克力关闭时退化为纯色底）。
-        #    按 panel_alpha 缩放透明度，让「面板透明度」滑块真实作用于整块面板背景
-        #    （此前只缩放了被卡片遮挡的内容区表面，几乎看不出变化，表现为“透明度设置失效”）。
-        tint = _parse_color(self._adjusted_panel_base())
-        p.fillPath(pp, tint)
-
-        # 3) 细微竖向渐变叠加（顶部略亮、底部略暗）
-        grad = QLinearGradient(0, panel.top(), 0, panel.bottom())
-        grad.setColorAt(0, _parse_color(t.window_grad_top))
-        grad.setColorAt(1, _parse_color(t.window_grad_bottom))
-        p.fillPath(pp, grad)
-
-        # 4) 1px 圆角边框（最大化时不画，避免边缘被裁切出细线）
-        if not maximized:
-            pen = QPen(_parse_color(t.window_border))
-            pen.setWidth(1)
-            p.strokePath(pp, pen)
-
+        # 面板基底按 panel_alpha 缩放透明度，让「面板透明度」滑块真实作用于整块面板
+        # 背景（此前只缩放了被卡片遮挡的内容区表面，几乎看不出变化）。
+        paint_frameless_panel(
+            p, panel, radius=r,
+            tint=self._adjusted_panel_base(),
+            grad_top=t.window_grad_top,
+            grad_bottom=t.window_grad_bottom,
+            border=None if maximized else t.window_border,
+            shadow=None if maximized else self._shadow_color,
+            shadow_pad=P,
+        )
         super().paintEvent(e)

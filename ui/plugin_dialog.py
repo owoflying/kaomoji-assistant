@@ -14,9 +14,7 @@
 关闭时会 emit finished(result)，返回值语义与 QDialog 一致（1=确定，0=取消）。
 """
 from PySide6.QtCore import Qt, QRect, QRectF, QEventLoop, Signal
-from PySide6.QtGui import (
-    QColor, QPainter, QPainterPath, QPen, QLinearGradient, QRegion, QTransform,
-)
+from PySide6.QtGui import QPainter, QPainterPath, QRegion, QTransform
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
 )
@@ -24,6 +22,7 @@ from PySide6.QtWidgets import (
 from ui.win11_theme import Theme, parse_color
 from ui.win_style import apply_backdrop, apply_dark_mode, DWMSBT_TRANSIENTWINDOW
 from ui.fluent_icons import icon_label
+from ui.frameless_panel import paint_frameless_panel
 
 # 与 LogViewer / 主窗口保持一致的视觉参数
 _RADIUS = 12
@@ -173,34 +172,20 @@ class PluginDialog(QWidget):
         t = self._theme
         panel = QRect(_PAD, _PAD, self.width() - 2 * _PAD, self.height() - 2 * _PAD)
 
-        sc = parse_color(t.shadow_color)
-        base = sc.alpha()
-        for d in range(_PAD, 0, -1):
-            a = max(1, int(base * (1 - (d - 1) / _PAD) * 0.35))
-            col = QColor(sc.red(), sc.green(), sc.blue(), a)
-            rr = _RADIUS + d * 0.5
-            sp = QPainterPath()
-            sp.addRoundedRect(QRectF(panel.adjusted(-d, -d, d, d)), rr, rr)
-            p.fillPath(sp, col)
-
-        pp = QPainterPath()
-        pp.addRoundedRect(QRectF(panel), _RADIUS, _RADIUS)
         # 面板基底强制不透明：window_tint 的固有 alpha 只有 0.85/0.88，直接用会
         # 比主窗口（_adjusted_panel_base 默认映射到 1.0）明显更透，深色桌面上
         # 甚至发黑。弹窗没有 panel_alpha 配置，取主窗口默认（100%）的等效实色。
         tint = parse_color(t.window_tint)
         tint.setAlpha(255)
-        p.fillPath(pp, tint)
-
-        grad = QLinearGradient(0, panel.top(), 0, panel.bottom())
-        grad.setColorAt(0, parse_color(t.window_grad_top))
-        grad.setColorAt(1, parse_color(t.window_grad_bottom))
-        p.fillPath(pp, grad)
-
-        pen = QPen(parse_color(t.window_border))
-        pen.setWidth(1)
-        p.strokePath(pp, pen)
-
+        paint_frameless_panel(
+            p, panel, radius=_RADIUS,
+            tint=tint,
+            grad_top=t.window_grad_top,
+            grad_bottom=t.window_grad_bottom,
+            border=t.window_border,
+            shadow=parse_color(t.shadow_color),
+            shadow_pad=_PAD,
+        )
         super().paintEvent(e)
 
     def mousePressEvent(self, e):

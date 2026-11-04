@@ -25,17 +25,15 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import (
     Qt, Signal, QEvent, QTimer, QPoint, QPropertyAnimation, QEasingCurve,
 )
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QGuiApplication, QCursor
+from PySide6.QtGui import QColor, QPainter, QGuiApplication, QCursor
 
 from core.kaomoji_data import KaomojiData
 from core.user_state import UserState
 from core import win_utils
 from core.global_keys import GlobalKeyInterceptor
 from core.global_mouse import GlobalMouseInterceptor
-from ui.win_style import (
-    apply_backdrop, apply_dark_mode,
-    DWMSBT_TRANSIENTWINDOW, DWMSBT_NONE,
-)
+from ui.win_style import apply_backdrop, apply_dark_mode, DWMSBT_TRANSIENTWINDOW
+from ui.frameless_panel import paint_frameless_panel
 from ui.win11_theme import resolve_theme_name
 
 # 顶层窗口向外留白，用于自绘柔和阴影（阴影画在窗口矩形内，避免 UpdateLayeredWindow 越界报错）
@@ -157,7 +155,6 @@ class PickerWindow(QWidget):
         self._dismiss_at = 0.0         # 上次因“继续打字”自动关闭的时间戳
         self._had_editable = False     # 本次显示期间是否曾检测到可编辑焦点
         self._caret = False            # True=贴着光标定位；False=居中偏上定位
-        self._pending = None
         self._pending_ctx = None
         self._init_window()
         self._init_ui()
@@ -795,25 +792,15 @@ class PickerWindow(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
         pad = SHADOW_PAD
         panel = self.rect().adjusted(pad, pad, -pad, -pad)
-        # 柔和阴影：多层由外向内、alpha 递减的圆角矩形，全部落在窗口矩形内
-        sc = getattr(self, "_shadow_color", QColor(0, 0, 0, 40))
-        base = sc.alpha()
-        for d in range(pad, 0, -1):
-            a = max(1, int(base * (1 - (d - 1) / pad) * 0.30))
-            col = QColor(sc.red(), sc.green(), sc.blue(), a)
-            rect = panel.adjusted(-d, -d, d, d)
-            path = QPainterPath()
-            r = RADIUS + d * 0.4
-            path.addRoundedRect(rect.x(), rect.y(), rect.width(), rect.height(), r, r)
-            painter.fillPath(path, col)
-        # 面板本体
-        bg = getattr(self, "_panel_bg", QColor(255, 255, 255, 250))
-        ppath = QPainterPath()
-        ppath.addRoundedRect(panel.x(), panel.y(), panel.width(), panel.height(),
-                             RADIUS, RADIUS)
-        painter.fillPath(ppath, bg)
+        # 边框在深浅主题下用不同底色描：浅色主题描淡黑、深色主题描淡白，
+        # 否则边框会与面板同色而"消失"。
         alpha = getattr(self, "_border_alpha", 18)
-        pen = QPen(QColor(0, 0, 0, alpha) if alpha <= 40 else QColor(255, 255, 255, alpha))
-        pen.setWidth(1)
-        painter.strokePath(ppath, pen)
+        border = QColor(0, 0, 0, alpha) if alpha <= 40 else QColor(255, 255, 255, alpha)
+        paint_frameless_panel(
+            painter, panel, radius=RADIUS,
+            tint=getattr(self, "_panel_bg", QColor(255, 255, 255, 250)),
+            border=border,
+            shadow=getattr(self, "_shadow_color", QColor(0, 0, 0, 40)),
+            shadow_pad=pad, shadow_spread=0.30, shadow_growth=0.4,
+        )
         super().paintEvent(e)

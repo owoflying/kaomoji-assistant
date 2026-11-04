@@ -11,14 +11,15 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPlainTextEdit, QPushButton,
     QLabel, QFileDialog, QCheckBox,
 )
-from PySide6.QtCore import Qt, QTimer, QRect, QRectF, QPoint
+from PySide6.QtCore import Qt, QTimer, QRect, QRectF
 from PySide6.QtGui import (
     QGuiApplication, QFont, QFontDatabase, QColor, QPainter, QPainterPath,
-    QPen, QLinearGradient, QRegion, QTransform,
+    QRegion, QTransform,
 )
 
 from ui.win11_theme import Theme, parse_color, resolve_theme_name
 from ui.fluent_icons import icon_label, recolor
+from ui.frameless_panel import paint_frameless_panel
 
 
 _PLACEHOLDER = "（暂无日志）"
@@ -27,6 +28,13 @@ _PLACEHOLDER = "（暂无日志）"
 _RADIUS = 12
 _PAD = 12
 _TITLEBAR_H = 40
+
+
+def _opaque(spec):
+    """取主题色的实色版本（复制一份，避免改到 Theme 缓存里的 QColor 令牌）。"""
+    c = QColor(spec)
+    c.setAlpha(255)
+    return c
 
 
 class LogViewer(QWidget):
@@ -232,41 +240,20 @@ class LogViewer(QWidget):
         t = self._theme
         panel = QRect(_PAD, _PAD, self.width() - 2 * _PAD, self.height() - 2 * _PAD)
 
-        # 柔和外阴影
-        # 注意：主题里的 rgba(r,g,b,浮点a) 字符串在 Qt6 下 QColor() 解析失败会
-        # 静默变成「不透明黑色」，窗口会整个发黑（表现为「日志窗口永远是深色」）。
-        # 必须走 parse_color() 正则兜底解析，不可直接 QColor(spec)。
-        sc = parse_color(t.shadow_color)
-        base = sc.alpha()
-        for d in range(_PAD, 0, -1):
-            a = max(1, int(base * (1 - (d - 1) / _PAD) * 0.35))
-            col = QColor(sc.red(), sc.green(), sc.blue(), a)
-            rr = _RADIUS + d * 0.5
-            sp = QPainterPath()
-            sp.addRoundedRect(QRectF(panel.adjusted(-d, -d, d, d)), rr, rr)
-            p.fillPath(sp, col)
-
-        # 面板基底
-        pp = QPainterPath()
-        pp.addRoundedRect(QRectF(panel), _RADIUS, _RADIUS)
-        # 面板基底：window_tint 固有 alpha 仅 0.85/0.88，且本窗口不带 DWM 亚克力，
-        # 半透会直接透出桌面（浅色主题下被暗色桌面压暗）→ 与主窗口/插件弹窗一致
-        # 取等效实色。
-        tint = parse_color(t.window_tint)
-        tint.setAlpha(255)
-        p.fillPath(pp, tint)
-
-        # 细微竖向渐变
-        grad = QLinearGradient(0, panel.top(), 0, panel.bottom())
-        grad.setColorAt(0, parse_color(t.window_grad_top))
-        grad.setColorAt(1, parse_color(t.window_grad_bottom))
-        p.fillPath(pp, grad)
-
-        # 1px 圆角边框
-        pen = QPen(parse_color(t.window_border))
-        pen.setWidth(1)
-        p.strokePath(pp, pen)
-
+        # 面板基底强制不透明：window_tint 固有 alpha 仅 0.85/0.88，且本窗口不带
+        # DWM 亚克力，半透会直接透出桌面（浅色主题下被暗色桌面压暗）——与主窗口/
+        # 插件弹窗一致，取等效实色。颜色解析一律走 parse_color：Qt6 的
+        # QColor("rgba(r,g,b,浮点a)") 是无效值、静默回退成黑色，会让整窗发黑
+        # （曾表现为「查看日志永远是深色模式」）。
+        paint_frameless_panel(
+            p, panel, radius=_RADIUS,
+            tint=_opaque(parse_color(t.window_tint)),
+            grad_top=t.window_grad_top,
+            grad_bottom=t.window_grad_bottom,
+            border=t.window_border,
+            shadow=parse_color(t.shadow_color),
+            shadow_pad=_PAD,
+        )
         super().paintEvent(e)
 
     # ---------- 无边框窗口拖动 ----------

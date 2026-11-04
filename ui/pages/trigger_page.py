@@ -1,12 +1,13 @@
 """快捷短语页：触发词 -> 输出管理。"""
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QListWidget,
-    QListWidgetItem, QLineEdit, QDialogButtonBox, QDialog, QFrame,
+    QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+    QListWidgetItem, QPushButton, QVBoxLayout, QWidget,
 )
 from PySide6.QtCore import Qt
 
-from ui.win11_theme import kaomoji_font
 from ui.fluent_checkbox import FluentCheckBox
+from ui.pages._scaffold import card, card_layout, page_layout, page_title
+from ui.win11_theme import kaomoji_font
 
 
 class _TriggerEditDialog(QDialog):
@@ -60,23 +61,15 @@ class TriggerPage(QWidget):
         self._theme = theme
 
     def _init_ui(self):
-        root = QVBoxLayout(self)
-        root.setContentsMargins(36, 28, 36, 28)
-        root.setSpacing(22)
+        root = page_layout(self)
+        root.addWidget(page_title("快捷短语"))
 
-        title = QLabel("快捷短语")
-        title.setObjectName("PageTitle")
-        root.addWidget(title)
+        caption_lb = QLabel("打字时输入「触发词」，候选条会弹出对应的「输出」。")
+        caption_lb.setObjectName("BodyText")
+        root.addWidget(caption_lb)
 
-        caption = QLabel("打字时输入「触发词」，候选条会弹出对应的「输出」。")
-        caption.setObjectName("BodyText")
-        root.addWidget(caption)
-
-        card = QFrame()
-        card.setObjectName("Card")
-        croot = QVBoxLayout(card)
-        croot.setContentsMargins(12, 12, 12, 12)
-        croot.setSpacing(8)
+        list_card = card()
+        croot = card_layout(list_card, margins=(12, 12, 12, 12), spacing=8)
 
         self.list_w = QListWidget()
         self.list_w.itemDoubleClicked.connect(self._edit)
@@ -89,13 +82,12 @@ class TriggerPage(QWidget):
         self.add_btn.clicked.connect(self._add)
         self.edit_btn.clicked.connect(self._edit)
         self.del_btn.clicked.connect(self._del)
-        op_row.addWidget(self.add_btn)
-        op_row.addWidget(self.edit_btn)
-        op_row.addWidget(self.del_btn)
+        for btn in (self.add_btn, self.edit_btn, self.del_btn):
+            op_row.addWidget(btn)
         op_row.addStretch(1)
         croot.addLayout(op_row)
 
-        root.addWidget(card, 1)
+        root.addWidget(list_card, 1)
 
     def _refresh(self):
         self.list_w.clear()

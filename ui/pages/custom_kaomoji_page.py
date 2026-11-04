@@ -3,13 +3,13 @@ import json
 from datetime import datetime
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QListWidget, QListWidgetItem, QLineEdit, QDialogButtonBox, QDialog,
-    QMessageBox, QFrame, QFileDialog,
+    QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
+    QListWidget, QListWidgetItem, QMessageBox, QPushButton, QVBoxLayout, QWidget,
 )
 from PySide6.QtCore import Qt
 
 from ui.fluent_combobox import FluentComboBox
+from ui.pages._scaffold import card, card_layout, page_layout, page_title
 from ui.win11_theme import kaomoji_font
 
 
@@ -89,13 +89,8 @@ class CustomKaomojiPage(QWidget):
         self._refresh_groups()
 
     def _init_ui(self):
-        root = QVBoxLayout(self)
-        root.setContentsMargins(36, 28, 36, 28)
-        root.setSpacing(22)
-
-        title = QLabel("我的颜文字")
-        title.setObjectName("PageTitle")
-        root.addWidget(title)
+        root = page_layout(self)
+        root.addWidget(page_title("我的颜文字"))
 
         # 迁移工具栏：导出 / 导入 / 备份
         tool_row = QHBoxLayout()
@@ -105,18 +100,14 @@ class CustomKaomojiPage(QWidget):
         self.export_btn.clicked.connect(self._export)
         self.import_btn.clicked.connect(self._import)
         self.backup_btn.clicked.connect(self._backup)
-        tool_row.addWidget(self.export_btn)
-        tool_row.addWidget(self.import_btn)
-        tool_row.addWidget(self.backup_btn)
+        for btn in (self.export_btn, self.import_btn, self.backup_btn):
+            tool_row.addWidget(btn)
         tool_row.addStretch(1)
         root.addLayout(tool_row)
 
-        # 分组卡片
-        grp_card = QFrame()
-        grp_card.setObjectName("Card")
-        grp_root = QHBoxLayout(grp_card)
-        grp_root.setContentsMargins(16, 14, 16, 14)
-        grp_root.setSpacing(12)
+        # 分组 / 标签筛选卡片
+        grp_card = card()
+        grp_root = card_layout(grp_card, horizontal=True)
         grp_root.addWidget(QLabel("分组"))
         self.group_combo = FluentComboBox(None)
         self.group_combo.setMinimumWidth(160)
@@ -137,11 +128,8 @@ class CustomKaomojiPage(QWidget):
         root.addWidget(grp_card)
 
         # 列表卡片
-        list_card = QFrame()
-        list_card.setObjectName("Card")
-        list_root = QVBoxLayout(list_card)
-        list_root.setContentsMargins(12, 12, 12, 12)
-        list_root.setSpacing(8)
+        list_card = card()
+        list_root = card_layout(list_card, margins=(12, 12, 12, 12), spacing=8)
         self.list_w = _KaoList(on_drop=self._on_drop_reorder)
         self.list_w.itemDoubleClicked.connect(self._edit_item)
         list_root.addWidget(self.list_w, 1)
@@ -152,9 +140,8 @@ class CustomKaomojiPage(QWidget):
         self.add_btn.clicked.connect(self._add_item)
         self.edit_btn.clicked.connect(self._edit_item)
         self.del_btn.clicked.connect(self._del_item)
-        op_row.addWidget(self.add_btn)
-        op_row.addWidget(self.edit_btn)
-        op_row.addWidget(self.del_btn)
+        for btn in (self.add_btn, self.edit_btn, self.del_btn):
+            op_row.addWidget(btn)
         op_row.addStretch(1)
         list_root.addLayout(op_row)
         root.addWidget(list_card, 1)
@@ -218,6 +205,17 @@ class CustomKaomojiPage(QWidget):
         self.user_kao.move_item(dragged, target)
         self._refresh_list()
 
+    def _group_of(self, text):
+        """条目真正所属的分组。
+
+        标签筛选模式下列表是**跨分组**的，此时下拉框显示的是「当前浏览的分组」，
+        拿它当编辑初值会把条目悄悄搬到另一个分组去。必须回查条目自身。
+        """
+        for it in self.user_kao.items:
+            if it.get("text") == text:
+                return it.get("group") or "默认"
+        return self.group_combo.currentText()
+
     def _new_group(self):
         name, ok = _text_input(self, "新建分组", "分组名称：")
         if ok and name:
@@ -229,6 +227,13 @@ class CustomKaomojiPage(QWidget):
         name = self.group_combo.currentText()
         if name == "默认":
             QMessageBox.information(self, "提示", "「默认」分组不可删除。")
+            return
+        count = len(self.user_kao.items_for_group(name))
+        if QMessageBox.question(
+                self, "删除分组",
+                "确定删除分组「%s」及其中的 %d 条颜文字？" % (name, count),
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No) != QMessageBox.Yes:
             return
         if self.user_kao.remove_group(name):
             self._refresh_groups()
@@ -248,9 +253,8 @@ class CustomKaomojiPage(QWidget):
             return
         old = self.list_w.item(row).data(Qt.UserRole)
         tags = ", ".join(self.user_kao.tags_of(old))
-        group = self.group_combo.currentText()
         dlg = _ItemEditDialog(self.user_kao.get_groups(), text=old,
-                              group=group, tags=tags)
+                              group=self._group_of(old), tags=tags)
         if dlg.exec() == QDialog.Accepted:
             text, group, tags = dlg.data()
             if text:
@@ -262,6 +266,12 @@ class CustomKaomojiPage(QWidget):
         if row < 0:
             return
         text = self.list_w.item(row).data(Qt.UserRole)
+        # 删除即从数据文件里移除、没有撤销，先确认一次（原先点错就没了）
+        if QMessageBox.question(
+                self, "删除颜文字", "确定删除这条颜文字？\n\n%s" % text,
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No) != QMessageBox.Yes:
+            return
         self.user_kao.remove_item(text)
         self._refresh_groups()
 

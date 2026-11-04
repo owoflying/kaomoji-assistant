@@ -8,15 +8,15 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QSlider, QSpinBox, QFrame, QSizePolicy, QScrollArea,
 )
-from ui.fluent_combobox import FluentComboBox
 from PySide6.QtCore import Qt, Signal
 
-from core import win_utils
-from core import autostart
-from core import uia_elevation
-from core.win_utils import MOD_CONTROL, MOD_ALT, MOD_SHIFT, MOD_WIN
-from ui.win11_theme import Theme, resolve_theme_name
+from core import autostart, uia_elevation, win_utils
+from core.win_utils import MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN
+from ui.fluent_combobox import FluentComboBox
+from ui.pages._scaffold import card as make_card
+from ui.pages._scaffold import page_layout, page_title, section_title
 from ui.toggle_switch import ToggleSwitch
+from ui.win11_theme import Theme, resolve_theme_name
 
 
 def _build_hotkey_from_pynput(key, mods_set):
@@ -89,13 +89,9 @@ class SettingsPage(QWidget):
         body = QWidget()
         body.setObjectName("SettingsBody")
         body.setStyleSheet("background:transparent;")
-        v = QVBoxLayout(body)
-        v.setContentsMargins(36, 28, 36, 28)
-        v.setSpacing(22)
+        v = page_layout(body)
 
-        title = QLabel("设置")
-        title.setObjectName("PageTitle")
-        v.addWidget(title)
+        v.addWidget(page_title("设置"))
 
         # 全局热键
         v.addWidget(self._section_title("全局热键"))
@@ -209,14 +205,10 @@ class SettingsPage(QWidget):
 
     # ---------- 子控件工厂 ----------
     def _section_title(self, text):
-        lb = QLabel(text)
-        lb.setObjectName("SectionTitle")
-        return lb
+        return section_title(text)
 
     def _card(self):
-        card = QFrame()
-        card.setObjectName("Card")
-        return card
+        return make_card()
 
     def _add_row(self, layout, label, widget_or_layout, test_feature=False):
         """向卡片中添加一行设置项；用 QWidget 容器保证最小行高，防止被压扁。

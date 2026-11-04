@@ -3,15 +3,15 @@
 在统一窗口内作为一页使用；选中后发出 selected 信号，由主窗口决定是否隐藏并注入。
 """
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QLineEdit, QListWidget, QListWidgetItem,
-    QLabel, QFrame,
+    QLineEdit, QListWidget, QListWidgetItem, QWidget,
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 
 from core.kaomoji_data import KaomojiData
 from core.user_kaomoji import UserKaomoji
-from ui.win11_theme import kaomoji_font, Theme
+from ui.pages._scaffold import card, card_layout, caption, page_layout, page_title
+from ui.win11_theme import Theme, kaomoji_font, resolve_theme_name
 
 
 class SearchPage(QWidget):
@@ -23,28 +23,16 @@ class SearchPage(QWidget):
         super().__init__(parent)
         self.data = data
         self.user_kao = user_kao
-        self._init_ui(theme)
+        self._theme = Theme(resolve_theme_name(theme))
+        self._init_ui()
         self._do_search()
 
-    def _init_ui(self, theme):
-        dark = theme == "dark"
-        self._theme = Theme(theme)
-        self._text = "#f0f0f0" if dark else "#1f1f1f"
-        self._num = "#a0a0a6" if dark else "#8a8a8e"
+    def _init_ui(self):
+        root = page_layout(self)
+        root.addWidget(page_title("搜索颜文字"))
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(36, 28, 36, 28)
-        root.setSpacing(22)
-
-        title = QLabel("搜索颜文字")
-        title.setObjectName("PageTitle")
-        root.addWidget(title)
-
-        card = QFrame()
-        card.setObjectName("Card")
-        croot = QVBoxLayout(card)
-        croot.setContentsMargins(16, 16, 16, 16)
-        croot.setSpacing(12)
+        search_card = card()
+        croot = card_layout(search_card, margins=(16, 16, 16, 16))
 
         self.query = QLineEdit()
         self.query.setPlaceholderText("输入关键词 / 标签搜索（我的颜文字优先）")
@@ -58,11 +46,9 @@ class SearchPage(QWidget):
         self.results.setFocusProxy(self.query)
         croot.addWidget(self.results, 1)
 
-        self.hint = QLabel("↑↓ 选择 · 回车上屏 · Esc 清空")
-        self.hint.setObjectName("Caption")
-        croot.addWidget(self.hint)
+        croot.addWidget(caption("↑↓ 选择 · 回车上屏 · Esc 清空"))
 
-        root.addWidget(card, 1)
+        root.addWidget(search_card, 1)
         self._style()
 
     def _style(self):

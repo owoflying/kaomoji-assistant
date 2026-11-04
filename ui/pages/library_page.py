@@ -1,12 +1,16 @@
-"""颜文字库页：按分类浏览内置颜文字，点击即可复制到剪贴板或上屏。"""
-from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
-    QPushButton, QFrame,
-)
-from ui.fluent_combobox import FluentComboBox
+"""颜文字库页：按分类浏览内置颜文字，点击即可上屏。"""
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import (
+    QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPushButton, QWidget,
+)
 
+from ui.fluent_combobox import FluentComboBox
+from ui.pages._scaffold import (
+    card, card_layout, page_layout, page_title,
+)
 from ui.win11_theme import kaomoji_font
+
+_ALL_CATEGORIES = "全部"
 
 
 class LibraryPage(QWidget):
@@ -20,35 +24,23 @@ class LibraryPage(QWidget):
         self._refresh_list()
 
     def _init_ui(self):
-        root = QVBoxLayout(self)
-        root.setContentsMargins(36, 28, 36, 28)
-        root.setSpacing(22)
-
-        title = QLabel("颜文字库")
-        title.setObjectName("PageTitle")
-        root.addWidget(title)
+        root = page_layout(self)
+        root.addWidget(page_title("颜文字库"))
 
         # 分类选择卡片
-        cat_card = QFrame()
-        cat_card.setObjectName("Card")
-        cat_root = QHBoxLayout(cat_card)
-        cat_root.setContentsMargins(16, 14, 16, 14)
-        cat_root.setSpacing(12)
+        cat_card = card()
+        cat_root = card_layout(cat_card, horizontal=True)
         cat_root.addWidget(QLabel("分类"))
         self.cat_combo = FluentComboBox(self._theme)
         self.cat_combo.setMinimumWidth(180)
-        self.cat_combo.addItem("全部")
-        self.cat_combo.addItems(self.data.get_category_names())
+        self._fill_categories()
         self.cat_combo.currentTextChanged.connect(self._refresh_list)
         cat_root.addWidget(self.cat_combo, 1)
         root.addWidget(cat_card)
 
         # 列表卡片
-        list_card = QFrame()
-        list_card.setObjectName("Card")
-        list_root = QVBoxLayout(list_card)
-        list_root.setContentsMargins(12, 12, 12, 12)
-        list_root.setSpacing(8)
+        list_card = card()
+        list_root = card_layout(list_card, margins=(12, 12, 12, 12), spacing=8)
         self.list_w = QListWidget()
         self.list_w.setFont(kaomoji_font(14))
         self.list_w.itemDoubleClicked.connect(self._choose)
@@ -66,20 +58,24 @@ class LibraryPage(QWidget):
 
         root.addWidget(list_card, 1)
 
+    def _fill_categories(self):
+        """用当前数据重建分类项（首项固定为「全部」）。"""
+        self.cat_combo.clear()
+        self.cat_combo.addItem(_ALL_CATEGORIES)
+        self.cat_combo.addItems(self.data.get_category_names())
+
     def set_theme(self, theme):
         self._theme = theme
-        if hasattr(self, "cat_combo") and self.cat_combo is not None:
+        if getattr(self, "cat_combo", None) is not None:
             self.cat_combo.set_theme(theme)
 
     def reload_categories(self):
         """重建分类下拉（插件启用/停用后分类集合可能变化），尽量保留当前选择。"""
-        if self.cat_combo is None:
+        if getattr(self, "cat_combo", None) is None:
             return
         current = self.cat_combo.currentText()
         self.cat_combo.blockSignals(True)
-        self.cat_combo.clear()
-        self.cat_combo.addItem("全部")
-        self.cat_combo.addItems(self.data.get_category_names())
+        self._fill_categories()
         idx = self.cat_combo.findText(current)
         self.cat_combo.setCurrentIndex(idx if idx >= 0 else 0)
         self.cat_combo.blockSignals(False)
@@ -87,17 +83,16 @@ class LibraryPage(QWidget):
 
     def _refresh_list(self):
         cat = self.cat_combo.currentText()
-        items = self.data.get_items(None if cat == "全部" else cat)
+        items = self.data.get_items(None if cat == _ALL_CATEGORIES else cat)
         self.list_w.clear()
         for kao in items:
             item = QListWidgetItem(kao)
             item.setData(Qt.UserRole, kao)
             self.list_w.addItem(item)
-        self.count_label.setText(f"共 {len(items)} 条")
+        self.count_label.setText("共 %d 条" % len(items))
 
     def _choose(self):
         item = self.list_w.currentItem()
         if item is None:
             return
-        text = item.data(Qt.UserRole)
-        self.selected.emit(text)
+        self.selected.emit(item.data(Qt.UserRole))

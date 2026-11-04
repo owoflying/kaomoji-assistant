@@ -18,7 +18,6 @@
 与键盘钩子一样：钩子在独立线程跑，跨线程只能发 Qt 信号，绝不能在线程里直接
 操作窗口；关闭动作由面板在主线程里执行（Qt 自动把信号排队到接收者线程）。
 """
-import ctypes
 import threading
 
 from PySide6.QtCore import QObject, Signal

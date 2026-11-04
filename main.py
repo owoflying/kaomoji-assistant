@@ -10,7 +10,7 @@ if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QMessageBox
-from PySide6.QtGui import QIcon, QAction
+from PySide6.QtGui import QAction
 from PySide6.QtCore import QTimer, QObject, Signal
 try:                                    # 判断窗口 C++ 对象是否仍然有效
     from shiboken6 import isValid as shiboken_is_valid
@@ -63,8 +63,6 @@ def _append_log(level, source, message):
     if len(LOG_BUFFER) > LOG_BUFFER_MAX:
         del LOG_BUFFER[:len(LOG_BUFFER) - LOG_BUFFER_MAX]
 
-# 配置项的默认值；load_config 会把磁盘值合并进来，缺失项自动补默认，
-# 这样新增配置项时旧配置不会因缺字段而报错。
 class DevEventBus(QObject):
     """开发者模式事件总线：把核心组件的关键事件聚合为统一信号，供开发者标签页订阅。
 
@@ -76,6 +74,8 @@ class DevEventBus(QObject):
         self.event.emit(level, source, message)
 
 
+# 配置项的默认值；load_config 会把磁盘值合并进来，缺失项自动补默认，
+# 这样新增配置项时旧配置不会因缺字段而报错。
 DEFAULT_CONFIG = {
     "hotkey": "<ctrl>+<shift>+k",
     "theme": "light",
@@ -83,16 +83,16 @@ DEFAULT_CONFIG = {
     "opacity": 0.98,
     "input_method": "direct",
     "max_recent": 30,
-        "auto_popup": True,
-        "page_size": 3,
-        "autostart": False,
-        "auto_hide_on_blur": True,
-        "developer_mode": False,
-        "use_uia_elevation": False,
-        "use_test_features": False,
-        # 插件启用状态表：{"<plugin_id>": True/False}；未出现的插件视为停用
-        "plugins_enabled": {},
-    }
+    "auto_popup": True,
+    "page_size": 3,
+    "autostart": False,
+    "auto_hide_on_blur": True,
+    "developer_mode": False,
+    "use_uia_elevation": False,
+    "use_test_features": False,
+    # 插件启用状态表：{"<plugin_id>": True/False}；未出现的插件视为停用
+    "plugins_enabled": {},
+}
 
 # 处于测试模式的功能项（默认归属测试分组，确认上线后移出）；值为「关闭态默认」。
 # use_test_features=False 时，save_config 会把这些项强制归位为默认值，
@@ -373,6 +373,11 @@ def main():
             window.apply_config(config)
         if unified is not None:
             unified.apply_config(config)
+        # 与 apply_settings 保持一致：开着的日志窗口也要跟随系统主题换肤，
+        # 否则「跟随系统」时它是唯一一个不跟随的窗口。
+        lw = _log_viewer["w"]
+        if lw is not None and shiboken_is_valid(lw):
+            lw.set_theme(effective)
 
     _system_theme_timer.timeout.connect(_check_system_theme)
 
@@ -612,6 +617,26 @@ def main():
 
     unified.output_selected.connect(on_unified_output)
 
+    def _warn_uia_once(uia_status):
+        """「已开启 UIA 提权但本次未生效」只提示一次。
+
+        必须显式 `global`：本函数内对该名字有赋值，Python 会把它整体判为局部
+        变量，`if uia_warn_shown` 便抛 UnboundLocalError。旧代码正是漏了这一行，
+        后果不只是提示弹不出来——异常会在 apply_settings 中途抛断，导致其后的
+        「自动弹出监听启停」「monitor.start/stop」整段不执行，表现为开过 UIA
+        提权之后，改自动弹出开关不生效。
+        """
+        global uia_warn_shown
+        if uia_warn_shown:
+            return
+        uia_warn_shown = True
+        try:
+            QMessageBox.warning(
+                unified, "UIA 提权",
+                uia_status.get("message") or "UIA 提权未生效，请查看日志。")
+        except Exception:
+            pass
+
     def apply_settings(new_cfg):
         # 更新内存配置
         config.clear()
@@ -641,15 +666,8 @@ def main():
         # 杜绝此前“静默失败、无任何提示”的问题；成功重启或已生效则不弹窗。
         uia_status = uia_elevation.ensure_uiaccess(config, _append_log)
         if (config.get("use_uia_elevation", False)
-                and not (uia_status.get("granted") or uia_status.get("relaunched"))
-                and not uia_warn_shown):
-            uia_warn_shown = True
-            try:
-                QMessageBox.warning(
-                    unified, "UIA 提权",
-                    uia_status.get("message") or "UIA 提权未生效，请查看日志。")
-            except Exception:
-                pass
+                and not (uia_status.get("granted") or uia_status.get("relaunched"))):
+            _warn_uia_once(uia_status)
         # 自动弹出开关：按需开启/关闭全局监听；若统一窗口仍打开则保持暂停，
         # 等窗口关闭时由 _resume_main 统一恢复。
         if config.get("auto_popup", True):

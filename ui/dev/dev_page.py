@@ -310,7 +310,6 @@ class DevPage(QWidget):
             ("失焦隐藏", "_d_blur"),
         ]
         self._diag_labels = {}
-        r = 0
         for i, (name, attr) in enumerate(labels):
             row = i // 2
             col = (i % 2) * 2
@@ -506,9 +505,13 @@ class DevPage(QWidget):
         try:
             from core import restart
             restart.restart_with_update_popup()
-        except Exception as e:  # 兜底：极端情况下至少不崩，记到日志
-            import traceback
-            traceback.print_exc()
+        except Exception as exc:  # 兜底：极端情况下至少不崩，且要留下可查的痕迹
+            # 打包成窗口程序后没有控制台，traceback.print_exc() 等于把错误丢掉，
+            # 改为写进开发者事件流，界面上直接能看到失败原因。
+            bus = self._refs.get("bus")
+            if bus is not None:
+                bus.log("错误", "重启",
+                        "模拟升级失败：%s: %s" % (type(exc).__name__, exc))
 
     def _update_test_btn(self):
         on = bool(self.config.get("use_test_features", False))

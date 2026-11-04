@@ -27,7 +27,11 @@ class ToggleSwitch(QAbstractButton):
         # 会在 hover/focus 时画出黑色/灰色背景条（旧 bug 回归）。
         self.setObjectName("ToggleSwitch")  # 供全局 QSS 定位
         self.setAutoFillBackground(False)
-        self.setAttribute(Qt.WA_OpaquePaintEvent, True)
+        # 不要开 WA_OpaquePaintEvent：本控件画的是圆角轨道，圆角外的像素并没有
+        # 被覆盖。声明"完全由我绘制"会让 Qt 跳过背景清理，局部 update 时圆角处
+        # 会残留上一帧（换主题/换底色后表现为开关四角的小块色斑——与历史上
+        # 「开关区域出现黑色条带」同类）。保留默认的背景清理，让父容器透过圆角。
+        self.setAttribute(Qt.WA_OpaquePaintEvent, False)
         self.setStyleSheet("background: transparent; border: none; outline: none;")
         self._anim = QPropertyAnimation(self, b"pos_f", self)
         self._anim.setDuration(160)

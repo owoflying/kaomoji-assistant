@@ -395,9 +395,16 @@ class PluginManager(QObject):
 
     # ---------- 发现 ----------
     def discover(self):
-        """扫描插件目录，重建 self.plugins（已加载的保持原状态，不在此处加载）。"""
+        """扫描插件目录，重建 self.plugins（已加载的保持原状态，不在此处加载）。
+
+        已加载插件的 module/api 必须一并沿用：discover 只重新读清单、**不执行入口**，
+        而 load() 见到 state=loaded 会直接返回 True。若在这里把引用清成 None，
+        就再也补不回来——表现为「重新扫描」后插件卡片的能力摘要消失、
+        卸载时也摘不掉 sys.modules 里的模块。
+        """
         found = {}
         old = self.plugins
+        broken = []          # 清单校验失败的插件（此前若已加载，能力需要回收）
         try:
             entries = sorted(os.listdir(self.plugins_dir))
         except OSError:
@@ -416,20 +423,33 @@ class PluginManager(QObject):
             except Exception as e:
                 found[name] = self._record(name, pdir, None, "error",
                                            "plugin.json 解析失败：%s" % e)
+                broken.append(name)
                 continue
             err = _validate_manifest(manifest)
             if err:
                 found[name] = self._record(name, pdir, manifest, "error", err)
+                broken.append(name)
                 continue
-            # 新发现的插件默认停用；已存在的保留原状态
             prev = old.get(name)
-            rec = self._record(
-                name, pdir, manifest,
-                prev["state"] if prev else "disabled",
-                prev["error"] if prev else None)
+            if prev is None:
+                # 新发现的插件默认停用
+                found[name] = self._record(name, pdir, manifest, "disabled", None)
+                continue
+            rec = self._record(name, pdir, manifest, prev["state"], prev["error"])
+            rec["module"] = prev.get("module")
+            rec["api"] = prev.get("api")
             found[name] = rec
-        # 已被删除的插件目录：从注册表中移除（unload 由调用方按需处理）
+        # 需要回收能力的插件：目录被删掉的，以及清单在运行期间被改坏（此前已加载）的。
+        # 不回收的话，其数据源/转换/监听器会继续生效（插件页却已经显示为错误或消失）。
+        stale = [pid for pid in old if pid not in found]
+        stale += [pid for pid in broken if pid in old and old[pid]["state"] == "loaded"]
         self.plugins = found
+        for pid in stale:
+            mod = old[pid].get("module")
+            if mod is not None:
+                sys.modules.pop(getattr(mod, "__name__", ""), None)
+            self._detach(pid)
+            self._log("info", "plugins", "插件 %s 已失效（目录移除或清单损坏），已回收其能力" % pid)
 
     def _record(self, plugin_id, pdir, manifest, state, error):
         return {
@@ -505,7 +525,6 @@ class PluginManager(QObject):
 
     def reload(self, plugin_id):
         """重载插件（重扫清单 -> 卸载 -> 按启用状态重新加载）。"""
-        rec = self.plugins.get(plugin_id)
         enabled = self.is_enabled(plugin_id)
         self.unload(plugin_id)
         self.discover()
@@ -585,10 +604,6 @@ class PluginManager(QObject):
         self.close_plugin_dialogs(plugin_id)
         if had_settings or killed_pages:
             self.ui_changed.emit()
-        # 该插件开着的弹窗必须关掉，否则插件已卸载而窗口还在，回调会打到空气上
-        self.close_plugin_dialogs(plugin_id)
-        if had_settings or killed_pages:
-            self.ui_changed.emit()
 
     # ---------- 能力注册（由 PluginAPI 调用） ----------
     def _add_source(self, plugin_id, category, items):
@@ -660,8 +675,27 @@ class PluginManager(QObject):
             # 插件自建 body 若带样式表会切断祖先级联，这里把完整主题 QSS 垫在前
             apply_child_theme(body, theme)
         dlg = show_plugin_dialog(body, title, theme, None, width, height, modal)
+        if modal:
+            # 模态弹窗在 show_plugin_dialog 内部已 exec 完并关闭，无需登记
+            return dlg.result()
         self._dialogs.setdefault(plugin_id, []).append(dlg)
-        return dlg.result() if modal else dlg
+        # 非模态弹窗关闭后自动从登记表摘除，否则会随插件生命周期越攒越多
+        # （旧实现只在插件卸载时统一 close，已关闭的窗口会一直挂在列表里）
+        dlg.finished.connect(
+            lambda _result, d=dlg, p=plugin_id: self._forget_dialog(p, d))
+        return dlg
+
+    def _forget_dialog(self, plugin_id, dlg):
+        """把已关闭的弹窗从登记表里摘掉（仅移除引用，不负责析构）。"""
+        lst = self._dialogs.get(plugin_id)
+        if not lst:
+            return
+        try:
+            lst.remove(dlg)
+        except ValueError:
+            pass
+        if not lst:
+            self._dialogs.pop(plugin_id, None)
 
     def _open_message(self, plugin_id, text, title, ok_text, cancel_text):
         from ui.plugin_dialog import show_message

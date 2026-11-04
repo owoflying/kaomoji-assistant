@@ -16,7 +16,6 @@ UI 能力（需清单声明 api_version >= 2）：
   若 widget 实现了 set_theme(theme)，主题切换时宿主会回调它。
 """
 # 插件内部可以 import PySide6：与主程序同进程、主线程，这里是官方支持的用法
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox,
     QLineEdit, QListWidget, QPlainTextEdit,

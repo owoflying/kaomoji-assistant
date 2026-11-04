@@ -170,8 +170,9 @@ class SettingsPage(QWidget):
         croot = QVBoxLayout(card)
         croot.setContentsMargins(16, 14, 16, 14)
         croot.setSpacing(12)
-        uia_row = self._add_row(croot, "使用 UIA 提权", self._uia_elevation_toggle(),
-                               test_feature=True)
+        # 该行登记为测试功能行：use_test_features 关闭时由 apply_test_feature_visibility 隐藏
+        self._add_row(croot, "使用 UIA 提权", self._uia_elevation_toggle(),
+                      test_feature=True)
         tip = QLabel("开启后程序会尝试为自身进程启用 uiAccess，使候选栏成为 UIAccess 顶级窗口，"
                      "从而能与屏幕键盘(osk)等系统窗口处于同一 Z 序层级、互相覆盖。"
                      "该操作需要本程序本身也以管理员身份启动，否则不会生效；默认关闭，不影响其他功能。")

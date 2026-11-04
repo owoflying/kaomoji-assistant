@@ -75,6 +75,7 @@ kaomoji-assistant/
     ├── fluent_checkbox.py  # 共享 Fluent 复选框
     ├── fluent_combobox.py  # Fluent 下拉框（修复深色弹窗）
     ├── fluent_icons.py     # Fluent 图标字体注册
+    ├── frameless_panel.py  # 无边框窗口共用绘制（阴影/基底/渐变/边框），4 个自绘窗口复用
     ├── animated_stack.py   # 栈式页面容器（淡入淡出）
     ├── log_viewer.py       # 运行日志查看器
     ├── plugin_dialog.py    # 主题化无边框弹窗（插件 UI 扩展共用容器）
@@ -93,6 +94,7 @@ kaomoji-assistant/
 
 - **core/ 与 Qt 解耦**：所有 Windows API、数据、算法都在 `core/`，`ui/` 只负责呈现与交互；这使得核心逻辑可在离屏/无 Qt 环境下做单元测试。
 - **ui/ 内聚自绘控件**：`toggle_switch`、`fluent_*` 等为可复用自绘控件，统一从 `win11_theme.Theme` 取色，避免散落硬编码色值。
+- **自绘窗口共用笔法**：主窗口 / 日志窗口 / 插件弹窗 / 候选条四处的「外阴影 + 面板基底 + 竖向渐变 + 1px 圆角边框」统一走 `ui/frameless_panel.py`，各窗口只传几何与配色。这四处曾各抄一份，视觉参数靠手抄对齐，改一处漏三处就会让四个窗口的观感逐渐分叉。
 - **配置单一权威源**：`main.apply_settings` 是配置变更的唯一落盘+广播入口；各页通过信号链 `config_applied → main.apply_settings` 同步。
 
 > **经验提示（配置字典引用陷阱）**：`SettingsPage` 在构造/`refresh_from_config` 期间存的是 `config` 的**副本**，用户交互时 `_on_apply` 会替换成新副本。若多页共享同一字典引用而中途被替换，会造成"开发者模式"等状态在页间读不一致。统一窗口在 `apply_config` 里把 `settings_page.config`/`about_page.config` **重新指向同一权威字典**来规避。
@@ -140,6 +142,7 @@ SettingsPage / AboutPage / DevPage ──(config_applied)──▶ UnifiedWindow
 > 3. 删未用导入前先用 grep 确认符号在文件内**仅出现在 import 行**（`QSS` 字符串里的 `QStackedWidget` 只是选择器、非引用）；`enable_shadow` 等死函数无调用方才删，删后其专属导入（`QGraphicsDropShadowEffect`/`QColor`）一并移除。
 > 4. 函数体内的 `import re` 等应提到模块顶部。
 > 5. **删 import 的终极校验必须是"实例化 + 跑一遍"，而非单纯 py_compile / import**。`py_compile` 只查语法；`import xxx` 只执行模块顶层，不会执行类体内的 `__init__`/`set_theme`/`apply_config`。若某符号（如 `search_page.py` 的 `QFont`）在类方法里用到、却被误判"未用"而删除，则**构造该页或调用其方法时**才抛 `NameError` 崩溃——模块导入全程安静通过。正确做法：删 import 后用离屏（`QT_QPA_PLATFORM=offscreen`）把涉及窗口 `UnifiedSettingsWindow(...)`、`PickerWindow(...)` 真正建出来并调用 `apply_config`/`set_theme`，确认无 `NameError` 才算干净。
+> 6. **模块级标记在函数里赋值，必须显式 `global`**——Python 只要在函数体内看到对某名字的赋值，就把整函数内的该名字判为**局部变量**，此前的一切读取都会抛 `UnboundLocalError`。`main.apply_settings` 里的 `uia_warn_shown` 正是如此：漏写 `global` 后，「已开启 UIA 提权但未生效」时会在 `not uia_warn_shown` 处抛异常，后果不只是提示弹不出来——异常从 `apply_settings` 中途抛出，其后的「自动弹出监听启停」整段被跳过，表现为**开过 UIA 提权之后，改自动弹出开关不生效**。这类"缩进看起来没问题、运行才炸"的缺陷 pyflakes 能直接报（`referenced before assignment`），静态检查别跳过。
 
 **全局钩子与健壮性**
 热键/键盘/鼠标钩子均在独立线程或系统级回调中运行。UIA 文本读取（`core/uia_text.py`）走 `_UIAWorker` 独立线程 + `join(timeout)` + 忙碌守护，默认超时 0.2~0.35s，超时回退（文本→''、可编辑→True、矩形→None）。
@@ -215,6 +218,9 @@ SettingsPage / AboutPage / DevPage ──(config_applied)──▶ UnifiedWindow
 - 自绘窗口的面板基底一律强制不透明（`window_tint` 固有 alpha 0.85/0.88 若直接用，会比主窗口 `_adjusted_panel_base()` 默认 1.0 明显更透，无 DWM 亚克力时还会透出桌面被压暗），并复用 DWM `apply_backdrop`/`apply_dark_mode` 保持观感一致。
 - **独立窗口的主题名必须先 `resolve_theme_name()` 再构造 `Theme`**：配置里的 `"system"` 若不解析会落到默认分支，与主窗口配色不一致（LogViewer 的构造与 `set_theme` 已统一解析）。
 - **复用型独立窗口（日志）**：`main.open_log_viewer()` 全程复用同一实例并 `WA_DeleteOnClose` + `destroyed` 清空引用（此前每次点击都新建一个、关闭后仍挂在父窗口上堆积）；主题切换时 `apply_settings` 里显式 `set_theme(effective_theme)`，否则开着窗口换肤不跟随。
+- **`discover()` 只重扫清单，不得清空已加载插件的 `module`/`api`**：`discover` 不执行入口，而 `load()` 见到 `state=loaded` 会直接 return True——若重扫时把这两个引用置 None，就再也补不回来。表现为「插件页点『重新扫描』后，卡片上的『提供：N 个分类』消失」，且卸载时摘不掉 `sys.modules` 里的模块（引用已丢）。修复：`discover` 复用 `prev["module"]/prev["api"]`。
+- **能力回收要覆盖三条路径**：停用（`unload`）、目录被删（重扫时 `pid not in found`）、清单被改坏（重扫时校验失败）。后两者原先只更新记录、不回收能力，插件的数据源/转换/监听器会继续生效（页面上却已看不到该插件），重装同名插件还会叠加。现在集中在 `discover()` 末尾统一 `_detach` + 摘 `sys.modules`。
+- **宿主自建的页面必须 `deleteLater`**：`QStackedWidget.removeWidget()` 只是移出栈，widget 仍挂在父容器上；插件页还连着 `manager.ui_changed`。反复开关「测试模式」/「开发者模式」若不销毁，会越积越多，每次插件变动都被多个僵尸页面重复刷新。
 
 ---
 
@@ -321,5 +327,7 @@ SettingsPage / AboutPage / DevPage ──(config_applied)──▶ UnifiedWindow
 | 打包 | --add-data 写文件名 | 写目录；冻结/源码路径分离 |
 | 协作 | LF/CRLF 不一致 | 统一 .gitattributes |
 | 代码维护 | 重复方法遮蔽、未用导入残留、主题广播硬编码列表 | 类名不可重复定义、grep 确认未用导入、用 `self._pages` 遍历 + `hasattr` 解耦广播 |
+| 作用域 | 函数内给模块级标记赋值却漏 `global` | 显式 `global`；pyflakes 的 `referenced before assignment` 必须清零 |
+| 插件生命周期 | 重扫清单时丢 `module`/`api`；删目录不回收能力；移除页面不 `deleteLater` | `discover` 沿用引用、集中 `_detach`、`removeWidget` 后 `setParent(None)`+`deleteLater` |
 
 > **总结**：本项目最大的迭代风险不在"功能写不出"，而在"**看起来能用实则运行时失效**"——ctypes 常量、QSS 级联、UIA 超时、原生背景黑条、打包资源路径，每一类都需要**贴近真实 Windows 行为的验证**而非代码审查。把"测试模式默认隔离 + 离屏断言验证 + 全局 QSS 兜底原生绘制"作为基线规范，可避免绝大多数回归。

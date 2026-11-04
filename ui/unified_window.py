@@ -59,7 +59,9 @@ from ui.win_style import (
     DWMSBT_TRANSIENTWINDOW,
 )
 from ui.frameless_panel import paint_frameless_panel
-from ui.win11_theme import Theme, resolve_theme_name, apply_child_theme
+from ui.win11_theme import (
+    Theme, apply_child_theme, parse_color, resolve_theme_name,
+)
 from ui.fluent_icons import icon_label, recolor
 from ui.animated_stack import AnimatedStackedWidget
 from ui.pages import (
@@ -77,10 +79,50 @@ HTTOPLEFT, HTTOPRIGHT = 13, 14
 HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT = 15, 16, 17
 
 
-def _parse_color(spec):
-    """把主题里的 rgba()/hex 颜色字符串安全地转成 QColor（公共实现见 win11_theme）。"""
-    from ui.win11_theme import parse_color
-    return parse_color(spec)
+# 主题里的颜色可能是 rgba() 字符串，也可能是 hex/颜色名
+_RGBA_RE = re.compile(r"rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)")
+
+
+def _rgba_parts(spec):
+    """把颜色字符串拆成 (r, g, b, alpha:0~1)，hex/颜色名走 QColor 兜底。"""
+    m = _RGBA_RE.match(spec or "")
+    if m:
+        a = float(m.group(4)) if m.group(4) is not None else 1.0
+        return int(m.group(1)), int(m.group(2)), int(m.group(3)), a
+    c = QColor(spec or "#000000")
+    return c.red(), c.green(), c.blue(), c.alphaF()
+
+
+def _rgba_str(r, g, b, a):
+    return "rgba(%d,%d,%d,%.2f)" % (r, g, b, a)
+
+
+def _init_user32_signatures():
+    """显式声明用到的 Win32 函数签名。
+
+    ctypes 默认 restype 是 c_int：64 位下 HWND/HMONITOR 这类句柄一旦超过 2^31
+    就会被截断。日常单显示器看不出问题，多显示器/高句柄值时会算错工作区，
+    表现为最大化后尺寸不对或贴错屏幕。这里在模块导入时初始化一次。
+    """
+    try:
+        u = ctypes.windll.user32
+        u.MonitorFromWindow.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        u.MonitorFromWindow.restype = ctypes.c_void_p
+        u.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.POINTER(_MONITORINFO)]
+        u.GetMonitorInfoW.restype = ctypes.c_bool
+        u.GetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        u.GetWindowLongW.restype = ctypes.c_long
+        u.SetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_long]
+        u.SetWindowLongW.restype = ctypes.c_long
+        u.SetWindowPos.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
+            ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+        u.SetWindowPos.restype = ctypes.c_bool
+    except Exception:      # 非 Windows / 受限环境：保持 ctypes 默认行为
+        pass
+
+
+_init_user32_signatures()
 
 
 class _NavItem(QWidget):
@@ -229,7 +271,7 @@ class UnifiedSettingsWindow(QMainWindow):
         self._nav_items = []
         # 亚克力模糊为窗口核心视觉效果，始终启用（DWM 不可用时为 no-op）
         self._acrylic_on = _has_dwm
-        self._shadow_color = _parse_color(self.theme.shadow_color)
+        self._shadow_color = parse_color(self.theme.shadow_color)
         self._theme_ss = ""          # 缓存当前主题的完整 QSS，供 _refresh_content_sheet 复用
         # 窗口状态持久化：关闭/隐藏时记住是否最大化，下次 show 时恢复
         self._saved_maximized = False
@@ -451,12 +493,44 @@ class UnifiedSettingsWindow(QMainWindow):
             self.search_page.focus_query()
 
     # ---------- 插件标签（测试功能门控） ----------
-    def _add_plugin_nav_item(self, nav_layout):
-        """在导航栏末尾（stretch 之前）插入「插件」项（拼图为程序绘制图标）。"""
-        item = _NavItem("plugin", "插件", self.theme)
-        item.clicked.connect(lambda: self._set_page("plugin"))
-        nav_layout.insertWidget(nav_layout.count() - 1, item)
-        self._nav_items.append(("plugin", item))
+    def _add_nav_item(self, key, title, icon, nav_layout=None):
+        """在导航栏末尾（stretch 之前）插入一个导航项并登记。
+
+        插件页、开发者页、插件扩展页三处原先各写一遍同样的
+        「建 _NavItem + 连 clicked + insertWidget(count-1) + 登记 _nav_items」，
+        漏一处就会出现「页面在栈里但侧边栏点不到」。
+        """
+        if nav_layout is None:
+            nav_layout = self._nav_container.layout()
+        if any(k == key for k, _ in self._nav_items):
+            return None
+        item = _NavItem(icon, title, self.theme)
+        item.clicked.connect(lambda k=key: self._set_page(k))
+        nav_layout.insertWidget(max(0, nav_layout.count() - 1), item)
+        self._nav_items.append((key, item))
+        return item
+
+    def _remove_nav_item(self, key, nav_layout=None):
+        """从侧边栏摘掉并销毁一个导航项（找不到时静默返回 None）。"""
+        if nav_layout is None:
+            nav_layout = self._nav_container.layout()
+        item = None
+        for i, (k, it) in enumerate(self._nav_items):
+            if k == key:
+                item = self._nav_items.pop(i)[1]
+                break
+        if item is not None:
+            try:
+                nav_layout.removeWidget(item)
+                item.setParent(None)
+                item.deleteLater()
+            except RuntimeError:
+                pass
+        return item
+
+    def _add_plugin_nav_item(self, nav_layout=None):
+        """插入「插件」导航项（拼图图标由程序绘制）。"""
+        return self._add_nav_item("plugin", "插件", "plugin", nav_layout)
 
     # ---------- 插件扩展页（侧边栏，api.register_page） ----------
     def _sync_plugin_pages(self):
@@ -493,10 +567,9 @@ class UnifiedSettingsWindow(QMainWindow):
             self._nav_items.append((key, item))
             self._plugin_nav[key] = item
         # 2) 移除：registry 里已不存在（插件停用/卸载/重扫丢失）
-        leaving_key = None
-        if self.content.currentWidget() in self._plugin_pages.values():
-            leaving_key = next((k for k, w in self._plugin_pages.items()
-                                if w is self.content.currentWidget()), None)
+        current = self.content.currentWidget()
+        leaving_key = next((k for k, w in self._plugin_pages.items()
+                            if w is current), None)
         for key in [k for k in self._plugin_pages if k not in specs]:
             self._remove_plugin_page(key, nav_layout)
         if leaving_key and leaving_key not in self._plugin_pages:
@@ -535,20 +608,8 @@ class UnifiedSettingsWindow(QMainWindow):
         """从导航与内容栈中移除并销毁一个插件扩展页。"""
         widget = self._plugin_pages.pop(key, None)
         self._pages.pop(key, None)
-        item = self._plugin_nav.pop(key, None)
-        if nav_layout is None:
-            nav_layout = self._nav_container.layout()
-        for i, (k, it) in enumerate(self._nav_items):
-            if k == key:
-                self._nav_items.pop(i)
-                break
-        if item is not None:
-            try:
-                nav_layout.removeWidget(item)
-                item.setParent(None)
-                item.deleteLater()
-            except RuntimeError:
-                pass
+        self._plugin_nav.pop(key, None)
+        self._remove_nav_item(key, nav_layout)
         if widget is not None:
             try:
                 self.content.removeWidget(widget)
@@ -573,7 +634,7 @@ class UnifiedSettingsWindow(QMainWindow):
         wanted = bool(self.config.get("use_test_features", False))
         has = "plugin" in self._pages
         if wanted and not has:
-            self._add_plugin_nav_item(self._nav_container.layout())
+            self._add_plugin_nav_item()
             self.plugin_page = PluginPage(self.plugins, self.theme.name)
             self._pages["plugin"] = self.plugin_page
             self.content.addWidget(self.plugin_page)
@@ -582,13 +643,7 @@ class UnifiedSettingsWindow(QMainWindow):
         elif not wanted and has:
             leaving = self.content.currentWidget() is self._pages["plugin"]
             nav_layout = self._nav_container.layout()
-            for i, (k, item) in enumerate(self._nav_items):
-                if k == "plugin":
-                    self._nav_items.pop(i)
-                    nav_layout.removeWidget(item)
-                    item.setParent(None)
-                    item.deleteLater()
-                    break
+            self._remove_nav_item("plugin", nav_layout)
             nav_layout.update()
             self.sidebar.update()
             # 页面必须真正销毁：removeWidget 只是移出栈，widget 仍挂在 content 上，
@@ -610,13 +665,9 @@ class UnifiedSettingsWindow(QMainWindow):
             self._sync_plugin_pages()
 
     # ---------- 开发者标签 ----------
-    def _add_dev_nav_item(self, nav_layout):
-        """在导航栏末尾（stretch 之前）插入「开发者」项。"""
-        item = _NavItem("code", "开发者", self.theme)
-        item.clicked.connect(lambda: self._set_page("developer"))
-        # nav_layout 末尾是 addStretch(1)，插入到它之前，保持「开发者」在列表底部
-        nav_layout.insertWidget(nav_layout.count() - 1, item)
-        self._nav_items.append(("developer", item))
+    def _add_dev_nav_item(self, nav_layout=None):
+        """插入「开发者」导航项（末尾 stretch 之前，保持它在列表底部）。"""
+        return self._add_nav_item("developer", "开发者", "code", nav_layout)
 
     def _enable_dev_tab(self):
         """关于页解锁开发者模式后实时添加「开发者」标签（无需重开窗口）。
@@ -734,7 +785,7 @@ class UnifiedSettingsWindow(QMainWindow):
         self.config = config
         self.theme = Theme(resolve_theme_name(config.get("theme", "light")))
         self._acrylic_on = _has_dwm
-        self._shadow_color = _parse_color(self.theme.shadow_color)
+        self._shadow_color = parse_color(self.theme.shadow_color)
         self._apply_theme()
         self.settings_page.config = config
         # 让关于页也始终指向统一窗口的权威配置字典：设置页每次 _on_apply 会替换自己的
@@ -776,13 +827,9 @@ class UnifiedSettingsWindow(QMainWindow):
 
     def _adjusted_content_surface(self):
         """根据 panel_alpha 调整内容区表面透明度。"""
-        base = self.theme.content_surface
+        r, g, b, a = _rgba_parts(self.theme.content_surface)
         alpha = float(self.config.get("panel_alpha", 0.92))
-        m = re.match(r"rgba?\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)", base)
-        if m:
-            r, g, b, a = int(m.group(1)), int(m.group(2)), int(m.group(3)), float(m.group(4))
-            return "rgba(%d,%d,%d,%.2f)" % (r, g, b, max(0.0, min(1.0, a * alpha)))
-        return base
+        return _rgba_str(r, g, b, max(0.0, min(1.0, a * alpha)))
 
     def _refresh_content_sheet(self):
         """刷新内容区（self.content）样式表：在完整主题 QSS 基础上追加其内容区表面背景。
@@ -813,18 +860,13 @@ class UnifiedSettingsWindow(QMainWindow):
         """
         base = self.theme.window_tint if self._acrylic_on else self.theme.bg
         alpha = float(self.config.get("panel_alpha", 0.92))
-        m = re.match(r"rgba?\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)", base)
-        if m:
-            r, g, b = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        else:
-            c = QColor(base)
-            r, g, b = c.red(), c.green(), c.blue()
+        r, g, b, _ = _rgba_parts(base)
         if self._acrylic_on:
             # 不透明度滑块映射（保底 0.6 让磨砂层始终可见；100% 时完全实色）
             a = max(0.6, min(1.0, 0.55 + 0.45 * alpha))
         else:
             a = max(0.4, min(1.0, alpha))
-        return "rgba(%d,%d,%d,%.2f)" % (r, g, b, a)
+        return _rgba_str(r, g, b, a)
 
     def showEvent(self, e):
         super().showEvent(e)

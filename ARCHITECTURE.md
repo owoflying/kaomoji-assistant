@@ -38,7 +38,8 @@ kaomoji-assistant 是一款常驻于系统托盘的桌面工具，在用户于�
 
 ```
 kaomoji-assistant/
-├── main.py                 # 入口：配置加载、事件总线、系统托盘、热键/监控启动、apply_settings
+├── main.py                 # 入口（约 55 行）：装日志/异常钩子 → QApplication → --diag → AppRuntime
+├── app_runtime.py          # 运行时装配与编排（AppRuntime）：core/窗口/托盘/接线/配置应用
 ├── build.py / build.bat    # PyInstaller 打包脚本
 ├── KaomojiAssistant.spec   # PyInstaller spec
 ├── requirements.txt        # 依赖
@@ -48,6 +49,8 @@ kaomoji-assistant/
 │   └── kaomoji.json        # 内置颜文字库
 ├── core/                   # 平台无关 + Windows 核心逻辑（无 Qt 依赖）
 │   ├── runtime.py          # 运行态路径解析（frozen/source 双形态）
+│   ├── applog.py           # 日志环形缓冲 + Qt 日志过滤器 + 未捕获异常收集
+│   ├── config_store.py     # 默认配置表 / 读 / 写 / 测试功能门禁（不依赖 Qt）
 │   ├── win_utils.py        # Windows API 封装（热键格式/Vk 互转/焦点控件类/键盘布局）
 │   ├── hotkey.py           # 全局热键注册（RegisterHotKey + pynput 兜底）
 │   ├── global_keys.py      # 全局键盘钩子（采集按键轨迹）
@@ -82,7 +85,9 @@ kaomoji-assistant/
     ├── fonts/              # 图标字体文件
     ├── dev/
     │   └── dev_page.py     # 开发者模式页（事件流/诊断/测试功能开关）
+    ├── diagnostics.py      # --diag 自检（字体/图标/环境），与业务完全隔离
     ├── pages/              # 业务页面
+    │   ├── _scaffold.py    # 页面脚手架：page_layout / page_title / card / caption…
     │   ├── home_page.py / library_page.py / custom_kaomoji_page.py
     │   ├── search_page.py / trigger_page.py / settings_page.py / about_page.py
     │   └── plugin_page.py  # 插件管理页（测试功能门控）
@@ -95,7 +100,9 @@ kaomoji-assistant/
 - **core/ 与 Qt 解耦**：所有 Windows API、数据、算法都在 `core/`，`ui/` 只负责呈现与交互；这使得核心逻辑可在离屏/无 Qt 环境下做单元测试。
 - **ui/ 内聚自绘控件**：`toggle_switch`、`fluent_*` 等为可复用自绘控件，统一从 `win11_theme.Theme` 取色，避免散落硬编码色值。
 - **自绘窗口共用笔法**：主窗口 / 日志窗口 / 插件弹窗 / 候选条四处的「外阴影 + 面板基底 + 竖向渐变 + 1px 圆角边框」统一走 `ui/frameless_panel.py`，各窗口只传几何与配色。这四处曾各抄一份，视觉参数靠手抄对齐，改一处漏三处就会让四个窗口的观感逐渐分叉。
-- **配置单一权威源**：`main.apply_settings` 是配置变更的唯一落盘+广播入口；各页通过信号链 `config_applied → main.apply_settings` 同步。
+- **配置单一权威源**：`AppRuntime.apply_settings` 是配置变更的唯一落盘+广播入口；各页通过信号链 `config_applied → AppRuntime.apply_settings` 同步。`apply_settings` 对权威 dict **原地 clear+update**（身份不变），因为 `PluginManager` 等持有它的引用。
+- **入口只做装配**：`main.py` 不再持有业务状态，`AppRuntime._build` 把装配顺序显式写死（UIA → 主题 → 自启 → core → 窗口 → 接线 → 托盘 → 主题轮询 → 启动钩子 → 服务 → 退出钩子）。原先是 429 行 `main()` 里的 40+ 个闭包与局部变量，漏写一个 `global` 就能让整段后续初始化被异常跳过。
+- **页面脚手架优先复用**：新页面用 `ui/pages/_scaffold.py` 的函数（而非基类）搭骨架——各页继承 `QWidget`、生命周期不同，套基类只增加 MRO 复杂度。
 
 > **经验提示（配置字典引用陷阱）**：`SettingsPage` 在构造/`refresh_from_config` 期间存的是 `config` 的**副本**，用户交互时 `_on_apply` 会替换成新副本。若多页共享同一字典引用而中途被替换，会造成"开发者模式"等状态在页间读不一致。统一窗口在 `apply_config` 里把 `settings_page.config`/`about_page.config` **重新指向同一权威字典**来规避。
 
@@ -329,5 +336,10 @@ SettingsPage / AboutPage / DevPage ──(config_applied)──▶ UnifiedWindow
 | 代码维护 | 重复方法遮蔽、未用导入残留、主题广播硬编码列表 | 类名不可重复定义、grep 确认未用导入、用 `self._pages` 遍历 + `hasattr` 解耦广播 |
 | 作用域 | 函数内给模块级标记赋值却漏 `global` | 显式 `global`；pyflakes 的 `referenced before assignment` 必须清零 |
 | 插件生命周期 | 重扫清单时丢 `module`/`api`；删目录不回收能力；移除页面不 `deleteLater` | `discover` 沿用引用、集中 `_detach`、`removeWidget` 后 `setParent(None)`+`deleteLater` |
+| 插件状态机 | 用同一个 `state=error` 混装「清单校验失败」与「入口执行抛异常」 | 记录 `error_kind`：manifest 重试无意义，runtime 允许点一次启用重试；`unload` 只清 runtime 错误 |
+| 候选条显隐 | 多个布尔交叉 + 重写 `QWidget.hide()` 做淡出 | 收敛为 `dismiss()` 单入口 + `_finalize_hide()`；`hide()` 是公共 API 不可改语义，另暴露 `hide_now()` |
+| 后台线程 | 每次调用新建线程跑 COM/UIA；复用同一个 Event 控制线程退出 | 常驻单线程 + 任务队列（COM 实例按线程缓存，换线程就漏）；每轮新建 Event 并作为参数传给线程，`stop()` 里 `join` |
+| 剪贴板注入 | 每次都重新快照（上一轮未恢复时快照到的是自己的颜文字） | 恢复窗口内的第二次注入沿用上一轮快照 |
+| 落盘容错 | 配置文件/颜文字库读失败即抛到装配期 | 读失败留空 + 记日志，且**不回写**（别覆盖还能手工修复的原文件）；写失败不阻断内存生效 |
 
 > **总结**：本项目最大的迭代风险不在"功能写不出"，而在"**看起来能用实则运行时失效**"——ctypes 常量、QSS 级联、UIA 超时、原生背景黑条、打包资源路径，每一类都需要**贴近真实 Windows 行为的验证**而非代码审查。把"测试模式默认隔离 + 离屏断言验证 + 全局 QSS 兜底原生绘制"作为基线规范，可避免绝大多数回归。

@@ -724,13 +724,7 @@ class UnifiedSettingsWindow(QMainWindow):
         self.about_page.reset_developer_mode()
         # 移除导航项（保留其他项顺序）
         nav_layout = self._nav_container.layout()
-        for i, (k, item) in enumerate(self._nav_items):
-            if k == "developer":
-                self._nav_items.pop(i)
-                nav_layout.removeWidget(item)
-                item.setParent(None)
-                item.deleteLater()
-                break
+        self._remove_nav_item("developer", nav_layout)
         nav_layout.update()
         self.sidebar.update()
         # 从栈与页面表中移除开发者页（并真正销毁，避免反复开关堆积僵尸页面）

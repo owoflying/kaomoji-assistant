@@ -18,7 +18,7 @@ import time
 
 from pynput.keyboard import Controller, Key
 
-from PySide6.QtCore import QTimer, QMimeData
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
 from core import win_utils
@@ -118,20 +118,44 @@ class KaomojiInjector:
             self._inject_clipboard(text)
 
     def _snapshot_clipboard(self, clipboard):
-        """深拷贝当前剪贴板内容到一个全新的 QMimeData（由我们持有所有权）。
+        """把剪贴板内容快照成一份「纯 Python/Qt 值对象」字典，供稍后恢复。
 
-        关键：QClipboard.mimeData() 返回的是「剪贴板内部对象」的指针，Qt 文档明确
-        说明它归剪贴板所有、不应长期持有；一旦随后调用 setText/setMimeData 替换了
-        剪贴板内容，旧对象会被销毁，原本的指针即悬空（use-after-free）。
-        若把悬空指针再 setMimeData 回去就会随机崩溃（输入颜文字后偶发卡死/崩溃的根因）。
-        故这里复制出一份独立副本，替换剪贴板后原指针销毁也不影响我们的副本。
+        两个坑决定了必须这么写，而不是存一个 QMimeData 再 setMimeData 回去：
+
+        1. **不能持有剪贴板内部指针**：`QClipboard.mimeData()` 返回的对象归剪贴板
+           所有，随后 setText 替换内容时它就被销毁，指针悬空（use-after-free）。
+        2. **不能自己造 QMimeData 再 setMimeData 恢复**：PySide6 下
+           `setMimeData()` 有所有权缺陷——剪贴板接管了对象，而 Python 包装器在
+           解释器退出时仍会删一次，进程收尾直接 SIGSEGV。
+           最小复现：`clipboard.setMimeData(QMimeData())` 后正常结束进程即崩溃。
+           而这个恢复动作发生在用户完全不知情的后台，绝不能留一颗「退出必崩」的雷。
+
+        故只保留「图片」与「文本」两种可安全写回的内容，恢复走 setImage / setText
+        （这两条路径由 Qt 内部创建 mime data，没有上述所有权问题）。
+        代价：
+          * 富文本只保留纯文本；
+          * 复制的**文件列表**按路径文本恢复（QClipboard 没有 setUrls，
+            要恢复真正的文件拖放列表只能用 setMimeData，而那正是崩溃源头）。
+        用降级换进程退出绝对干净，值得。
         """
-        snap = QMimeData()
+        snap = {}
         try:
-            src = clipboard.mimeData()
-            if src is not None:
-                for fmt in src.formats():
-                    snap.setData(fmt, src.data(fmt))
+            md = clipboard.mimeData()
+        except Exception:
+            return snap
+        if md is None:
+            return snap
+        try:
+            if md.hasImage():
+                img = clipboard.image()
+                if not img.isNull():
+                    snap["image"] = img
+            elif md.hasUrls():
+                paths = [u.toLocalFile() or u.toString() for u in md.urls()]
+                if paths:
+                    snap["text"] = "\n".join(paths)
+            elif md.hasText():
+                snap["text"] = clipboard.text()
         except Exception:
             pass
         return snap
@@ -182,9 +206,17 @@ class KaomojiInjector:
             clipboard.dataChanged.disconnect(self._on_clipboard_changed)
         except Exception:
             pass
-        saved = ctx.get("saved")
-        if saved is not None:
-            try:
-                clipboard.setMimeData(saved)
-            except Exception:
-                pass
+        self._restore_snapshot(clipboard, ctx.get("saved"))
+
+    @staticmethod
+    def _restore_snapshot(clipboard, snap):
+        """按快照类型写回剪贴板（见 _snapshot_clipboard 里为什么不用 setMimeData）。"""
+        if not isinstance(snap, dict):
+            return
+        try:
+            if snap.get("image") is not None:
+                clipboard.setImage(snap["image"])
+            elif "text" in snap:
+                clipboard.setText(snap["text"])
+        except Exception:
+            pass

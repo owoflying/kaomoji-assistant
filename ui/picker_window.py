@@ -15,6 +15,15 @@
 键盘动作（全局钩子映射）：
   1-9 选字 · ←/→(或 ↑/↓) 移动 · -/= 翻页 · 空格/回车 上屏 · Esc 关闭。
 任何其它键都原样送回目标程序并自动关闭面板。
+
+显示/隐藏状态机（本文件最容易写乱的地方，收敛成两个布尔 + 两个方法）：
+  ``_hk_active``  面板“逻辑可见”：全局键鼠钩子是否应当响应；
+  ``_hiding``     正在播放淡出动画（此时 Qt 仍认为窗口 visible）。
+  ``dismiss()``   **唯一的收起入口**。选字、Esc、外部点击、失焦、继续打字、
+                  托盘切换全部走它，统一停钩子 / 停焦点轮询 / 淡出或立即收尾。
+  ``_finalize_hide()`` 真正的 ``QWidget.hide()``：停动画、透明度归零、清瞬态。
+  之所以不再重写 Qt 的 ``hide()``：那是公共 API，一旦被 Qt 内部或第三方调用，
+  “隐藏”就悄悄变成了“先淡出 130ms 再隐藏”，排查起来极其痛苦。
 """
 import random
 import time
@@ -40,6 +49,11 @@ from ui.win11_theme import resolve_theme_name
 SHADOW_PAD = 12
 # 面板圆角
 RADIUS = 10
+
+# “刚自动关闭”的冷却时间：这段时间内忽略热键/托盘切换，避免“点一下就开→关→开”抖动
+DISMISS_COOLDOWN = 0.4
+# 淡入淡出时长（毫秒）
+FADE_MS = 130
 
 PALETTES = {
     "light": {
@@ -78,6 +92,18 @@ def _style(p):
     }}
     QPushButton#nav:hover {{ background: {hover_bg}; color: {accent}; }}
     """.format(**p)
+
+
+# 键盘兜底映射：本窗口意外拿到焦点时（正常路径走全局钩子）也要能操作。
+# 值与 core.global_keys 的动作名对齐，直接复用 _on_hk_action，省掉第二套逻辑。
+_KEY_ACTIONS = {
+    Qt.Key_Left: "left", Qt.Key_Up: "left",
+    Qt.Key_Right: "right", Qt.Key_Down: "right",
+    Qt.Key_Minus: "prev", Qt.Key_PageUp: "prev",
+    Qt.Key_Plus: "next", Qt.Key_Equal: "next", Qt.Key_PageDown: "next",
+    Qt.Key_Return: "confirm", Qt.Key_Enter: "confirm", Qt.Key_Space: "confirm",
+    Qt.Key_Escape: "cancel",
+}
 
 
 class CandidateChip(QWidget):
@@ -127,7 +153,7 @@ class PickerWindow(QWidget):
     emotion_shown = Signal(str)        # 因某情绪自动弹出时发出，供监听器锁定该情绪
     settings_requested = Signal()      # 保留信号：托盘菜单走这条路
     # 自定义可见性信号：本版本 Qt6 的 QWidget 未提供 isVisibleChanged/visibilityChanged，
-    # 故在 showEvent/hideEvent 中手动 emit，供 main.py 暂停/恢复自动弹出监听使用。
+    # 故在 showEvent/hideEvent 中手动 emit，供 AppRuntime 暂停/恢复自动弹出监听使用。
     isVisibleChanged = Signal(bool)
 
     def __init__(self, data: KaomojiData, config: dict, state: UserState, user_kao=None):
@@ -139,23 +165,24 @@ class PickerWindow(QWidget):
         self.items = []
         self.page = 0
         self.active = 0                # 当前高亮的候选在本页内的下标
-        self.page_size = int(config.get("page_size", 3))
+        self.page_size = max(1, int(config.get("page_size", 3)))
         self._emotion = None
         self._trigger_word = ""        # 当前候选若来自触发词，记下触发词待上屏时清理
         self._delete_trigger = False   # 该触发词是否开启「应用后删除」
         self._chips = []
         self._saved_foreground = None
-        self._closing_enabled = False
         self._pending = None
+        self._pending_ctx = None
         self._drag = None
         self._press_global = QPoint()  # 按下时的全局坐标，用于区分“点击”与“拖动”
         self._drag_moved = False       # 本次按压是否发生了足以算作拖动的位移
         self._hk_active = False        # 全局钩子是否生效（面板可见时为 True）
         self._hiding = False           # 正在播放淡出动画
-        self._dismiss_at = 0.0         # 上次因“继续打字”自动关闭的时间戳
+        self._dismissed_at = 0.0       # 上次因“继续打字 / 点外部”自动关闭的时间戳
         self._had_editable = False     # 本次显示期间是否曾检测到可编辑焦点
         self._caret = False            # True=贴着光标定位；False=居中偏上定位
-        self._pending_ctx = None
+        self._interceptor = None
+        self._mouse_watch = None
         self._init_window()
         self._init_ui()
         self._apply_config_visuals()
@@ -196,7 +223,7 @@ class PickerWindow(QWidget):
         #   不可见。淡入由 showEvent 在首帧重绘之后再启动。
         self.setWindowOpacity(0.0)
         self._anim = QPropertyAnimation(self, b"windowOpacity", self)
-        self._anim.setDuration(130)
+        self._anim.setDuration(FADE_MS)
         self._anim.setEasingCurve(QEasingCurve.OutCubic)
         self._anim.finished.connect(self._on_anim_finished)
         # 失焦检测：面板可见时定期检查焦点是否还在输入框
@@ -212,14 +239,15 @@ class PickerWindow(QWidget):
     def apply_config(self, config):
         """外部配置（主题/不透明度/亚克力/每页数量等）变更后刷新候选条。
 
-        由 main.py 的 apply_settings 调用，保证设置页改动实时生效。
+        由 AppRuntime.apply_settings 调用，保证设置页改动实时生效。
         """
         self.config = config
-        self.page_size = int(config.get("page_size", 3))
-        # 若当前可见且每页数量变化，需要重建芯片数量
-        if len(self._chips) != self.page_size:
+        new_size = max(1, int(config.get("page_size", 3)))
+        if new_size != len(self._chips):
+            self.page_size = new_size
             self._rebuild_chips()
-            self.set_candidates(self.items)
+            # 保留当前页码：只改“每页几个”不该把用户翻到的那一页踢回第一页
+            self.set_candidates(self.items, keep_page=True)
         self._apply_config_visuals()
         if self.isVisible():
             self.repaint()               # 可见时立刻用新主题重绘，别等下一帧
@@ -246,7 +274,6 @@ class PickerWindow(QWidget):
     def _apply_style(self):
         theme = resolve_theme_name(self.config.get("theme", "light"))
         pal = PALETTES.get(theme, PALETTES["light"])
-        self._palette = pal
         self._applied_theme = theme      # 供 _prepare_show 判断主题是否已同步
         self.setStyleSheet(_style(pal))
         r, g, b = [int(x) for x in pal["bg"].split(",")]
@@ -255,7 +282,10 @@ class PickerWindow(QWidget):
         self._panel_bg = QColor(r, g, b)
         self._panel_bg.setAlphaF(max(0.3, min(1.0, opacity)))
         self._shadow_color = QColor(*[int(x) for x in pal["shadow"].split(",")])
-        self._border_alpha = int(pal["border"])
+        # 边框在深浅主题下用不同底色描：浅色主题描淡黑、深色主题描淡白，
+        # 否则边框会与面板同色而"消失"。
+        alpha = int(pal["border"])
+        self._border_color = QColor(0, 0, 0, alpha) if alpha <= 40 else QColor(255, 255, 255, alpha)
 
     # ---------- UI ----------
     def _init_ui(self):
@@ -270,19 +300,20 @@ class PickerWindow(QWidget):
         self._rebuild_chips()
 
         # 翻页控件常驻（只在多页时加进布局并显示），parent 固定为 self
-        self.btn_prev = QPushButton("‹", self)
-        self.btn_prev.setObjectName("nav")
-        self.btn_prev.setFocusPolicy(Qt.NoFocus)
-        self.btn_prev.clicked.connect(lambda: self._change_page(-1))
-        self.btn_next = QPushButton("›", self)
-        self.btn_next.setObjectName("nav")
-        self.btn_next.setFocusPolicy(Qt.NoFocus)
-        self.btn_next.clicked.connect(lambda: self._change_page(1))
+        self.btn_prev = self._make_nav_button("‹", -1)
+        self.btn_next = self._make_nav_button("›", 1)
         self.lbl_page = QLabel("", self)
         self.lbl_page.setObjectName("page")
         for w in (self.btn_prev, self.btn_next, self.lbl_page):
             self.root.addWidget(w)
             w.hide()
+
+    def _make_nav_button(self, text, direction):
+        btn = QPushButton(text, self)
+        btn.setObjectName("nav")
+        btn.setFocusPolicy(Qt.NoFocus)
+        btn.clicked.connect(lambda: self._change_page(direction))
+        return btn
 
     def _rebuild_chips(self):
         for c in self._chips:
@@ -308,6 +339,10 @@ class PickerWindow(QWidget):
         return self.items[start:start + self.page_size]
 
     def _render(self):
+        pages = self._page_count()
+        # 防御：每页数量变小 / 候选变少后 page 可能越界（否则会渲染出空白条）
+        if self.page >= pages:
+            self.page = pages - 1
         visible = self._visible_items()
         for i, chip in enumerate(self._chips):
             if i < len(visible):
@@ -315,20 +350,20 @@ class PickerWindow(QWidget):
                 chip.show()
             else:
                 chip.hide()
-        multi = self._page_count() > 1
+        multi = pages > 1
         self.btn_prev.setVisible(multi)
         self.btn_next.setVisible(multi)
         self.lbl_page.setVisible(multi)
         if multi:
-            self.lbl_page.setText("%d/%d" % (self.page + 1, self._page_count()))
+            self.lbl_page.setText("%d/%d" % (self.page + 1, pages))
         if self.active >= len(visible):
             self.active = max(0, len(visible) - 1)
         self._sync_active()
         # 把“当前有几个候选 / 是否多页 / 是不是手动唤起”同步给全局钩子，
         # 让它只吞真正有用的键（例如只有 3 个候选时按 5 就不该被吞掉）
-        itc = getattr(self, "_interceptor", None)
-        if itc is not None:
-            itc.set_state(len(visible), multi, self._emotion is None)
+        if self._interceptor is not None:
+            self._interceptor.set_state(
+                len(visible), multi, self._emotion is None)
         self.adjustSize()
         self.update()
 
@@ -383,10 +418,11 @@ class PickerWindow(QWidget):
                 out.append(k)
         return out
 
-    def set_candidates(self, items):
+    def set_candidates(self, items, keep_page=False):
         self.items = list(items)
-        self.page = 0
-        self.active = 0
+        if not keep_page:
+            self.page = 0
+            self.active = 0
         self._render()
 
     # ---------- 选择 ----------
@@ -397,8 +433,7 @@ class PickerWindow(QWidget):
 
     def _confirm(self, text):
         self.state.add_recent(text)
-        self._closing_enabled = False
-        self.hide()
+        self.dismiss()
         if self._saved_foreground:
             win_utils.set_foreground(self._saved_foreground)
         self._pending = text
@@ -414,86 +449,55 @@ class PickerWindow(QWidget):
         QTimer.singleShot(40, self._emit_selected)
 
     def _emit_selected(self):
-        if self._pending is not None:
-            text = self._pending
-            ctx = self._pending_ctx
-            self._pending = None
-            self._pending_ctx = None
-            self.selected.emit(text, ctx)
+        if self._pending is None:
+            return
+        text, ctx = self._pending, self._pending_ctx
+        self._pending = None
+        self._pending_ctx = None
+        self.selected.emit(text, ctx)
 
     # ---------- 全局键盘钩子动作 ----------
     def _on_hk_action(self, action):
         if action == "cancel":
-            self._closing_enabled = False
-            self.hide()
-            return
-        if action == "confirm":
+            self.dismiss()
+        elif action == "confirm":
             visible = self._visible_items()
             if visible and 0 <= self.active < len(visible):
                 self._confirm(visible[self.active])
-            return
-        if action == "prev":
+        elif action == "prev":
             self._change_page(-1)
-            return
-        if action == "next":
+        elif action == "next":
             self._change_page(1)
-            return
-        if action == "left":
+        elif action == "left":
             self._move_active(-1)
-            return
-        if action == "right":
+        elif action == "right":
             self._move_active(1)
-            return
-        if action.startswith("num"):
+        elif action.startswith("num"):
             try:
                 idx = int(action[3:]) - 1
             except ValueError:
                 return
             visible = self._visible_items()
+            # 超出当前页范围则忽略（不关闭），避免误触
             if 0 <= idx < len(visible):
                 self._confirm(visible[idx])
-            # 超出当前页范围则忽略（不关闭），避免误触
-            return
 
     def _on_hk_dismiss(self):
         """用户按了“其它键”继续打字 -> 自动关闭候选条。"""
         if self.isVisible():
-            self._dismiss_at = time.time()
-            self._closing_enabled = False
-            self.hide()
+            self.dismiss(mark_dismiss=True)
 
     # ---------- 键盘（仅在窗口意外获得焦点时兜底；主路径是全局钩子） ----------
     def keyPressEvent(self, e):
         t = e.text()
         if t and t in "123456789":
-            idx = int(t) - 1
-            visible = self._visible_items()
-            if 0 <= idx < len(visible):
-                self._confirm(visible[idx])
+            self._on_hk_action("num" + t)
             return
-        k = e.key()
-        if k in (Qt.Key_Left, Qt.Key_Up):
-            self._move_active(-1)
+        action = _KEY_ACTIONS.get(e.key())
+        if action is None:
+            super().keyPressEvent(e)
             return
-        if k in (Qt.Key_Right, Qt.Key_Down):
-            self._move_active(1)
-            return
-        if k in (Qt.Key_Minus, Qt.Key_PageUp):
-            self._change_page(-1)
-            return
-        if k in (Qt.Key_Plus, Qt.Key_Equal, Qt.Key_PageDown):
-            self._change_page(1)
-            return
-        if k in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
-            visible = self._visible_items()
-            if visible and 0 <= self.active < len(visible):
-                self._confirm(visible[self.active])
-            return
-        if k == Qt.Key_Escape:
-            self._closing_enabled = False
-            self.hide()
-            return
-        super().keyPressEvent(e)
+        self._on_hk_action(action)
 
     # ---------- 拖动 / 点击（空白处按住拖动=挪窗，点一下=关闭） ----------
     def mousePressEvent(self, e):
@@ -514,14 +518,13 @@ class PickerWindow(QWidget):
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
-        if e.button() == Qt.LeftButton and not self._drag_moved:
+        if e.button() == Qt.LeftButton and self._drag is not None and not self._drag_moved:
             # 空白处“点一下”（几乎没移动）= 关闭面板。
             # 这能解决：手动（托盘）唤起、且当前没有输入框聚焦时，
             # 失焦自动关闭逻辑因从未见过可编辑焦点而不武装，
             # 导致点击面板空白既不会关闭、又没别的退出途径（只能 Esc 或再点托盘）。
             # 拖动（按住移动）仍用于挪窗，二者靠位移阈值区分。
-            self._closing_enabled = False
-            self.hide()
+            self.dismiss()
         self._drag = None
         super().mouseReleaseEvent(e)
 
@@ -533,29 +536,109 @@ class PickerWindow(QWidget):
         # 真正的“外部”才收起。判定放在主线程里做，安全。
         if self.geometry().contains(QCursor.pos()):
             return
-        self._closing_enabled = False
         # 记一个时间戳，避免“点托盘又立刻被本钩子关掉又由托盘 toggle 重开”的抖动：
-        # 外部点击关闭后 0.4s 内的热键/托盘切换会被忽略（与键盘 dismiss 同机制）。
-        self._dismiss_at = time.time()
-        self.hide()
+        # 外部点击关闭后 DISMISS_COOLDOWN 内的热键/托盘切换会被忽略（与键盘 dismiss 同机制）。
+        self.dismiss(mark_dismiss=True)
 
-    # ---------- 显示：手动 / 自动弹出 ----------
+    # ---------- 隐藏 ----------
+    def dismiss(self, mark_dismiss=False):
+        """**唯一的收起入口**：停钩子 → 淡出（或立即收尾）。
+
+        mark_dismiss=True 时记下时间戳，让紧随其后的热键/托盘切换被冷却忽略，
+        避免“刚刚因为继续打字被关掉，热键又被当成一次新的唤起”。
+        """
+        if mark_dismiss:
+            self._dismissed_at = time.time()
+        # 先停捕获，避免随后上屏注入的按键被自己的钩子吞掉
+        self._hk_active = False
+        self._focus_timer.stop()
+        if not self.isVisible() or self._hiding:
+            # 已经不可见 / 正在淡出：直接收尾是幂等的，重复调用无副作用
+            if not self.isVisible():
+                self._finalize_hide()
+            return
+        self._hiding = True
+        self._anim.stop()
+        self._anim.setStartValue(self.windowOpacity())
+        self._anim.setEndValue(0.0)
+        self._anim.start()
+
+    def _finalize_hide(self):
+        """真正隐藏：停动画、透明度归零、清瞬态，再交给 QWidget.hide()。"""
+        self._anim.stop()
+        # 归零：保证「最后一张合成位图」是全透明的，
+        # 下次 ShowWindow 即便先贴旧帧也看不见任何东西。
+        self.setWindowOpacity(0.0)
+        self._hiding = False
+        self._hk_active = False
+        self._focus_timer.stop()
+        self._emotion = None
+        self._caret = False
+        super().hide()
+
+    def hide_now(self):
+        """立即隐藏（**播淡出动画**）。供需要“隐藏必须同步完成”的场景使用：
+        例如打开统一窗口时，必须先让 ``isVisibleChanged(False)`` 立刻发出，
+        否则监听器的 resume 会晚于随后的 pause 到达，把暂停抵消掉。
+        """
+        self._finalize_hide()
+
     def _finish_hide_now(self):
         """若正在播淡出动画，立刻收尾真隐藏。
 
         否则 Qt 认为窗口仍 visible，随后的 show() 不会再触发 showEvent，
         导致“淡出途中按热键 -> 面板没打开”。
         """
-        if not self._hiding:
-            return
-        self._anim.stop()
-        self.setWindowOpacity(0.0)
-        self._hiding = False
-        self._emotion = None
-        self._caret = False
-        self._closing_enabled = False
-        super().hide()
+        if self._hiding:
+            self._finalize_hide()
 
+    def shutdown(self):
+        """退出前卸载全局键盘/鼠标钩子，避免钩子线程残留。"""
+        self._focus_timer.stop()
+        self._hk_active = False
+        for hook in (self._interceptor, self._mouse_watch):
+            if hook is None:
+                continue
+            try:
+                hook.stop()
+            except Exception:
+                pass
+            self._interceptor = self._mouse_watch = None
+
+    def _on_anim_finished(self):
+        if self._hiding:
+            self._finalize_hide()
+
+    def event(self, e):
+        # 本窗口带 WA_ShowWithoutActivating，正常永不激活，WindowDeactivate 极少出现；
+        # 保留这条兜底：某些系统（远程桌面 / 多显示器切换）仍可能送达。
+        if (e.type() == QEvent.WindowDeactivate and self.isVisible()
+                and not self._hiding
+                and self.config.get("auto_hide_on_blur", True)):
+            self.dismiss()
+        return super().event(e)
+
+    # ---------- 失焦自动关闭 ----------
+    def _check_focus(self):
+        if not self.isVisible() or self._hiding:
+            return
+        if not self.config.get("auto_hide_on_blur", True):
+            return
+        try:
+            from core import uia_text
+            if uia_text is None or not uia_text.available():
+                return
+            editable = uia_text.is_focused_editable()
+        except Exception:
+            return
+        if editable:
+            self._had_editable = True
+            return
+        # 只有“曾经在输入框里”才允许因失焦自动关闭
+        if self._had_editable:
+            self.dismiss()
+
+    # ---------- 显示：手动 / 自动弹出 ----------
     def _prepare_show(self):
         """show() 之前的统一准备：压成全透明 + 确认主题已同步。
 
@@ -570,23 +653,27 @@ class PickerWindow(QWidget):
         if resolve_theme_name(self.config.get("theme", "light")) != getattr(self, "_applied_theme", None):
             self._apply_config_visuals()
 
-    def toggle(self):
-        if self.isVisible() and not self._hiding:
-            self._closing_enabled = False
-            self.hide()
-            return
-        # 刚因“继续打字”被自动关闭后极短时间内又收到热键，视为同一次关闭，避免重开
-        if time.time() - self._dismiss_at < 0.4:
-            return
+    def _present(self, items, *, emotion, caret, trigger_word="", delete_trigger=False):
+        """所有显示路径的公共后半段：收尾上次淡出 → 写状态 → 定位 → 淡入。"""
         self._finish_hide_now()
-        self._emotion = None
-        self._caret = False
-        self._trigger_word = ""
-        self._delete_trigger = False
-        self.set_candidates(self._manual_items())
+        self._emotion = emotion
+        self._caret = caret
+        self._trigger_word = trigger_word
+        self._delete_trigger = delete_trigger
+        self.set_candidates(items)
         self._saved_foreground = win_utils.get_foreground_hwnd()
         self._prepare_show()
         self.show()
+
+    def toggle(self):
+        if self.isVisible() and not self._hiding:
+            self.dismiss()
+            return
+        # 刚因“继续打字 / 点外部”被自动关闭后极短时间内又收到热键，视为同一次关闭，
+        # 避免重开
+        if time.time() - self._dismissed_at < DISMISS_COOLDOWN:
+            return
+        self._present(self._manual_items(), emotion=None, caret=False)
 
     def show_for_emotion(self, emotion):
         items = self.data.get_items(emotion)
@@ -596,17 +683,8 @@ class PickerWindow(QWidget):
         items = [x for x in items if not (x in seen or seen.add(x))]
         if not items:
             return
-        items = list(items)
         random.shuffle(items)
-        self._finish_hide_now()
-        self._emotion = emotion
-        self._caret = True
-        self._trigger_word = ""
-        self._delete_trigger = False
-        self.set_candidates(items)
-        self._saved_foreground = win_utils.get_foreground_hwnd()
-        self._prepare_show()
-        self.show()
+        self._present(items, emotion=emotion, caret=True)
         self.emotion_shown.emit(emotion)
 
     def show_for_output(self, text, trigger_word="", delete_after=False):
@@ -617,15 +695,8 @@ class PickerWindow(QWidget):
         """
         if not text:
             return
-        self._finish_hide_now()
-        self._emotion = None
-        self._caret = True
-        self._trigger_word = trigger_word
-        self._delete_trigger = delete_after
-        self.set_candidates([text])
-        self._saved_foreground = win_utils.get_foreground_hwnd()
-        self._prepare_show()
-        self.show()
+        self._present([text], emotion=None, caret=True,
+                      trigger_word=trigger_word, delete_trigger=delete_after)
 
     def showEvent(self, e):
         if self._caret:
@@ -635,12 +706,11 @@ class PickerWindow(QWidget):
         self.raise_()                     # 仅抬升 Z 序，不激活、不抢焦点
         self._hk_active = True            # 开启全局键盘捕获
         self._interceptor.reset_session()  # 清掉上一次显示遗留的互动状态
-        self._closing_enabled = True
         self._hiding = False
-        # 自动弹出必然发生在输入框里，失焦守卫立即武装；
+        # 贴着光标弹出的（情绪 / 触发词）必然发生在输入框里，失焦守卫立即武装；
         # 手动唤起时焦点可能压根不在输入框（桌面、只读页面…），
         # 必须等真正见过一次可编辑焦点后再武装，否则面板会自己秒关。
-        self._had_editable = self._emotion is not None
+        self._had_editable = self._caret
         self._focus_timer.start()
         # 淡入：**延后到下一轮事件循环**再开始。
         # showEvent 在原生 ShowWindow 之前送达，此刻 Qt 还没画过新一帧；
@@ -665,83 +735,6 @@ class PickerWindow(QWidget):
     def hideEvent(self, e):
         super().hideEvent(e)
         self.isVisibleChanged.emit(False)
-
-    def hide(self):
-        if not self.isVisible():
-            self._hk_active = False
-            self._focus_timer.stop()
-            self._emotion = None
-            self._closing_enabled = False
-            self._anim.stop()
-            self.setWindowOpacity(0.0)
-            super().hide()
-            return
-        if self._hiding:
-            return
-        self._hiding = True
-        self._hk_active = False           # 关掉全局捕获，避免上屏注入被误吞
-        self._focus_timer.stop()
-        # 淡出后再真正隐藏
-        self._anim.stop()
-        self._anim.setStartValue(self.windowOpacity())
-        self._anim.setEndValue(0.0)
-        self._anim.start()
-
-    def shutdown(self):
-        """退出前卸载全局键盘/鼠标钩子，避免钩子线程残留。"""
-        try:
-            self._focus_timer.stop()
-        except Exception:
-            pass
-        self._hk_active = False
-        try:
-            self._interceptor.stop()
-        except Exception:
-            pass
-        try:
-            self._mouse_watch.stop()
-        except Exception:
-            pass
-
-    def _on_anim_finished(self):
-        if not self._hiding:
-            return
-        self._hiding = False
-        self._emotion = None
-        self._closing_enabled = False
-        # 隐藏前显式归零：保证「最后一张合成位图」是全透明的，
-        # 下次 ShowWindow 即便先贴旧帧也看不见任何东西。
-        self.setWindowOpacity(0.0)
-        super().hide()
-
-    def event(self, e):
-        if e.type() == QEvent.WindowDeactivate:
-            if (self.isVisible() and self._closing_enabled
-                    and self.config.get("auto_hide_on_blur", True)):
-                self._closing_enabled = False
-                self.hide()
-        return super().event(e)
-
-    # ---------- 失焦自动关闭 ----------
-    def _check_focus(self):
-        if not self.isVisible() or self._hiding:
-            return
-        if not self.config.get("auto_hide_on_blur", True):
-            return
-        try:
-            from core import uia_text
-            if uia_text is None or not uia_text.available():
-                return
-            editable = uia_text.is_focused_editable()
-        except Exception:
-            return
-        if editable:
-            self._had_editable = True
-            return
-        # 只有“曾经在输入框里”才允许因失焦自动关闭
-        if self._had_editable:
-            self._closing_enabled = False
-            self.hide()
 
     # ---------- 定位 ----------
     def _clamp(self, x, y):
@@ -792,15 +785,10 @@ class PickerWindow(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
         pad = SHADOW_PAD
         panel = self.rect().adjusted(pad, pad, -pad, -pad)
-        # 边框在深浅主题下用不同底色描：浅色主题描淡黑、深色主题描淡白，
-        # 否则边框会与面板同色而"消失"。
-        alpha = getattr(self, "_border_alpha", 18)
-        border = QColor(0, 0, 0, alpha) if alpha <= 40 else QColor(255, 255, 255, alpha)
         paint_frameless_panel(
             painter, panel, radius=RADIUS,
-            tint=getattr(self, "_panel_bg", QColor(255, 255, 255, 250)),
-            border=border,
-            shadow=getattr(self, "_shadow_color", QColor(0, 0, 0, 40)),
+            tint=self._panel_bg, border=self._border_color,
+            shadow=self._shadow_color,
             shadow_pad=pad, shadow_spread=0.30, shadow_growth=0.4,
         )
         super().paintEvent(e)

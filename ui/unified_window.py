@@ -82,6 +82,10 @@ HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT = 15, 16, 17
 # 主题里的颜色可能是 rgba() 字符串，也可能是 hex/颜色名
 _RGBA_RE = re.compile(r"rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)")
 
+# 侧栏恒为透明（透出窗口底色/亚克力），与主题无关；单独拎出来便于幂等比较——
+# 每次 setStyleSheet 都会让该控件整棵子树重新 polish，值没变就别重设。
+_SIDEBAR_SS = "background:transparent;"
+
 
 def _rgba_parts(spec):
     """把颜色字符串拆成 (r, g, b, alpha:0~1)，hex/颜色名走 QColor 兜底。"""
@@ -273,6 +277,7 @@ class UnifiedSettingsWindow(QMainWindow):
         self._acrylic_on = _has_dwm
         self._shadow_color = parse_color(self.theme.shadow_color)
         self._theme_ss = ""          # 缓存当前主题的完整 QSS，供 _refresh_content_sheet 复用
+        self._content_surface = None  # 缓存内容区表面色，QSS 重贴的幂等判据之一
         # 窗口状态持久化：关闭/隐藏时记住是否最大化，下次 show 时恢复
         self._saved_maximized = False
         self._normal_geometry = None
@@ -748,18 +753,33 @@ class UnifiedSettingsWindow(QMainWindow):
 
     def _apply_theme(self):
         t = self.theme
-        self.setStyleSheet(t.style_sheet())
-        self._theme_ss = t.style_sheet()
-        self.sidebar.setStyleSheet("background:transparent;")
-        # 内容区表面较侧栏略实，形成 Win11 设置式层次（半透明以透出亚克力）。
-        # 关键：content 必须应用「完整」主题 QSS，否则它的 setStyleSheet 会切断主窗口全局
-        # QSS 的级联，导致其内部子页（设置/库/我的颜文字…）的 QPushButton#AccentButton、滑块、
-        # 开关等收不到样式（典型表现：浅色模式下“应用并保存”白底白字不可见）。
-        self._refresh_content_sheet()
+        ss = t.style_sheet()
+        surface = self._adjusted_content_surface()
+        # QSS 重贴会让窗口内所有控件重新 polish：本窗实测 setStyleSheet ≈170ms，
+        # 内容区再贴一次 ≈130ms。设置页任何一处改动都会走 apply_config → 这里，
+        # 若不做幂等短路，改个滑块也要白卡 300ms。样式串与内容区表面色都没变时
+        # 直接跳过这两步重贴，后面的控件级刷新（廉价）照常执行。
+        if ss != self._theme_ss or surface != self._content_surface:
+            self._theme_ss = ss
+            self._content_surface = surface
+            self.setStyleSheet(ss)
+            # 内容区表面较侧栏略实，形成 Win11 设置式层次（半透明以透出亚克力）。
+            # 关键：content 必须应用「完整」主题 QSS，否则它的 setStyleSheet 会切断主窗口全局
+            # QSS 的级联，导致其内部子页（设置/库/我的颜文字…）的 QPushButton#AccentButton、滑块、
+            # 开关等收不到样式（典型表现：浅色模式下“应用并保存”白底白字不可见）。
+            self._refresh_content_sheet()
+            # 子页的自定义控件同样是全量重贴 QSS（实测 ≈50ms），只有主题真的变了才需要。
+            self._apply_theme_to_pages(t)
+        # 下面几步都是「把值写回小控件」，幂等——值没变就别重设样式表，
+        # 否则每次 setStyleSheet 都会让该控件及其子控件重新 polish。
+        if self.sidebar.styleSheet() != _SIDEBAR_SS:
+            self.sidebar.setStyleSheet(_SIDEBAR_SS)
         recolor(self._close_ico, t.text)
         # 标题栏按钮颜色刷新
         for btn in (self._min_btn, self._max_btn):
-            btn.setStyleSheet("color:%s;" % t.text_secondary)
+            want = "color:%s;" % t.text_secondary
+            if btn.styleSheet() != want:
+                btn.setStyleSheet(want)
         # 导航项刷新主题
         for _, item in self._nav_items:
             item.update_theme(t)
@@ -769,8 +789,6 @@ class UnifiedSettingsWindow(QMainWindow):
                 self.plugins.set_theme_name(t.name)
             except Exception:
                 pass
-        # 子页中的自定义控件（搜索框、开关、主页图标）跟随主题
-        self._apply_theme_to_pages(t)
         self._update_backdrop()
         self.update()
 
@@ -788,9 +806,14 @@ class UnifiedSettingsWindow(QMainWindow):
         self.about_page.config = config
         self.settings_page.refresh_from_config()
         # 测试功能可见性可能随外部应用配置变化（如关闭测试模式），同步插件页显隐
+        pages_before = set(self._pages)
         self._sync_plugin_tab()
-        self._apply_theme_to_pages(self.theme)
-        self._update_backdrop()
+        if set(self._pages) != pages_before:
+            # 页面集合变了才需要补刷：新增/移除的页是 _apply_theme() 之后才挂进来的。
+            # 常规 apply_config 里 _apply_theme() 已经刷过一遍，再来一次纯属浪费
+            # （实测每次多花 ≈50ms，加在热键录制「完成」这种高频路径上很致命）。
+            self._apply_theme_to_pages(self.theme)
+            self._update_backdrop()
 
     def _apply_theme_to_pages(self, t):
         """把主题广播给所有暴露 set_theme 的子页，避免 _apply_theme/apply_config 各写一遍。"""

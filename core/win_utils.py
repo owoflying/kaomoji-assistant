@@ -105,9 +105,18 @@ _MOD_LABELS = (
 )
 
 
+def mod_labels(mods):
+    """修饰键位 -> 展示名列表（顺序固定为 Ctrl / Alt / Shift / Win）。
+
+    单独暴露出来，供热键录制界面的实时预览使用：预览需要「修饰键 + 主键」逐段
+    拼接，而不是一个拼好的整串，否则没法在中途高亮刚按下的那一段。
+    """
+    return [name for bit, name in _MOD_LABELS if mods & bit]
+
+
 def hotkey_label_from(mods, vk):
     """生成给人看的标签，如 'Ctrl+Shift+K'。"""
-    parts = [name for bit, name in _MOD_LABELS if mods & bit]
+    parts = mod_labels(mods)
     parts.append(_vk_label(vk))
     return "+".join(parts)
 

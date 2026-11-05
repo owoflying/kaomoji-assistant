@@ -91,6 +91,8 @@ class AppRuntime:
         self.config = config          # 权威配置字典：**原地更新**，引用始终不变
         self._uia_warn_shown = False
         self._log_viewer = None
+        # 上一次真正贴到 QApplication 上的样式串，用于幂等短路（见 _apply_app_theme）
+        self._applied_style = None
 
         self.data = None
         self.plugins = None
@@ -140,9 +142,25 @@ class AppRuntime:
 
     def _apply_initial_theme(self):
         """应用级样式表：让独立对话框与统一面板视觉一致（含 "system" 解析）。"""
-        effective = resolve_theme_name(self.config.get("theme", "light"))
-        self.app.setStyleSheet(Theme(effective).style_sheet())
+        self._apply_app_theme(resolve_theme_name(self.config.get("theme", "light")))
         set_app_theme(self.config.get("theme", "light"))
+
+    def _apply_app_theme(self, theme_name):
+        """全应用 QSS 重贴（幂等）。
+
+        `QApplication.setStyleSheet` 会触发所有控件重新 polish，代价随控件数量线性
+        增长（本项目实测 ≈500ms）。设置页任何一处改动都会走 apply_settings，若不做
+        幂等短路，拖一下滑块、录一次热键都要白卡近一秒——这正是「点完成特别卡顿」
+        的主要来源。样式串不变时直接返回。
+        """
+        theme = Theme(theme_name)
+        ss = theme.style_sheet()
+        if ss == self._applied_style:
+            return
+        self.app.setStyleSheet(ss)
+        if self.menu is not None:
+            self.menu.setStyleSheet(theme.menu_style())
+        self._applied_style = ss
 
     def _sync_autostart(self):
         """让「配置里的 autostart」与注册表实际状态保持一致（仅 exe 形态）。"""
@@ -207,8 +225,7 @@ class AppRuntime:
         self.monitor.emotion_detected.connect(w.show_for_emotion)
         self.monitor.trigger_detected.connect(w.show_for_output)
         # 候选条可见时暂停监听、隐藏时恢复（避免把候选条自身当输入）
-        w.isVisibleChanged.connect(
-            lambda v: self.monitor.pause() if v else self.monitor.resume())
+        w.isVisibleChanged.connect(self._on_picker_visibility)
         # 面板因某情绪弹出后立即锁定该情绪，避免同一句话被反复推荐
         w.emotion_shown.connect(self.monitor.notify_shown)
         w.selected.connect(self.on_selected)
@@ -234,10 +251,24 @@ class AppRuntime:
         self.unified.output_selected.connect(self._on_unified_output)
         self.unified.settings_page.opacity_preview.connect(
             self._preview_picker_opacity)
+        # 录制热键期间临时停用全局热键（其余时间热键始终可用）
+        self.unified.settings_page.hotkey_capture_changed.connect(
+            self._on_hotkey_capture)
 
         # 数据源变化：用户新增/编辑自定义颜文字、插件启用/停用都要刷新白名单
         self.user_kao.changed.connect(self._refresh_valid_items)
         self.plugins.changed.connect(self._on_plugins_changed)
+
+    def _on_picker_visibility(self, visible):
+        """候选条显隐联动监听器：显示时暂停，隐藏时恢复。
+
+        恢复有个前提——统一主面板没开着。设置界面里用户在搜索框打字同样是「输入」，
+        监听器若在这时恢复，会把设置页的输入当成触发词乱弹候选条。
+        """
+        if visible:
+            self.monitor.pause()
+        elif not self.unified.isVisible():
+            self.monitor.resume()
 
     def _build_tray(self):
         icon = make_icon()
@@ -309,11 +340,20 @@ class AppRuntime:
     # 配置应用
     # ------------------------------------------------------------------
     def apply_settings(self, new_cfg):
-        """配置变更的唯一落盘 + 广播入口。"""
+        """配置变更的唯一落盘 + 广播入口。
+
+        按「真正变化的键」分流：QSS 重贴、注册表写入、热键重注册都只在对应键
+        变化时才做。全量重刷实测 ≈900ms，其中 app 级 QSS ≈500ms、统一窗口整窗
+        重铺 ≈340ms —— 全部无条件执行的话，改任何一项设置都会卡掉近一秒。
+        """
+        old = dict(self.config)
         # 原地更新：config 这个 dict 的身份必须保持不变——PluginManager 持有引用，
         # 替换对象会让它继续读写一份已被丢弃的旧字典。
         self.config.clear()
         self.config.update(new_cfg)
+        changed = {k for k, v in self.config.items() if old.get(k) != v}
+        changed |= {k for k in old if k not in self.config}
+
         try:
             save_config(self.config)
         except Exception as e:
@@ -321,16 +361,17 @@ class AppRuntime:
             # 内存配置已更新，先让各项功能按新值生效，写盘失败单独记一条日志。
             append_log("error", "config", "配置落盘失败：%r" % (e,))
 
-        if autostart.is_supported():
+        if "autostart" in changed and autostart.is_supported():
             autostart.set_enabled(bool(self.config.get("autostart", False)))
 
         effective_theme = resolve_theme_name(self.config.get("theme", "light"))
-        self.app.setStyleSheet(Theme(effective_theme).style_sheet())
-        self.menu.setStyleSheet(Theme(effective_theme).menu_style())
+        # 幂等：样式串没变就不重贴（详见 _apply_app_theme 注释）
+        self._apply_app_theme(effective_theme)
         set_app_theme(self.config.get("theme", "light"))
-        # 已打开的日志窗口同步换肤（否则它会停留在启动时的主题）
-        self._theme_log_viewer(effective_theme)
-        self._update_system_theme_watcher()
+        if "theme" in changed:
+            # 已打开的日志窗口同步换肤（否则它会停留在启动时的主题）
+            self._theme_log_viewer(effective_theme)
+            self._update_system_theme_watcher()
 
         self.window.apply_config(self.config)
         self.unified.apply_config(self.config)
@@ -338,8 +379,19 @@ class AppRuntime:
         self.state.max_recent = int(self.config.get("max_recent", 30))
         self.plugins.emit("config_changed", self.config)
 
+        if "hotkey" in changed:
+            # 录制完新热键必须立刻重注册，否则新组合键要等下次启动才生效。
+            self._reload_hotkey()
+
         self._handle_uia_status()
         self._sync_auto_popup()
+
+    def _reload_hotkey(self):
+        """按当前配置重新注册全局热键。"""
+        if getattr(self.unified.settings_page, "_capturing", False):
+            # 正在录制：此时注册会把刚录的组合键当场吃掉，等录制结束后的恢复流程处理
+            return
+        self.hotkey.start(self.config.get("hotkey", HOTKEY_DEFAULT))
 
     def _handle_uia_status(self):
         """开启了 UIA 提权但本次没生效时，给出一次性提示。"""
@@ -512,17 +564,14 @@ class AppRuntime:
     # 窗口开关
     # ------------------------------------------------------------------
     def open_unified(self, page_key=None):
-        """打开统一主面板（可指定页面）。"""
-        self.pause_global_hooks()
-        if page_key:
-            self.unified._set_page(page_key)
-        self.unified.show()
-        self.unified.raise_()
-        self.unified.activateWindow()
+        """打开统一主面板（可指定页面）。
 
-    def pause_global_hooks(self):
-        """打开统一窗口前暂停热键与监听，避免操作冲突。"""
-        self.hotkey.stop()
+        **不动全局热键**。旧实现这里调 pause_global_hooks() 无条件 hotkey.stop()，
+        而恢复只挂在 unified.finished（窗口 close 才发）上——用户只是打开设置页、
+        再关掉（hide）时恢复永远不触发，热键就此永久失效，必须重启程序才能用。
+        正确语义是：热键全程可用；只有「录制热键」期间临时停用（见
+        _on_hotkey_capture），因为录制时按下的正是热键本身。
+        """
         if self.window.isVisible():
             # 用 hide_now 而不是 dismiss：这里要求隐藏“同步完成”，
             # 因为紧跟其后的 monitor.pause() 依赖 hide 触发的 resume 已经跑完。
@@ -531,11 +580,31 @@ class AppRuntime:
         # 重新打开，因此 monitor.pause() 必须放在 hide 之后，否则暂停会被刚才的
         # resume 抵消（仅在候选条当时正显示时触发），导致面板打开期间监听仍在跑。
         self.monitor.pause()
+        if page_key:
+            self.unified._set_page(page_key)
+        self.unified.show()
+        self.unified.raise_()
+        self.unified.activateWindow()
+
+    def _on_hotkey_capture(self, active):
+        """设置页录制热键期间临时停用/恢复全局热键。
+
+        录制时用户按下的就是即将绑定的组合键，热键若仍注册着，每按一次都会把
+        候选条弹出来盖住设置页，同时也更容易和 pynput 抢同一组按键。
+        """
+        if active:
+            self.hotkey.stop()
+        else:
+            self.hotkey.start(self.config.get("hotkey", HOTKEY_DEFAULT))
 
     def resume_global_hooks(self):
-        """统一窗口关闭后恢复全局热键与自动弹出监听。"""
-        self.hotkey.start(self.config.get("hotkey", HOTKEY_DEFAULT))
-        if self.config.get("auto_popup", True):
+        """统一窗口关闭后恢复自动弹出监听。
+
+        热键在打开窗口期间从未停用（见 open_unified），这里只管监听；
+        若此时正好还在录制热键，则保持停用状态等录制流程收尾。
+        """
+        if self.config.get("auto_popup", True) and not getattr(
+                self.unified.settings_page, "_capturing", False):
             self.monitor.resume()
 
     def _on_unified_output(self, text):

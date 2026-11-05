@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QSlider, QSpinBox, QFrame, QSizePolicy, QScrollArea,
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 
 from core import autostart, uia_elevation, win_utils
 from core.win_utils import MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN
@@ -18,36 +18,64 @@ from ui.pages._scaffold import page_layout, page_title, section_title
 from ui.toggle_switch import ToggleSwitch
 from ui.win11_theme import Theme, resolve_theme_name
 
+# pynput 的 Key 枚举名 -> RegisterHotKey 的 fsModifiers 位。
+# 左右修饰键（ctrl_l / ctrl_r …）与通用名（ctrl）必须一并收录：pynput 在 Windows
+# 上实际投递的是带左右后缀的那个成员。
+_MOD_KEY_BITS = (
+    ("ctrl", MOD_CONTROL), ("ctrl_l", MOD_CONTROL), ("ctrl_r", MOD_CONTROL),
+    ("shift", MOD_SHIFT), ("shift_l", MOD_SHIFT), ("shift_r", MOD_SHIFT),
+    ("alt", MOD_ALT), ("alt_l", MOD_ALT), ("alt_r", MOD_ALT),
+    ("cmd", MOD_WIN), ("cmd_l", MOD_WIN), ("cmd_r", MOD_WIN),
+)
 
-def _build_hotkey_from_pynput(key, mods_set):
-    """根据 pynput 的按键对象与主键，返回 (modifiers:int, vk:int, char)。"""
-    from pynput import keyboard
-    vk = None
-    char = None
-    if isinstance(key, keyboard.KeyCode):
-        if key.vk:
-            vk = key.vk
-        if key.char:
-            char = key.char
-    elif hasattr(key, "vk") and key.vk:
-        vk = key.vk
-    if vk is None and char:
+
+def _mod_bit_of(key, kb):
+    """pynput 按键对象若是修饰键，返回对应的 fsModifiers 位；否则 None。"""
+    for attr, bit in _MOD_KEY_BITS:
+        if key == getattr(kb.Key, attr, None):
+            return bit
+    return None
+
+
+def _roundtrips(vk):
+    """该 VK 能否写进配置字符串、再被原样解析回来。
+
+    `_key_token()` 对没有名字的键（PrintScreen、NumLock 等）会生成 `<key44>` 这种
+    占位 token，而 `parse_hotkey()` 只认「有名字的键」和单个字符，`<key44>` 会被
+    整段丢弃 —— 于是热键配置变成一条永远解析失败的死字符串，用户只看到「录进去了
+    但按了没反应」，重启后照样没反应。不如录制当场就拒绝。
+    """
+    token = win_utils._key_token(vk)
+    return win_utils.parse_hotkey(token).get("type") != "none"
+
+
+def _resolve_capture_key(key):
+    """把 pynput 按键对象解析成 (vk, 展示标签)；无法识别时返回 (None, "")。
+
+    展示标签一律由 VK 反推，**不直接用 `key.char`**：
+      * 按住 Ctrl 时 pynput 给出的 char 是控制字符（Ctrl+K -> '\\x0b'），塞进
+        QLabel 就是一段看不见的内容——用户看到的现象正是「按了键但不显示」；
+      * 小写字母在标签里也不好看，VK 反推能稳定得到大写。
+    """
+    vk = getattr(key, "vk", None)
+    char = getattr(key, "char", None)
+    if char is not None and (len(char) != 1 or not char.isprintable()):
+        char = None                  # 控制字符：既不可显示，也不能用来反查 VK
+    if not vk and char:
         vk = win_utils._vk_from_char(char)
-    mods = 0
-    if MOD_CONTROL in mods_set:
-        mods |= MOD_CONTROL
-    if MOD_ALT in mods_set:
-        mods |= MOD_ALT
-    if MOD_SHIFT in mods_set:
-        mods |= MOD_SHIFT
-    if MOD_WIN in mods_set:
-        mods |= MOD_WIN
-    return mods, vk, char
+    if not vk or not _roundtrips(vk):
+        return None, ""
+    return vk, win_utils._vk_label(vk)
 
 
 class SettingsPage(QWidget):
     config_applied = Signal(dict)    # 任何设置改动后自动保存/应用
     opacity_preview = Signal(float)  # 候选条不透明度实时预览（拖动中），仅作视觉反馈，不落盘
+    # True = 进入热键录制（宿主应临时停用全局热键，否则刚录的组合键会当场把候选条弹出来）
+    # False = 录制结束（宿主按当前配置恢复）
+    hotkey_capture_changed = Signal(bool)
+    # pynput 监听线程 -> GUI 线程的事件桥（"mod" / "key" / "esc" + 载荷）
+    capture_event = Signal(str, object)
 
     def __init__(self, config, parent=None):
         super().__init__(parent)
@@ -55,9 +83,12 @@ class SettingsPage(QWidget):
         self._captured = None
         self._capturing = False
         self._cap_mods = set()
-        self._cap_keys = []
+        self._cap_keys = []              # [(vk, 展示标签), ...]
         self._listener = None
         self._pynput = None
+        # pynput 的回调跑在它自己的监听线程里，直接 setText 是未定义行为（重绘丢失、
+        # 偶发崩溃）。所有录制事件先过信号，由 Qt 排队回 GUI 线程再动控件。
+        self.capture_event.connect(self._handle_capture_event)
         # 程序化加载（构造 / apply_config）期间屏蔽自动保存：setValue/setCurrentIndex/setChecked
         # 会触发 currentIndexChanged/toggled/valueChanged -> _on_apply -> config_applied，
         # 导致把 self.config 换成中间副本、切断与关于页共享的字典引用，造成
@@ -478,8 +509,12 @@ class SettingsPage(QWidget):
             on_press=self._on_cap_press, on_release=self._on_cap_release
         )
         self._listener.start()
+        # 全局热键必须在录制期间停用：热键走 RegisterHotKey，录制时按下的正是它，
+        # 不停的话每按一次都会顺手把候选条弹出来盖住设置页。
+        self.hotkey_capture_changed.emit(True)
 
     def _stop_capture(self):
+        was_capturing = self._capturing
         self._capturing = False
         if self._listener is not None:
             try:
@@ -490,66 +525,92 @@ class SettingsPage(QWidget):
         self.finish_btn.hide()
         self.hotkey_btn.setDisabled(False)
         self.hotkey_btn.setText("录制…")
+        if was_capturing:
+            self.hotkey_capture_changed.emit(False)
 
     def _update_capture_preview(self):
-        parts = []
-        for vk, char in self._cap_keys:
-            parts.append(char if char else win_utils._vk_label(vk))
-        self.hotkey_label.setText("已录制: " + " + ".join(parts) + "  （点「完成」确认）")
+        """实时预览：已按下的修饰键 + 主键，逐段拼出来。"""
+        mods = 0
+        for bit in self._cap_mods:
+            mods |= bit
+        parts = win_utils.mod_labels(mods)
+        parts += [label for _, label in self._cap_keys]
+        if not parts:
+            self.hotkey_label.setText("依次按下想要的按键…")
+            return
+        self.hotkey_label.setText(
+            "已录制: %s  （点「完成」确认，Esc 取消）" % " + ".join(parts))
+
+    def _handle_capture_event(self, kind, payload):
+        """GUI 线程侧处理录制事件（由 pynput 线程通过信号排队过来）。"""
+        if not self._capturing:
+            return
+        if kind == "esc":
+            self._stop_capture()
+            self._update_hotkey_label(self.config.get("hotkey"))
+            return
+        if kind == "mod":
+            self._cap_mods.add(payload)
+            self._update_capture_preview()   # 按下修饰键也要有反馈，否则像卡住了
+            return
+        vk, label = payload
+        if vk is None:
+            self.hotkey_label.setText("该按键暂不支持，请换字母 / 数字 / 功能键")
+            return
+        if any(v == vk for v, _ in self._cap_keys):
+            return                            # 长按重复触发，不重复追加
+        self._cap_keys.append((vk, label))
+        self._update_capture_preview()
+
+    def _commit_capture(self):
+        """把已录内容整理成配置结构；不满足条件返回 None。"""
+        if len(self._cap_keys) >= 2:
+            return {"type": "sequence", "keys": [v for v, _ in self._cap_keys]}
+        if len(self._cap_keys) == 1 and self._cap_mods:
+            mods = 0
+            for bit in self._cap_mods:
+                mods |= bit
+            return {"type": "simple", "mods": mods, "vk": self._cap_keys[0][0]}
+        return None
 
     def _finish_capture(self):
         if not self._capturing:
             return
+        parsed = self._commit_capture()
         self._stop_capture()
-        if len(self._cap_keys) >= 2:
-            self._captured = {
-                "type": "sequence",
-                "keys": [v for v, _ in self._cap_keys],
-            }
-        elif len(self._cap_keys) == 1 and self._cap_mods:
-            vk = self._cap_keys[0][0]
-            m = 0
-            if MOD_CONTROL in self._cap_mods:
-                m |= MOD_CONTROL
-            if MOD_ALT in self._cap_mods:
-                m |= MOD_ALT
-            if MOD_SHIFT in self._cap_mods:
-                m |= MOD_SHIFT
-            if MOD_WIN in self._cap_mods:
-                m |= MOD_WIN
-            self._captured = {"type": "simple", "mods": m, "vk": vk}
-        else:
-            self.hotkey_label.setText("至少需 2 个按键，或加修饰键；已保留原设置")
+        if parsed is None:
+            self.hotkey_label.setText("至少需「修饰键 + 主键」或连按 2 个键；已保留原设置")
             self._update_hotkey_label()
             return
+        self._captured = parsed
         self._update_hotkey_label()
-        # 热键录制完成后自动保存
-        self._on_apply()
+        # 保存/应用放到事件循环下一轮：_on_apply 会走完整条 apply_settings（写盘、
+        # 主题重铺、热键重注册），同步跑在点击回调里会让「完成」按钮僵住近一秒。
+        QTimer.singleShot(0, self._on_apply)
 
     def _on_cap_press(self, key):
+        """pynput 监听线程回调：只做解析，绝不碰控件（见 capture_event 注释）。"""
         if not self._capturing:
             return
-        kb = self._pynput
-        if key == kb.Key.esc:
-            self._stop_capture()
-            self._update_hotkey_label(self.config.get("hotkey"))
-            return
-        if key in (kb.Key.ctrl, kb.Key.ctrl_l, kb.Key.ctrl_r):
-            self._cap_mods.add(MOD_CONTROL)
-            return
-        if key in (kb.Key.shift, kb.Key.shift_l, kb.Key.shift_r):
-            self._cap_mods.add(MOD_SHIFT)
-            return
-        if key in (kb.Key.alt, kb.Key.alt_l, kb.Key.alt_r):
-            self._cap_mods.add(MOD_ALT)
-            return
-        if key in (kb.Key.cmd, kb.Key.cmd_l, kb.Key.cmd_r):
-            self._cap_mods.add(MOD_WIN)
-            return
-        mods, vk, char = _build_hotkey_from_pynput(key, self._cap_mods)
-        if vk:
-            self._cap_keys.append((vk, char))
-            self._update_capture_preview()
+        try:
+            kb = self._pynput
+            if kb is None:
+                return
+            if key == kb.Key.esc:
+                self.capture_event.emit("esc", None)
+                return
+            bit = _mod_bit_of(key, kb)
+            if bit is not None:
+                self.capture_event.emit("mod", bit)
+                return
+            vk, label = _resolve_capture_key(key)
+            if vk is not None:
+                self.capture_event.emit("key", (vk, label))
+        except Exception:
+            # 监听线程里抛异常会让 pynput 直接停掉监听器，之后整场录制再无反应；
+            # 这里吞掉并留一条日志，宁可漏一个键也别让录制整体失效。
+            from core.applog import append_log
+            append_log("warn", "hotkey", "录制热键时解析按键失败")
 
     def _on_cap_release(self, key):
         pass

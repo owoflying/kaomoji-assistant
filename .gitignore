@@ -24,6 +24,11 @@ diag.txt
 # 日志
 *.log
 
+# 测试产物
+.pytest_cache/
+.coverage
+htmlcov/
+
 # 打包产物
 build/
 dist/

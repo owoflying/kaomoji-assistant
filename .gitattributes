@@ -1,0 +1,25 @@
+# 统一行尾，消除 Windows 协作下 "LF will be replaced by CRLF" 告警与纯行尾 diff。
+# - 仓库内一律存 LF，检出时按平台转换（Windows 得到 CRLF）；
+# - .bat 必须是 CRLF，否则 cmd.exe 解析异常；
+# - 图片/字体等二进制文件禁止任何转换。
+* text=auto eol=lf
+
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+*.py    text eol=lf
+*.md    text eol=lf
+*.json  text eol=lf
+*.txt   text eol=lf
+*.spec  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+
+*.png   binary
+*.jpg   binary
+*.ico   binary
+*.ttf   binary
+*.exe   binary
+*.dll   binary
+*.zip   binary

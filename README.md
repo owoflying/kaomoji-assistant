@@ -81,3 +81,19 @@ Apache-2.0。
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) —— 架构设计（分层、数据流、关键机制）
 - [docs/PITFALLS.md](docs/PITFALLS.md) —— 踩坑手册（改代码前建议先扫一眼）
 - [PROJECT_ARCHITECTURE.md](PROJECT_ARCHITECTURE.md) —— 现状梳理（逐模块职责与信号接线）
+
+## 开发与测试
+
+```bat
+.venv\Scripts\python.exe -m pip install pytest
+.venv\Scripts\python.exe -m pytest tests -q
+```
+
+约 100 个用例，全部离屏（`QT_QPA_PLATFORM=offscreen`）运行，无需显示器，
+约 10 秒跑完。测试会把 `APPDATA` 重定向到临时目录，**不会改动你的 `config.json`**。
+
+文档：
+
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) —— 架构设计（分层、数据流、关键机制）
+- [docs/PITFALLS.md](docs/PITFALLS.md) —— 踩坑手册（改代码前建议先扫一眼）
+- [PROJECT_ARCHITECTURE.md](PROJECT_ARCHITECTURE.md) —— 现状梳理（逐模块职责与信号接线）

@@ -1,0 +1,9 @@
+{
+  "name": "主页问候（邪修反面教材）",
+  "version": "1.1.0",
+  "entry": "main.py",
+  "author": "kaomoji-assistant",
+  "description": "⚠ 教学用反面教材，请勿照抄。演示「没有官方 API 时如何用邪修手段修改自带界面」：借 register_page 的 parent 沿 Qt 父子链爬到宿主窗口，直接改内置主页布局。请在 docs/PLUGIN_GUIDE.md 查看正规做法（api.ui）。",
+  "api_version": 2,
+  "default_enabled": false
+}

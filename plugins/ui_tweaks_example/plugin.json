@@ -1,0 +1,9 @@
+{
+  "name": "界面定制示例",
+  "version": "1.0.0",
+  "entry": "main.py",
+  "author": "kaomoji-assistant",
+  "description": "正面示例：用官方 api.ui 修改内置界面——改问候语、隐藏提示卡片、给快捷入口换文字、插入自定义控件、绑定点击事件。所有修改在停用插件时自动完整回滚。",
+  "api_version": 2,
+  "default_enabled": false
+}

@@ -323,6 +323,39 @@ COM 实例也要**按线程缓存**（换线程就漏）。
 **修复**：`enforce_test_feature_gate()` 挂在 `save_config` **落盘前**，
 覆盖设置页保存、开发者页开关等**所有**写入路径。
 
+### 6.4 关测试模式要真的卸载插件，不能只收起 UI
+
+**这是 6.3 的孪生坑，出现在"运行时"而非"落盘时"。**
+
+关闭开发者模式时，代码只把 `use_test_features` 置为 `False`：
+
+```python
+self.config["use_test_features"] = False   # ❌ 只是配置层门控
+self._sync_plugin_tab()                    # ❌ 只是把「插件」页收起来
+```
+
+但插件**已经在内存里加载**了，状态仍是 `loaded`：
+它的数据源/转换/事件回调继续生效，而它通过 `api.ui` 做的界面修改
+**不会回滚**（回滚挂在 `_detach` → `MutatorHub.rollback` 上）。
+
+**症状**：关掉开发者模式后，插件插的卡片、改过的样式/文字仍然留在界面上。
+
+**修复**：关闭测试模式时调用 `_unload_all_plugins()`，逐个 `unload()`
+（内部走 `_detach`，连带回滚界面修改）。
+
+**两条路径都要覆盖**——它们不会自动互相兜底：
+
+| 路径 | 入口 |
+|------|------|
+| 开发者页点「关闭开发者模式」 | `_disable_dev_tab()` |
+| 开发者页点「关闭测试功能」 | `DevPage._on_toggle_test()` → `_on_test_features_changed()` |
+
+修复点放在 `_disable_dev_tab()` 与 `_on_test_features_changed()` 两处，
+后者是两条路径的公共汇合点。
+
+> 相关：`tests/test_disable_dev_mode.py` 覆盖两条路径 + "插件插入的控件被移除"
+> + "重新启用后效果能恢复"。已验证去掉修复后 4 个用例立刻变红。
+
 ### 6.4 手改 config.json 的类型错误
 
 `"max_recent": "30"` 这类错误以前会一路流进业务代码，
@@ -453,6 +486,7 @@ setup 半途抛异常时 `_detach` 清理半注册的脏能力。
 | 插件删了但还在生效 | 能力回收未覆盖"目录被删/清单损坏"路径 |
 | 新启用插件的页面不出现 | `setup()` 期间 emit `ui_changed` 被"已加载"过滤 |
 | 关闭测试模式后测试功能仍生效 | 只在 UI 层隐藏，没在 `save_config` 落盘前归位 |
+| 关闭开发者模式后插件插的东西还在 | 只改配置没卸载插件，界面修改未回滚（§6.4） |
 | 启动即崩、`int("三十")` 之类 | `config.json` 手改的类型错误（现有 `validate_config` 兜底） |
 
 ---

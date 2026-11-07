@@ -423,6 +423,12 @@ class UnifiedSettingsWindow(FramelessShell):
         # 再次连点版本号会被短路、不再发出 developer_mode_enabled，无法二次进入。
         self.about_page.reset_developer_mode()
         self._nav.disable_dev_tab()
+        # ⚠ 必须真正卸载插件，而不只是把 UI 藏起来。
+        # 之前这里只改了 use_test_features 配置，插件仍处于 loaded 状态：
+        # 数据源/转换/事件回调继续生效，它们通过 api.ui 做的界面修改也不会回滚
+        # ——表现为"关掉开发者模式后，插件插的东西还留在界面上"。
+        # 这是「测试功能逃逸」的另一种形式：UI 收敛了，功能还在跑。
+        self._unload_all_plugins()
         # 跳回设置页（保留与进入一致的淡入动画体验）
         self._set_page("settings")
         # 保存放到 UI 更新之后：即使落盘异常，也不能让页签继续显示在界面上。
@@ -433,6 +439,35 @@ class UnifiedSettingsWindow(FramelessShell):
                 pass
         # 落盘后同步让设置页重新评估测试项可见性，与开发者页切换开关走同一刷新路径
         self._on_test_features_changed()
+
+    def _unload_all_plugins(self):
+        """卸载所有已加载插件（连带回滚它们做的界面修改）。
+
+        关闭测试模式时必须调用：插件虽然被配置门控"禁用"了，但如果已经在内存里
+        加载，它的回调与界面修改仍然生效。`unload()` 会走 `_detach`，
+        而 `_detach` 里包含 `MutatorHub.rollback(plugin_id)`。
+        """
+        if self.plugins is None:
+            return 0
+        n = 0
+        try:
+            loaded = [pid for pid, rec in list(self.plugins.plugins.items())
+                      if rec.get("state") == "loaded"]
+        except Exception:
+            return 0
+        for pid in loaded:
+            try:
+                self.plugins.unload(pid)
+                n += 1
+            except Exception:
+                pass
+        if n:
+            try:
+                append_log("info", "plugins",
+                           "测试模式关闭：已卸载 %d 个插件并回滚其界面修改" % n)
+            except Exception:
+                pass
+        return n
 
     def _on_plugins_changed(self):
         """插件集合变化：库页分类与插件页列表需要重建。"""
@@ -530,7 +565,14 @@ class UnifiedSettingsWindow(FramelessShell):
 
         use_test_features 已由 dev_page 写入共享 config 并存盘，这里仅把最新
         配置同步给设置页并刷新可见性，避免整页重排带来的额外开销。
+
+        ⚠ 关闭时必须**真正卸载插件**，不能只收起 UI：
+        插件已在内存里加载的话，数据源/转换/事件回调仍会生效，它们通过
+        `api.ui` 做的界面修改也不会回滚——表现为"关掉测试模式后插件插的
+        东西还留在界面上"。卸载走 `_detach`，其中包含界面修改回滚。
         """
+        if not self.config.get("use_test_features", False):
+            self._unload_all_plugins()
         self.settings_page.config = self.config
         self.settings_page.apply_test_feature_visibility()
         # 「插件」页同属测试功能：开关切换后同步其导航项与页面显隐

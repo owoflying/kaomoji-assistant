@@ -209,16 +209,64 @@ def test_release_outside_label_does_not_count(window, qapp):
 
 
 # ---------------------------------------------------------------- 反馈
-def test_flash_style_restored_after_burst(window, qapp):
-    """连点时多次闪烁不应互相清掉样式（旧实现会"闪两下就没了"）。"""
-    ab = window.about_page
-    for _ in range(4):
-        ab._flash_version()
-    # 连点期间样式应保持高亮
-    assert ab._ver_label.styleSheet() != ""
+def test_rapid_clicks_all_count(window, qapp):
+    """连续快速点击必须**每次都计数**，不能"点一下停一下"。
 
-    deadline = time.time() + 1.0
-    while time.time() < deadline and ab._ver_label.styleSheet() != "":
+    ⚠ 这是真实用户反馈的 bug。根因：`_flash_version` 每次点击都调
+    `setStyleSheet`，会让标签发生 `StyleChange + FontChange×2 + PaletteChange
+    + Paint` 一整套重算，**打断 Qt 的鼠标事件序列**，后续 press/release
+    收不到 —— 表现为必须停顿一下才能再点。
+
+    现在点击时不触碰样式/字体/几何（只 `update()` 安排重绘）。
+
+    本用例用真实鼠标事件（QTest.mouseClick）而非直接调 `_on_version_clicked`，
+    因为要验证的正是"事件能不能到达"。
+    """
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    ab = window.about_page
+    label = ab._ver_label
+
+    for i in range(_CLICK_TARGET):
+        QTest.mouseClick(label, Qt.LeftButton)
         qapp.processEvents()
-        time.sleep(0.01)
-    assert ab._ver_label.styleSheet() == "", "最后一次闪烁结束后应清空高亮"
+        if i < _CLICK_TARGET - 1:
+            assert ab._click_count == i + 1, (
+                "第 %d 次连点后计数是 %d（期望 %d）—— 连点失效了"
+                % (i + 1, ab._click_count, i + 1)
+            )
+
+    assert window.config.get("developer_mode") is True, \
+        "连点 8 次后应解锁开发者模式"
+
+
+def test_clicking_does_not_trigger_style_recalc(window, qapp):
+    """点击时不得触发 StyleChange / FontChange（那会打断鼠标事件链）。"""
+    from PySide6.QtCore import QObject, Qt
+    from PySide6.QtTest import QTest
+
+    ab = window.about_page
+    label = ab._ver_label
+
+    seen = []
+
+    class _Spy(QObject):
+        def eventFilter(self, obj, ev):
+            if obj is label:
+                seen.append(ev.type().name)
+            return False
+
+    spy = _Spy()
+    label.installEventFilter(spy)
+    try:
+        QTest.mouseClick(label, Qt.LeftButton)
+        qapp.processEvents()
+        qapp.processEvents()
+    finally:
+        label.removeEventFilter(spy)
+
+    assert "StyleChange" not in seen, \
+        "点击触发了 StyleChange —— 会打断鼠标事件序列（连点失灵）"
+    assert "FontChange" not in seen, \
+        "点击触发了 FontChange —— 会打断鼠标事件序列（连点失灵）"

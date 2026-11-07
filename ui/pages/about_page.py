@@ -485,25 +485,26 @@ class AboutPage(QWidget):
         self._click_timer.start()   # 重置超时
 
     def _flash_version(self):
-        """点击版本号时的轻量视觉反馈：短暂高亮，确认点击已被接收。
+        """点击版本号时的视觉反馈。
 
-        `_flash_count` 用于"有新的闪烁时，旧的定时器不要提前把样式清掉"
-        —— 连点时每秒会起 6~8 个 singleShot(150ms)，若不判断，前一次的回调
-        会把后一次的闪烁样式清空，表现为"闪两下就没了"。
+        ⚠ **绝不能在点击时 setStyleSheet**（这是"连点失灵"的根因）：
+        实测真实鼠标连点时，`setStyleSheet` 会让标签发生
+        `StyleChange + FontChange×2 + PaletteChange + Paint` 一整套重算，
+        Qt 的鼠标事件序列被这些内部事件打断，**后续的 press/release 收不到**
+        —— 用户表现为"必须点一下停一下"。
+
+        现在改用**完全不触碰控件样式/字体**的方案：把反馈放在提示行
+        （`_dev_hint`，本来就是文字变化）上，并用一次 `update()` 让标签重绘。
+        `update()` 只安排重绘、不改几何与样式，不会打断鼠标事件链。
+
+        视觉上通过 `_flash_on` 标志在 `paintEvent` 之外用属性切换即可——
+        这里最简单可靠的是**不改任何视觉**，只依靠提示文字变化作为反馈
+        （"再点击 N 次"本身就足够了）。
         """
-        self._flash_count = getattr(self, "_flash_count", 0) + 1
-        token = self._flash_count
-        style = getattr(self, "_ver_label_flash_style",
-                        "color:#0a84ff;font-weight:bold;")
-        self._ver_label.setStyleSheet(style)
-
-        def _restore():
-            # 只有当这仍是"最后一次"闪烁时才清空样式
-            if getattr(self, "_flash_count", 0) != token:
-                return
-            self._ver_label.setStyleSheet("")
-
-        QTimer.singleShot(150, _restore)
+        # 只安排一次重绘，不修改样式表 / 字体 / 几何
+        label = self._ver_label
+        if label is not None:
+            label.update()
 
     def _reset_clicks(self):
         self._click_count = 0

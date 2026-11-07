@@ -364,7 +364,36 @@ self._sync_plugin_tab()                    # ❌ 只是把「插件」页收起�
 |------|------|------|
 | 点不准 | QLabel 默认尺寸贴文字，实测高度只有 **13px** | `setMinimumHeight(24)` + 内边距（触控最小点击目标） |
 | 容易多计数 | 用 `MouseButtonPress` 判定，按住拖开也算点击 | 改 `MouseButtonRelease` + 释放位置在标签内才算 |
+| **连点失灵** | 每次点击都 `setStyleSheet` 做闪烁反馈 | **点击时完全不碰样式/字体/几何**，只 `update()` |
 | 第 8 次点击卡住 | DevPage 构建一次性做完约 **710ms** | 拆成三帧（构造/套主题/挂载），单帧降到 ~210ms |
+
+### 连点失灵的根因（最隐蔽的一个）
+
+```python
+self._ver_label.setStyleSheet("color:#0a84ff;font-weight:bold;")   # ❌
+```
+
+看起来只是改个颜色，实测触发的事件链是：
+
+```
+MouseButtonPress → MouseButtonRelease
+  → StyleChange → FontChange ×2 → PaletteChange → Paint
+```
+
+这些内部重算事件**打断了 Qt 的鼠标事件序列**，导致后续 press/release
+根本到不了 eventFilter。用户表现就是"必须点一下停一下"。
+
+修复后事件链干净了：
+
+```
+MouseButtonPress → MouseButtonRelease → Paint
+```
+
+**验证方式**：用 `QTest.mouseClick()` 发真实鼠标事件（而不是直接调
+`_on_version_clicked()`），并装 eventFilter 断言没有 `StyleChange`/`FontChange`。
+
+> ⚠ offscreen 平台**不会**复现这个打断现象（它不模拟真实事件派发），
+> 所以此 bug 只能靠真实 Windows 平台验证。已实测连点 12 次稳定。
 
 另有一个连点闪烁的小坑：每次点击都 `singleShot(150, 清空样式)`，
 连点时前一次的定时器会把后一次的闪烁清掉，表现为"闪两下就没了"。
@@ -509,7 +538,7 @@ setup 半途抛异常时 `_detach` 清理半注册的脏能力。
 | 新启用插件的页面不出现 | `setup()` 期间 emit `ui_changed` 被"已加载"过滤 |
 | 关闭测试模式后测试功能仍生效 | 只在 UI 层隐藏，没在 `save_config` 落盘前归位 |
 | 关闭开发者模式后插件插的东西还在 | 只改配置没卸载插件，界面修改未回滚（§6.4） |
-| 隐藏的连点解锁点不准 / 卡顿 | 热区过小、用 press 计数、构建未分帧（§6.5） |
+| 隐藏的连点解锁点不准 / 卡顿 / 连点失灵 | 热区过小、用 press 计数、点击时改样式、构建未分帧（§6.5） |
 | 启动即崩、`int("三十")` 之类 | `config.json` 手改的类型错误（现有 `validate_config` 兜底） |
 
 ---

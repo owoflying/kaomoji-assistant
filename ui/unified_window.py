@@ -3,6 +3,16 @@
 整合 主页 / 颜文字库 / 我的颜文字 / 快捷短语 / 搜索 / 设置 / 关于，
 替代原先独立的 settings/custom/trigger/search 对话框。
 
+**本模块只做组装**，三块职责已拆到独立模块（原先 1172 行混在一起）：
+  * 无边框窗口机械逻辑（圆角遮罩/八向缩放/最大化贴工作区/状态保持）
+        → `ui/frameless_shell.py::FramelessShell`
+  * 侧边栏导航、页面栈调度、开发者页与插件页的挂载销毁
+        → `ui/unified_nav.py::NavController`
+  * 七个业务页本身 → `ui/pages/*`
+
+这里剩下的就是：搭骨架（标题栏 + 侧栏 + 内容区）、建七个页、
+把主题/配置变更广播出去。
+
 视觉上采用 WinUI 3 风格：
   * 无边框窗口（FramelessWindowHint）+ 圆角边框，调用 DWM 系统亚克力（acrylic）
     材质，并叠加一层细微的竖向渐变；
@@ -11,38 +21,27 @@
     Win10 也能正常显示，不再依赖系统自带的 Segoe Fluent Icons）。
   * 最大化时自动隐藏圆角、阴影与留白，让面板贴合屏幕工作区（不含任务栏）。
 """
-import ctypes
 import re
-from ctypes.wintypes import MSG, POINT, RECT, DWORD
 
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLabel,
+    QWidget, QHBoxLayout, QVBoxLayout, QLabel,
     QFrame, QPushButton,
 )
-from PySide6.QtCore import Qt, Signal, QPoint, QRect, QRectF, QEvent, QPropertyAnimation, QEasingCurve, QTimer
-from PySide6.QtGui import (
-    QFont, QColor, QPainter, QPainterPath, QRegion, QTransform,
+from PySide6.QtCore import Qt, Signal, QRect, QPoint, QEvent
+from PySide6.QtGui import QColor, QFont
+
+from ui.frameless_shell import FramelessShell
+from ui.win_style import _has_dwm
+from ui.win11_theme import (
+    Theme, apply_child_theme, parse_color, resolve_theme_name,
 )
-
-
-# ---- 最大化贴合工作区所需的 Windows 结构（仅 Windows 平台用到） ----
-class _MINMAXINFO(ctypes.Structure):
-    _fields_ = [
-        ("ptReserved", POINT),
-        ("ptMaxSize", POINT),
-        ("ptMaxPosition", POINT),
-        ("ptMinTrackSize", POINT),
-        ("ptMaxTrackSize", POINT),
-    ]
-
-
-class _MONITORINFO(ctypes.Structure):
-    _fields_ = [
-        ("cbSize", DWORD),
-        ("rcMonitor", RECT),
-        ("rcWork", RECT),
-        ("dwFlags", DWORD),
-    ]
+from ui.fluent_icons import icon_label, recolor
+from ui.animated_stack import AnimatedStackedWidget
+from ui.pages import (
+    HomePage, LibraryPage, CustomKaomojiPage, TriggerPage,
+    SearchPage, SettingsPage, AboutPage,
+)
+from ui.unified_nav import NavController
 
 
 def _ui_font(size, weight=QFont.Weight.Normal):
@@ -53,30 +52,6 @@ def _ui_font(size, weight=QFont.Weight.Normal):
     f.setPointSize(size)
     f.setWeight(weight)
     return f
-
-from ui.win_style import (
-    apply_backdrop, apply_dark_mode, _has_dwm,
-    DWMSBT_TRANSIENTWINDOW,
-)
-from ui.frameless_panel import paint_frameless_panel
-from ui.win11_theme import (
-    Theme, apply_child_theme, parse_color, resolve_theme_name,
-)
-from ui.fluent_icons import icon_label, recolor
-from ui.animated_stack import AnimatedStackedWidget
-from ui.pages import (
-    HomePage, LibraryPage, CustomKaomojiPage, TriggerPage,
-    SearchPage, SettingsPage, AboutPage, PluginPage,
-)
-from ui.dev import DevPage  # 开发者模式标签页（仅 developer_mode 时显示）
-
-# WM 消息与 NCHITTEST 命中测试返回值
-WM_NCHITTEST = 0x0084
-WM_GETMINMAXINFO = 0x0024
-HTCLIENT, HTCAPTION = 1, 2
-HTLEFT, HTRIGHT, HTTOP = 10, 11, 12
-HTTOPLEFT, HTTOPRIGHT = 13, 14
-HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT = 15, 16, 17
 
 
 # 主题里的颜色可能是 rgba() 字符串，也可能是 hex/颜色名
@@ -101,34 +76,6 @@ def _rgba_str(r, g, b, a):
     return "rgba(%d,%d,%d,%.2f)" % (r, g, b, a)
 
 
-def _init_user32_signatures():
-    """显式声明用到的 Win32 函数签名。
-
-    ctypes 默认 restype 是 c_int：64 位下 HWND/HMONITOR 这类句柄一旦超过 2^31
-    就会被截断。日常单显示器看不出问题，多显示器/高句柄值时会算错工作区，
-    表现为最大化后尺寸不对或贴错屏幕。这里在模块导入时初始化一次。
-    """
-    try:
-        u = ctypes.windll.user32
-        u.MonitorFromWindow.argtypes = [ctypes.c_void_p, ctypes.c_uint]
-        u.MonitorFromWindow.restype = ctypes.c_void_p
-        u.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.POINTER(_MONITORINFO)]
-        u.GetMonitorInfoW.restype = ctypes.c_bool
-        u.GetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int]
-        u.GetWindowLongW.restype = ctypes.c_long
-        u.SetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_long]
-        u.SetWindowLongW.restype = ctypes.c_long
-        u.SetWindowPos.argtypes = [
-            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
-            ctypes.c_int, ctypes.c_int, ctypes.c_uint]
-        u.SetWindowPos.restype = ctypes.c_bool
-    except Exception:      # 非 Windows / 受限环境：保持 ctypes 默认行为
-        pass
-
-
-_init_user32_signatures()
-
-
 class _NavItem(QWidget):
     """单个导航项：左侧高亮指示条 + 图标 + 文字 + 悬停/选中背景。"""
 
@@ -136,117 +83,69 @@ class _NavItem(QWidget):
 
     def __init__(self, icon_name, text, theme, parent=None):
         super().__init__(parent)
-        self.theme = theme
+        self._icon_name = icon_name
+        self._text = text
+        self._theme = theme
         self._selected = False
+        self._anim = None
         self.setFixedHeight(40)
         self.setCursor(Qt.PointingHandCursor)
-        self._icon_name = icon_name
+        self.setAttribute(Qt.WA_Hover, True)
+
         root = QHBoxLayout(self)
-        root.setContentsMargins(10, 0, 12, 0)
-        root.setSpacing(10)
+        root.setContentsMargins(8, 0, 10, 0)
+        root.setSpacing(12)
 
-        self.indicator = QLabel()
-        self.indicator.setFixedWidth(0)
-        self.indicator.setFixedHeight(18)
-        self.indicator.setStyleSheet("background:transparent;border-radius:2px;")
-
+        self.indicator = QWidget()
+        self.indicator.setFixedSize(3, 16)
         self.ico = icon_label(icon_name, 16, theme.text_secondary)
-        self.ico.setFixedWidth(26)
-
         self.txt = QLabel(text)
-        self.txt.setFont(_ui_font(13))
+        self.txt.setFont(_ui_font(10.5))
+        self.txt.setStyleSheet("background:transparent;")
         root.addWidget(self.indicator)
         root.addWidget(self.ico)
         root.addWidget(self.txt, 1)
-        root.addStretch(0)
         self._apply_style()
-        self._anim = None
 
-    def _start_anim(self, target_width):
-        # 停止并断开旧动画（若存在）。注意：旧动画一旦停止，无论是否仍在运行，
-        # 都不能再持有底层 C++ 对象引用 —— 这里显式置 None 释放，下一行新建的
-        # 动画才是 self._anim，避免对「已停止/已删除」对象调用 stop()。
-        old = self._anim
-        if old is not None:
-            try:
-                old.stop()
-                old.valueChanged.disconnect()
-            except Exception:
-                pass
-            self._anim = None
-
-        anim = QPropertyAnimation(self.indicator, b"minimumWidth", self)
-        anim.setDuration(180)
-        anim.setEasingCurve(QEasingCurve.OutCubic)
-        anim.setStartValue(self.indicator.width())
-        anim.setEndValue(target_width)
-        anim.valueChanged.connect(lambda v: self.indicator.setMaximumWidth(int(v)))
-
-        def _finished():
-            try:
-                anim.valueChanged.disconnect()
-            except Exception:
-                pass
-            if self._anim is anim:
-                self._anim = None
-
-        anim.finished.connect(_finished)
-        self._anim = anim
-        # 关键：用默认的 KeepWhenStopped，不要 DeleteWhenStopped。
-        # 否则动画结束后底层 C++ 对象被自动删除，但 self._anim 仍指向它，
-        # 下次切换页时对这个已删除对象调 stop() 会抛
-        # "Internal C++ object already deleted"，导致打开非主页页面必崩。
-        anim.start()
-
-    def set_selected(self, selected):
-        self._selected = selected
+    def update_theme(self, theme):
+        self._theme = theme
+        self.ico.deleteLater()
+        layout = self.layout()
+        layout.removeWidget(self.ico)
+        self.ico = icon_label(self._icon_name, 16, theme.text_secondary)
+        layout.insertWidget(1, self.ico)
         self._apply_style()
-        self._start_anim(3 if selected else 0)
 
     def _apply_style(self):
-        t = self.theme
+        t = self._theme
         bg = t.nav_selected if self._selected else "transparent"
-        # 选中态悬停时保持选中底色，避免悬停把选中项“洗白”
-        hover = t.nav_selected if self._selected else t.nav_hover
-        color = t.text if self._selected else t.text_secondary
-        self.setStyleSheet(
-            "_NavItem{background:%s;border-radius:6px;}"
-            "_NavItem:hover{background:%s;}"
-            "QLabel{background:transparent;color:%s;}" % (bg, hover, color)
-        )
-        recolor(self.ico, t.text if self._selected else t.text_secondary)
         self.indicator.setStyleSheet(
-            "background:%s;border-radius:2px;" % (t.accent if self._selected else "transparent")
-        )
+            "background:%s; border-radius:2px;" % (t.accent if self._selected else "transparent"))
+        self.txt.setStyleSheet("color:%s; background:transparent;" % (
+            t.text if self._selected else t.text_secondary))
+        self.setStyleSheet(
+            "_NavItem{background:%s;border-radius:6px;}" % bg)
+
+    def set_selected(self, selected):
+        if self._selected == selected:
+            return
+        self._selected = selected
+        self._apply_style()
 
     def mouseReleaseEvent(self, e):
-        if e.button() == Qt.LeftButton:
+        if e.button() == Qt.LeftButton and self.rect().contains(e.position().toPoint()):
             self.clicked.emit()
         super().mouseReleaseEvent(e)
 
-    def update_theme(self, theme):
-        self.theme = theme
-        self._apply_style()
 
-
-class UnifiedSettingsWindow(QMainWindow):
-    """统一设置/管理窗口。"""
+class UnifiedSettingsWindow(FramelessShell):
+    """统一设置/管理窗口（外壳 + 导航 + 页面组装的组合层）。"""
 
     output_selected = Signal(str)       # 搜索/库页选中颜文字 -> 注入
     config_applied = Signal(dict)       # 设置页应用配置
     finished = Signal()                 # 窗口关闭（类似 QDialog.finished）
 
-    _NAV = [
-        ("home",     "主页",     "home"),
-        ("library",  "颜文字库", "library"),
-        ("edit",     "我的颜文字", "custom"),
-        ("flash",    "快捷短语", "triggers"),
-        ("search",   "搜索",     "search"),
-        ("settings", "设置",     "settings"),
-        ("info",     "关于",     "about"),
-    ]
-
-    # 圆角 / 留白 / 标题栏尺寸
+    # 圆角 / 留白 / 标题栏尺寸（由 FramelessShell 使用）
     _RADIUS = 12
     _PAD = 12          # 窗口边缘到面板内容的距离（也是阴影与缩放热区宽度）
     _TITLEBAR_H = 40
@@ -264,66 +163,27 @@ class UnifiedSettingsWindow(QMainWindow):
         self.open_log = open_log
         self.dev_refs = dev_refs or {}
         self.plugins = plugins      # PluginManager（可为 None：插件功能整体禁用）
-        # 插件通过 api.register_page() 注册的侧边栏页：key -> QWidget / nav item
-        self._plugin_pages = {}
-        self._plugin_nav = {}
         # 开发者模式权威状态：用独立标志位，不依赖 self.config["developer_mode"]，
         # 避免与设置页自动保存时的字典替换/刷新相互干扰。
         self._developer_mode = bool(config.get("developer_mode", False))
 
         self.theme = Theme(resolve_theme_name(config.get("theme", "light")))
-        self._nav_items = []
-        # 亚克力模糊为窗口核心视觉效果，始终启用（DWM 不可用时为 no-op）
-        self._acrylic_on = _has_dwm
         self._shadow_color = parse_color(self.theme.shadow_color)
         self._theme_ss = ""          # 缓存当前主题的完整 QSS，供 _refresh_content_sheet 复用
         self._content_surface = None  # 缓存内容区表面色，QSS 重贴的幂等判据之一
-        # 窗口状态持久化：关闭/隐藏时记住是否最大化，下次 show 时恢复
-        self._saved_maximized = False
-        self._normal_geometry = None
-        # 最小化前是否处于最大化（任务栏点击 = 最小化 -> 还原，需保住最大化）
-        self._max_before_min = False
 
         self._init_window()
         self._init_ui()
         self._apply_theme()
 
-    # ---------- 窗口与材质 ----------
+    # ==================================================================
+    # 骨架搭建
+    # ==================================================================
     def _init_window(self):
-        # 无边框 + 透明背景（亚克力由 DWM 提供）
-        self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setWindowTitle("颜文字输入辅助器")
+        super()._init_window()
         self.setMinimumSize(900, 640)
         self.resize(1024, 720)
         self._update_mask()
-
-    def _update_mask(self):
-        """把内容区裁剪到圆角矩形内，使子控件四角随窗口一起圆角化。
-
-        最大化时取消遮罩（全矩形，方角），让面板贴合屏幕工作区。
-        """
-        if getattr(self, "central", None) is None:
-            return
-        w, h = self.width(), self.height()
-        if w <= 0 or h <= 0:
-            return
-        if self.isMaximized():
-            self.central.clearMask()
-            return
-        P = self._PAD
-        r = self._RADIUS
-        rect = QRect(P, P, w - 2 * P, h - 2 * P)
-        pp = QPainterPath()
-        pp.addRoundedRect(QRectF(rect), r, r)
-        poly = pp.toFillPolygon(QTransform())
-        self.central.setMask(QRegion(poly.toPolygon()))
-
-    def _apply_window_chrome_state(self):
-        """根据是否最大化调整留白：最大化时留白归零、面板贴合屏幕工作区。"""
-        pad = 0 if self.isMaximized() else self._PAD
-        if getattr(self, "_root_layout", None) is not None:
-            self._root_layout.setContentsMargins(pad, pad, pad, pad)
 
     def _init_ui(self):
         central = QWidget()
@@ -334,44 +194,7 @@ class UnifiedSettingsWindow(QMainWindow):
         root.setContentsMargins(self._PAD, self._PAD, self._PAD, self._PAD)
         root.setSpacing(0)
 
-        # ---------- 自定义标题栏 ----------
-        self.titlebar = QWidget()
-        self.titlebar.setFixedHeight(self._TITLEBAR_H)
-        troot = QHBoxLayout(self.titlebar)
-        troot.setContentsMargins(8, 0, 8, 0)
-        troot.setSpacing(8)
-
-        troot.addStretch(1)
-
-        # 最小化、最大化/恢复、关闭按钮
-        self._min_btn = QPushButton("\u2212")          # −
-        self._min_btn.setObjectName("TitleButton")
-        self._min_btn.setFixedSize(40, 30)
-        self._min_btn.setCursor(Qt.PointingHandCursor)
-        self._min_btn.clicked.connect(self.showMinimized)
-
-        self._max_btn = QPushButton("\u25a1")          # □
-        self._max_btn.setObjectName("TitleButton")
-        self._max_btn.setFixedSize(40, 30)
-        self._max_btn.setCursor(Qt.PointingHandCursor)
-        self._max_btn.clicked.connect(self._toggle_maximize)
-
-        # 关闭按钮（Segoe Fluent Icons 叉号）
-        self._close_btn = QPushButton()
-        self._close_btn.setObjectName("TitleClose")
-        self._close_btn.setFixedSize(34, 30)
-        self._close_btn.setCursor(Qt.PointingHandCursor)
-        self._close_ico = icon_label("close", 14, self.theme.text)
-        cb_layout = QHBoxLayout(self._close_btn)
-        cb_layout.setContentsMargins(0, 0, 0, 0)
-        cb_layout.addStretch(1)
-        cb_layout.addWidget(self._close_ico)
-        cb_layout.addStretch(1)
-        self._close_btn.clicked.connect(self.close)
-        troot.addWidget(self._min_btn)
-        troot.addWidget(self._max_btn)
-        troot.addWidget(self._close_btn)
-        root.addWidget(self.titlebar)
+        root.addWidget(self._build_titlebar())
 
         # ---------- 主体：左导航 + 右内容 ----------
         body = QHBoxLayout()
@@ -385,21 +208,24 @@ class UnifiedSettingsWindow(QMainWindow):
         sroot.setSpacing(6)
 
         self._nav_container = QWidget()
-        nvbox = QVBoxLayout(self._nav_container)
-        nvbox.setContentsMargins(0, 0, 0, 0)
-        nvbox.setSpacing(4)
-        for icon_name, text, key in self._NAV:
-            item = _NavItem(icon_name, text, self.theme)
+        self._nav_layout_box = QVBoxLayout(self._nav_container)
+        self._nav_layout_box.setContentsMargins(0, 0, 0, 0)
+        self._nav_layout_box.setSpacing(4)
+
+        # 导航控制器：内置导航由 NavController.NAV_ITEMS 驱动
+        self._nav = NavController(self, self._make_nav_item)
+        for icon_name, text, key in NavController.NAV_ITEMS:
+            item = self._make_nav_item(icon_name, text)
             item.clicked.connect(lambda k=key: self._set_page(k))
-            nvbox.addWidget(item)
-            self._nav_items.append((key, item))
+            self._nav_layout_box.addWidget(item)
+            self._nav.add_existing_item(key, item)
         # 开发者模式专属导航项：仅当已解锁才出现（插入到末尾的 stretch 之前）
         if self.config.get("developer_mode", False):
-            self._add_dev_nav_item(nvbox)
+            self._nav.add_nav_item("developer", "开发者", "code")
         # 测试功能专属导航项：「插件」页（use_test_features 门控，见 _sync_plugin_tab）
         if self.plugins is not None and self.config.get("use_test_features", False):
-            self._add_plugin_nav_item(nvbox)
-        nvbox.addStretch(1)
+            self._nav.add_nav_item("plugin", "插件", "plugin")
+        self._nav_layout_box.addStretch(1)
         sroot.addWidget(self._nav_container, 1)
 
         body.addWidget(self.sidebar)
@@ -417,7 +243,58 @@ class UnifiedSettingsWindow(QMainWindow):
 
         root.addLayout(body)
 
-        # 创建各页
+        self._build_pages()
+        self._wire_page_signals()
+        self._set_page("home", animate=False)
+
+    def _build_titlebar(self):
+        """自定义标题栏：最小化 / 最大化 / 关闭三键。"""
+        self.titlebar = QWidget()
+        self.titlebar.setFixedHeight(self._TITLEBAR_H)
+        troot = QHBoxLayout(self.titlebar)
+        troot.setContentsMargins(8, 0, 8, 0)
+        troot.setSpacing(8)
+        troot.addStretch(1)
+
+        self._min_btn = QPushButton("\u2212")          # −
+        self._min_btn.setObjectName("TitleButton")
+        self._min_btn.setFixedSize(40, 30)
+        self._min_btn.setCursor(Qt.PointingHandCursor)
+        self._min_btn.clicked.connect(self.showMinimized)
+
+        self._max_btn = QPushButton("\u25a1")          # □
+        self._max_btn.setObjectName("TitleButton")
+        self._max_btn.setFixedSize(40, 30)
+        self._max_btn.setCursor(Qt.PointingHandCursor)
+        self._max_btn.clicked.connect(self._toggle_maximize)
+
+        self._close_btn = QPushButton()
+        self._close_btn.setObjectName("TitleClose")
+        self._close_btn.setFixedSize(34, 30)
+        self._close_btn.setCursor(Qt.PointingHandCursor)
+        self._close_ico = icon_label("close", 14, self.theme.text)
+        cb_layout = QHBoxLayout(self._close_btn)
+        cb_layout.setContentsMargins(0, 0, 0, 0)
+        cb_layout.addStretch(1)
+        cb_layout.addWidget(self._close_ico)
+        cb_layout.addStretch(1)
+        self._close_btn.clicked.connect(self.close)
+
+        troot.addWidget(self._min_btn)
+        troot.addWidget(self._max_btn)
+        troot.addWidget(self._close_btn)
+        return self.titlebar
+
+    def _make_nav_item(self, icon_name, text):
+        return _NavItem(icon_name, text, self.theme)
+
+    def _title_btn_rects(self):
+        """三个标题栏按钮在窗口坐标系中的矩形（用于 WM_NCHITTEST 排除点击）。"""
+        return [QRect(btn.mapTo(self, QPoint(0, 0)), btn.size())
+                for btn in (self._min_btn, self._max_btn, self._close_btn)]
+
+    def _build_pages(self):
+        """创建七个业务页 + 开发者页 + 插件页，并挂进内容栈。"""
         self.home_page = HomePage(self.config, self.state, self.user_kao, self.triggers, self.data)
         self.library_page = LibraryPage(self.data)
         self.custom_page = CustomKaomojiPage(self.user_kao)
@@ -426,202 +303,96 @@ class UnifiedSettingsWindow(QMainWindow):
         self.settings_page = SettingsPage(self.config)
         self.about_page = AboutPage(self.config, self.state, self.save_config, self.open_log)
 
-        self._pages = {
-            "home": self.home_page,
-            "library": self.library_page,
-            "custom": self.custom_page,
-            "triggers": self.trigger_page,
-            "search": self.search_page,
-            "settings": self.settings_page,
-            "about": self.about_page,
-        }
+        for key, page in (
+            ("home", self.home_page), ("library", self.library_page),
+            ("custom", self.custom_page), ("triggers", self.trigger_page),
+            ("search", self.search_page), ("settings", self.settings_page),
+            ("about", self.about_page),
+        ):
+            self._nav.register_page(key, page)
+
         # 开发者模式标签页：仅当已解锁时创建并加入栈
         if self.config.get("developer_mode", False):
+            from ui.dev import DevPage
             self.dev_page = DevPage(
                 self.dev_refs, self.config, self.save_config, self.theme.name)
             self.dev_page.developer_mode_disabled.connect(self._disable_dev_tab)
             self.dev_page.test_features_changed.connect(self._on_test_features_changed)
-            self._pages["developer"] = self.dev_page
+            self._nav.register_page("developer", self.dev_page)
         # 插件页：测试功能开启且传入 PluginManager 时创建
         self.plugin_page = None
         if self.plugins is not None and self.config.get("use_test_features", False):
+            from ui.pages import PluginPage
             self.plugin_page = PluginPage(self.plugins, self.theme.name)
-            self._pages["plugin"] = self.plugin_page
-        for p in self._pages.values():
-            self.content.addWidget(p)
+            self._nav.register_page("plugin", self.plugin_page)
         # 插件集合变化（启用/停用/重载/重扫）时刷新库页分类与插件页列表
         if self.plugins is not None:
             self.plugins.changed.connect(self._on_plugins_changed)
             # UI 登记项变化（注册/注销设置面板、独立页）时同步界面
-            self.plugins.ui_changed.connect(self._sync_plugin_pages)
-            self._sync_plugin_pages()
+            self.plugins.ui_changed.connect(self._nav.sync_plugin_pages)
+            self._nav.sync_plugin_pages()
 
-        # 信号
+    def _wire_page_signals(self):
         self.home_page.nav_request.connect(self._set_page)
         self.library_page.selected.connect(self.output_selected.emit)
         self.search_page.selected.connect(self.output_selected.emit)
         self.settings_page.config_applied.connect(self._on_settings_applied)
         # 关于页连点版本号解锁开发者模式后，实时添加「开发者」标签（无需重开窗口）
-        self.about_page.developer_mode_enabled.connect(self._enable_dev_tab)
+        self.about_page.developer_mode_enabled.connect(self._nav.enable_dev_tab)
 
-        self._set_page("home", animate=False)
-
+    # ==================================================================
+    # 页面调度（转发给 NavController，保留原方法名以免破坏调用方）
+    # ==================================================================
     def _set_page(self, key, animate=True):
-        target = None
-        for i, (k, item) in enumerate(self._nav_items):
-            selected = k == key
-            item.set_selected(selected)
-            if selected:
-                target = i
-        if target is None:
-            return
-        # 窗口未显示时没有有效 geometry，动画会导致布局错乱，强制走静态切换
-        if animate and not self.isVisible():
-            animate = False
-        # 进入/离开时管理开发者页后台计时器：离开即停止（含退出动画期间），
-        # 避免淡出动画过程中后台仍刷新文本导致「文字跳动/闪烁」；进入时启动。
-        leaving = self.content.currentWidget()
-        entering = self._pages.get(key)
-        if leaving is not entering:
-            if isinstance(leaving, DevPage):
-                leaving.set_active(False)
-            if isinstance(entering, DevPage):
-                entering.set_active(True)
-        if animate:
-            # 真实交叉淡入淡出 + 轻微上浮，旧页淡出、新页淡入，无文字残留
-            self.content.slide_to(self._pages[key], 230, rise=10)
-        else:
-            self.content.setCurrentWidget(self._pages[key])
+        self._nav.set_page(key, animate)
+
+    def on_page_shown(self, key):
+        """页面切到前台后的刷新钩子。"""
         if key == "home":
             self.home_page.refresh_stats()
-        if key == "search":
+        elif key == "search":
             self.search_page.focus_query()
 
-    # ---------- 插件标签（测试功能门控） ----------
     def _add_nav_item(self, key, title, icon, nav_layout=None):
-        """在导航栏末尾（stretch 之前）插入一个导航项并登记。
-
-        插件页、开发者页、插件扩展页三处原先各写一遍同样的
-        「建 _NavItem + 连 clicked + insertWidget(count-1) + 登记 _nav_items」，
-        漏一处就会出现「页面在栈里但侧边栏点不到」。
-        """
-        if nav_layout is None:
-            nav_layout = self._nav_container.layout()
-        if any(k == key for k, _ in self._nav_items):
-            return None
-        item = _NavItem(icon, title, self.theme)
-        item.clicked.connect(lambda k=key: self._set_page(k))
-        nav_layout.insertWidget(max(0, nav_layout.count() - 1), item)
-        self._nav_items.append((key, item))
-        return item
+        return self._nav.add_nav_item(key, title, icon, nav_layout)
 
     def _remove_nav_item(self, key, nav_layout=None):
-        """从侧边栏摘掉并销毁一个导航项（找不到时静默返回 None）。"""
-        if nav_layout is None:
-            nav_layout = self._nav_container.layout()
-        item = None
-        for i, (k, it) in enumerate(self._nav_items):
-            if k == key:
-                item = self._nav_items.pop(i)[1]
-                break
-        if item is not None:
-            try:
-                nav_layout.removeWidget(item)
-                item.setParent(None)
-                item.deleteLater()
-            except RuntimeError:
-                pass
-        return item
+        return self._nav.remove_nav_item(key, nav_layout)
 
-    def _add_plugin_nav_item(self, nav_layout=None):
-        """插入「插件」导航项（拼图图标由程序绘制）。"""
-        return self._add_nav_item("plugin", "插件", "plugin", nav_layout)
-
-    # ---------- 插件扩展页（侧边栏，api.register_page） ----------
     def _sync_plugin_pages(self):
-        """按 PluginManager 的 UI 注册表增删插件侧边栏页。
+        self._nav.sync_plugin_pages()
 
-        约定：manager 只登记 spec/factory，widget 实例由本窗口创建、插入
-        QStackedWidget 并在插件卸载（registry 里查不到）时自动移除销毁，
-        避免出现「插件已卸载但页面还在」的悬垂界面。
-        """
-        if self.plugins is None:
+    def _sync_plugin_tab(self):
+        self._nav.sync_plugin_tab()
+
+    def _enable_dev_tab(self):
+        self._nav.enable_dev_tab()
+
+    def _disable_dev_tab(self):
+        """关闭开发者模式：置 config 标志为 false 并保存，实时移除标签页，跳回设置页。"""
+        if not self._developer_mode:
             return
-        nav_layout = self._nav_container.layout()
-        try:
-            specs = self.plugins.plugin_pages()
-        except Exception:
-            specs = {}
-        # 测试模式关闭时，插件页整体不可用：清掉所有插件扩展页
-        if not self.config.get("use_test_features", False):
-            specs = {}
-        # 1) 新增
-        for key, spec in specs.items():
-            if key in self._plugin_pages:
-                continue
-            widget = self._build_plugin_page(key, spec)
-            if widget is None:
-                continue
-            self._plugin_pages[key] = widget
-            self.content.addWidget(widget)
-            self._pages[key] = widget
-            item = _NavItem(spec.get("icon") or "plugin", spec.get("title") or "插件页",
-                            self.theme)
-            item.clicked.connect(lambda k=key: self._set_page(k))
-            nav_layout.insertWidget(max(0, nav_layout.count() - 1), item)
-            self._nav_items.append((key, item))
-            self._plugin_nav[key] = item
-        # 2) 移除：registry 里已不存在（插件停用/卸载/重扫丢失）
-        current = self.content.currentWidget()
-        leaving_key = next((k for k, w in self._plugin_pages.items()
-                            if w is current), None)
-        for key in [k for k in self._plugin_pages if k not in specs]:
-            self._remove_plugin_page(key, nav_layout)
-        if leaving_key and leaving_key not in self._plugin_pages:
-            self._set_page("home")
-        if specs and nav_layout is not None:
-            nav_layout.update()
-            self.sidebar.update()
-
-    def _build_plugin_page(self, key, spec):
-        """调用插件 factory 构建页面；失败时返回 None（不占侧边栏位置）。"""
-        try:
-            widget = spec["factory"](self.content)
-        except Exception as e:
-            self._note_plugin_page_error(key, spec, e)
-            return None
-        if not isinstance(widget, QWidget):
-            self._note_plugin_page_error(key, spec, TypeError("factory 未返回 QWidget"))
-            return None
-        try:
-            apply_child_theme(widget, self.theme)
-            widget.setProperty("pluginId", spec.get("plugin", ""))
-        except Exception:
-            pass
-        return widget
-
-    def _note_plugin_page_error(self, key, spec, exc):
-        msg = ("插件 %s 的页面 %r 构建失败：%s: %s"
-               % (spec.get("plugin", "?"), spec.get("title") or key,
-                  type(exc).__name__, exc))
-        try:
-            self.plugins._log("error", "plugins", msg)
-        except Exception:
-            pass
-
-    def _remove_plugin_page(self, key, nav_layout=None):
-        """从导航与内容栈中移除并销毁一个插件扩展页。"""
-        widget = self._plugin_pages.pop(key, None)
-        self._pages.pop(key, None)
-        self._plugin_nav.pop(key, None)
-        self._remove_nav_item(key, nav_layout)
-        if widget is not None:
+        self._developer_mode = False
+        self.config["developer_mode"] = False
+        # 关闭开发者模式时连带关闭「测试模式」：测试功能总开关只存在于开发者页，
+        # 关掉开发者模式应一并关掉测试模式，否则测试功能会逃逸到正式环境。
+        # use_test_features=False 后，下方 save_config 会按 TEST_FEATURE_DEFAULTS
+        # 把各测试项（如 use_uia_elevation）强制归位默认值。
+        self.config["use_test_features"] = False
+        # 同步清空关于页的开发者模式状态，否则它仍记着 developer_mode=True，
+        # 再次连点版本号会被短路、不再发出 developer_mode_enabled，无法二次进入。
+        self.about_page.reset_developer_mode()
+        self._nav.disable_dev_tab()
+        # 跳回设置页（保留与进入一致的淡入动画体验）
+        self._set_page("settings")
+        # 保存放到 UI 更新之后：即使落盘异常，也不能让页签继续显示在界面上。
+        if self.save_config:
             try:
-                self.content.removeWidget(widget)
-                widget.setParent(None)
-                widget.deleteLater()
-            except RuntimeError:
+                self.save_config(self.config)
+            except Exception:
                 pass
+        # 落盘后同步让设置页重新评估测试项可见性，与开发者页切换开关走同一刷新路径
+        self._on_test_features_changed()
 
     def _on_plugins_changed(self):
         """插件集合变化：库页分类与插件页列表需要重建。"""
@@ -632,125 +403,9 @@ class UnifiedSettingsWindow(QMainWindow):
         if self.plugin_page is not None:
             self.plugin_page.refresh()
 
-    def _sync_plugin_tab(self):
-        """测试功能开关变化后同步「插件」导航项与页面的显隐。"""
-        if self.plugins is None:
-            return
-        wanted = bool(self.config.get("use_test_features", False))
-        has = "plugin" in self._pages
-        if wanted and not has:
-            self._add_plugin_nav_item()
-            self.plugin_page = PluginPage(self.plugins, self.theme.name)
-            self._pages["plugin"] = self.plugin_page
-            self.content.addWidget(self.plugin_page)
-            self.plugin_page.set_theme(self.theme)
-            self.sidebar.update()
-        elif not wanted and has:
-            leaving = self.content.currentWidget() is self._pages["plugin"]
-            nav_layout = self._nav_container.layout()
-            self._remove_nav_item("plugin", nav_layout)
-            nav_layout.update()
-            self.sidebar.update()
-            # 页面必须真正销毁：removeWidget 只是移出栈，widget 仍挂在 content 上，
-            # 且 PluginPage 连着 manager.ui_changed——反复开关测试模式会越积越多，
-            # 每次插件变动都被多个僵尸页面重复刷新。
-            page = self._pages.pop("plugin")
-            self.content.removeWidget(page)
-            page.setParent(None)
-            try:
-                page.shutdown()          # 释放插件设置面板缓存
-            except Exception:
-                pass
-            page.deleteLater()
-            self.plugin_page = None
-            if leaving:
-                self._set_page("home")
-        # 关闭测试模式时，插件的侧边栏扩展页也必须一并移除（否则会逃逸到正式环境）
-        if not wanted:
-            self._sync_plugin_pages()
-
-    # ---------- 开发者标签 ----------
-    def _add_dev_nav_item(self, nav_layout=None):
-        """插入「开发者」导航项（末尾 stretch 之前，保持它在列表底部）。"""
-        return self._add_nav_item("developer", "开发者", "code", nav_layout)
-
-    def _enable_dev_tab(self):
-        """关于页解锁开发者模式后实时添加「开发者」标签（无需重开窗口）。
-
-        分两步：先把导航项同步加入侧边栏并立即刷新，给用户即时反馈
-        （避免“首次进入侧边栏不立即出现标签页”）；重型 DevPage 构建放到下一事件循环，
-        既避免第 8 次点击瞬间卡顿，又让侧边栏先完成布局、标签页随后淡入。
-        """
-        if "developer" in self._pages or getattr(self, "_dev_enabling", False):
-            return
-        if self._developer_mode:
-            return
-        self._dev_enabling = True
-        # 1) 同步加入导航项并高亮，侧边栏立即出现「开发者」入口
-        if not any(k == "developer" for k, _ in self._nav_items):
-            self._add_dev_nav_item(self._nav_container.layout())
-            self.sidebar.update()
-        # 2) 重型构建延后，避免点击瞬间主线程阻塞
-        QTimer.singleShot(0, self._finish_enable_dev_tab)
-
-    def _finish_enable_dev_tab(self):
-        self._dev_enabling = False
-        if "developer" in self._pages:
-            return
-        self.dev_page = DevPage(
-            self.dev_refs, self.config, self.save_config, self.theme.name)
-        self.dev_page.developer_mode_disabled.connect(self._disable_dev_tab)
-        self.dev_page.test_features_changed.connect(self._on_test_features_changed)
-        self._pages["developer"] = self.dev_page
-        self.content.addWidget(self.dev_page)
-        self.dev_page.set_theme(self.theme)
-        self._developer_mode = True
-        self.config["developer_mode"] = True
-        # 若当前停在关于页，自动跳到开发者页，让用户立刻看到入口
-        self._set_page("developer")
-
-    def _disable_dev_tab(self):
-        """关闭开发者模式：置 config 标志为 false 并保存，实时移除标签页与导航项，跳回设置页。"""
-        if not self._developer_mode:
-            return
-        self._developer_mode = False
-        # 先暂停开发者页后台计时器，避免移除过程中仍触发刷新
-        dev = self._pages.get("developer")
-        if dev is not None:
-            dev.set_active(False)
-        self.config["developer_mode"] = False
-        # 关闭开发者模式时连带关闭「测试模式」：测试功能总开关只存在于开发者页，
-        # 关掉开发者模式应一并关掉测试模式，否则测试功能会逃逸到正式环境。
-        # use_test_features=False 后，下方 save_config 会按 _TEST_FEATURE_DEFAULTS
-        # 把各测试项（如 use_uia_elevation）强制归位默认值，实现「自动关闭并归位」。
-        self.config["use_test_features"] = False
-        # 同步清空关于页的开发者模式状态，否则其仍记着 developer_mode=True，
-        # 再次连点版本号会被短路、不再发出 developer_mode_enabled，导致无法二次进入。
-        self.about_page.reset_developer_mode()
-        # 移除导航项（保留其他项顺序）
-        nav_layout = self._nav_container.layout()
-        self._remove_nav_item("developer", nav_layout)
-        nav_layout.update()
-        self.sidebar.update()
-        # 从栈与页面表中移除开发者页（并真正销毁，避免反复开关堆积僵尸页面）
-        if "developer" in self._pages:
-            page = self._pages.pop("developer")
-            self.content.removeWidget(page)
-            page.setParent(None)
-            page.deleteLater()
-        self.dev_page = None
-        # 跳回设置页（保留与进入一致的淡入动画体验）
-        self._set_page("settings")
-        # 保存放到 UI 更新之后：即使落盘异常，也不能让页签继续显示在界面上。
-        if self.save_config:
-            try:
-                self.save_config(self.config)
-            except Exception:
-                pass
-        # 落盘后同步让设置页重新评估测试项可见性（隐藏测试功能分组、禁用并回退输入方式），
-        # 与开发者页切换「测试功能」开关走同一刷新路径，确保 UI 即时反映「测试模式已关闭并归位」。
-        self._on_test_features_changed()
-
+    # ==================================================================
+    # 主题与配置
+    # ==================================================================
     def _apply_theme(self):
         t = self.theme
         ss = t.style_sheet()
@@ -764,24 +419,23 @@ class UnifiedSettingsWindow(QMainWindow):
             self._content_surface = surface
             self.setStyleSheet(ss)
             # 内容区表面较侧栏略实，形成 Win11 设置式层次（半透明以透出亚克力）。
-            # 关键：content 必须应用「完整」主题 QSS，否则它的 setStyleSheet 会切断主窗口全局
-            # QSS 的级联，导致其内部子页（设置/库/我的颜文字…）的 QPushButton#AccentButton、滑块、
-            # 开关等收不到样式（典型表现：浅色模式下“应用并保存”白底白字不可见）。
+            # 关键：content 必须应用「完整」主题 QSS，否则它的 setStyleSheet 会切断
+            # 主窗口全局 QSS 的级联，导致其内部子页的 QPushButton#AccentButton、
+            # 滑块、开关等收不到样式（浅色模式下白底白字不可见）。
             self._refresh_content_sheet()
-            # 子页的自定义控件同样是全量重贴 QSS（实测 ≈50ms），只有主题真的变了才需要。
+            # 子页的自定义控件同样是全量重贴 QSS（实测 ≈50ms），只有主题真变了才需要。
             self._apply_theme_to_pages(t)
         # 下面几步都是「把值写回小控件」，幂等——值没变就别重设样式表，
         # 否则每次 setStyleSheet 都会让该控件及其子控件重新 polish。
         if self.sidebar.styleSheet() != _SIDEBAR_SS:
             self.sidebar.setStyleSheet(_SIDEBAR_SS)
         recolor(self._close_ico, t.text)
-        # 标题栏按钮颜色刷新
         for btn in (self._min_btn, self._max_btn):
             want = "color:%s;" % t.text_secondary
             if btn.styleSheet() != want:
                 btn.setStyleSheet(want)
         # 导航项刷新主题
-        for _, item in self._nav_items:
+        for _, item in self._nav.nav_items:
             item.update_theme(t)
         # 把「已解析」的主题名同步给插件管理器，供插件弹窗/消息框取深浅色
         if self.plugins is not None:
@@ -806,9 +460,9 @@ class UnifiedSettingsWindow(QMainWindow):
         self.about_page.config = config
         self.settings_page.refresh_from_config()
         # 测试功能可见性可能随外部应用配置变化（如关闭测试模式），同步插件页显隐
-        pages_before = set(self._pages)
+        pages_before = set(self._nav.pages)
         self._sync_plugin_tab()
-        if set(self._pages) != pages_before:
+        if set(self._nav.pages) != pages_before:
             # 页面集合变了才需要补刷：新增/移除的页是 _apply_theme() 之后才挂进来的。
             # 常规 apply_config 里 _apply_theme() 已经刷过一遍，再来一次纯属浪费
             # （实测每次多花 ≈50ms，加在热键录制「完成」这种高频路径上很致命）。
@@ -816,15 +470,15 @@ class UnifiedSettingsWindow(QMainWindow):
             self._update_backdrop()
 
     def _apply_theme_to_pages(self, t):
-        """把主题广播给所有暴露 set_theme 的子页，避免 _apply_theme/apply_config 各写一遍。"""
+        """把主题广播给所有暴露 set_theme 的子页，避免多处各写一遍。"""
         # 插件扩展页：先重垫「完整主题 QSS + 插件自定义」（幂等），保证原生控件
         # 的深浅色规则始终最新；随后页面的 set_theme(theme)（若有）再做额外定制。
-        for w in list(self._plugin_pages.values()):
+        for w in list(self._nav.plugin_pages.values()):
             try:
                 apply_child_theme(w, t)
             except Exception:
                 pass
-        for page in self._pages.values():
+        for page in self._nav.pages.values():
             if hasattr(page, "set_theme"):
                 page.set_theme(t)
 
@@ -842,6 +496,7 @@ class UnifiedSettingsWindow(QMainWindow):
         # 「插件」页同属测试功能：开关切换后同步其导航项与页面显隐
         self._sync_plugin_tab()
 
+    # ---------- 面板基底 / 内容区表面（按 panel_alpha 缩放） ----------
     def _adjusted_content_surface(self):
         """根据 panel_alpha 调整内容区表面透明度。"""
         r, g, b, a = _rgba_parts(self.theme.content_surface)
@@ -849,13 +504,11 @@ class UnifiedSettingsWindow(QMainWindow):
         return _rgba_str(r, g, b, max(0.0, min(1.0, a * alpha)))
 
     def _refresh_content_sheet(self):
-        """刷新内容区（self.content）样式表：在完整主题 QSS 基础上追加其内容区表面背景。
+        """刷新内容区样式表：在完整主题 QSS 基础上追加其内容区表面背景。
 
-        关键点：self.content 自身 setStyleSheet 会切断主窗口全局 QSS 的级联（Qt 行为——
-        带自身样式表的控件，其派生控件不再继承更上层祖先的样式表规则），因此这里必须把完整
-        style_sheet() 一并设给它，其内部所有子页（设置/库/我的颜文字…）的 QPushButton#AccentButton、
-        滑块、开关等规则才能生效；否则仅设 background 会让派生控件“降级”为原生样式
-        （浅色模式下 AccentButton 白底白字、与卡片融为一体不可见，正是此因）。
+        关键点：self.content 自身 setStyleSheet 会切断主窗口全局 QSS 的级联，
+        因此必须把完整 style_sheet() 一并设给它；否则仅设 background 会让派生
+        控件「降级」为原生样式（浅色模式下 AccentButton 白底白字、不可见）。
         """
         if not getattr(self, "_theme_ss", ""):
             return
@@ -869,157 +522,33 @@ class UnifiedSettingsWindow(QMainWindow):
         """面板基底色，按 panel_alpha（语义=不透明度，值越大越实）缩放。
 
         - 亚克力开启：基底 RGB 取 window_tint，但不透明度直接由 panel_alpha 决定
-          （映射并保底 0.6），让「不透明度」滑块在开亚克力时也真实生效；拉到 100% 即接近
-          实色磨砂玻璃，不再“永远半透明、甚至比关亚克力还透”。
-          原 bug：window_tint 固有 alpha 仅 0.85/0.88，乘 panel_alpha 后最多 0.85，
-          导致即使不透明度拉满面板仍透明。
-        - 亚克力关闭：纯色底 bg 直接按 panel_alpha 缩放（保底 0.4），纯色半透明。
+          （映射并保底 0.6），让「不透明度」滑块在开亚克力时也真实生效；拉到 100%
+          即接近实色磨砂玻璃，不再"永远半透明、甚至比关亚克力还透"。
+          原 bug：window_tint 固有 alpha 仅 0.85/0.88，乘 panel_alpha 后最多 0.85。
+        - 亚克力关闭：纯色底 bg 直接按 panel_alpha 缩放（保底 0.4）。
         """
         base = self.theme.window_tint if self._acrylic_on else self.theme.bg
         alpha = float(self.config.get("panel_alpha", 0.92))
         r, g, b, _ = _rgba_parts(base)
         if self._acrylic_on:
-            # 不透明度滑块映射（保底 0.6 让磨砂层始终可见；100% 时完全实色）
             a = max(0.6, min(1.0, 0.55 + 0.45 * alpha))
         else:
             a = max(0.4, min(1.0, alpha))
         return _rgba_str(r, g, b, a)
 
+    # ---------- 生命周期 ----------
     def showEvent(self, e):
         super().showEvent(e)
-        self._apply_window_chrome_state()
         self._update_mask()
         self._update_backdrop()
         self._update_max_btn_glyph()
         self.home_page.refresh_stats()
 
-    def show(self):
-        """重写 show：若上次关闭时处于最大化，则直接以最大化状态显示。
-
-        依赖 hideEvent 里已把 Qt 侧窗口状态清成 WindowNoState，
-        这样这里的 showMaximized() 一定是一次「真实的状态跃迁」，
-        Qt 与原生 WINDOWPLACEMENT 保持同步（详见 _remember_and_reset_state）。
-        """
-        if self.isVisible():
-            super().show()
-            return
-        if getattr(self, "_saved_maximized", False):
-            self.showMaximized()
-            return
-        geom = getattr(self, "_normal_geometry", None)
-        if geom is not None and geom.isValid():
-            # 隐藏态走 hideEvent 只清了 Qt 侧状态，原生 WS_MAXIMIZE 仍残留，
-            # 不先清掉就 setGeometry 会被钳到工作区（报 'Unable to set geometry'
-            # 且 WM_NCHITTEST 禁用缩放热区 → 卡住无法缩小）。
-            self._clear_native_maximized()
-            self.setGeometry(geom)
-        super().show()
-
     def closeEvent(self, e):
         self.finished.emit()
         super().closeEvent(e)
-        # 窗口状态的保存/清零统一放在 hideEvent：close() 与 main.py 里的
-        # hide()（选中颜文字后收起面板）两条路径都会经过它，不会漏。
-
-    def hideEvent(self, e):
-        super().hideEvent(e)
-        self._remember_and_reset_state()
-
-    def _remember_and_reset_state(self):
-        """窗口隐藏后：记住最大化意图，并把 Qt 侧窗口状态清零。
-
-        为什么必须清零（这正是「重新打开后第一次点还原被吞掉」的根因）：
-          Qt 隐藏窗口时**不会**清掉 WindowMaximized 标志，而
-          QWidget.setWindowState() 在 old == new 时会直接 return。
-          于是「最大化 -> 关闭 -> 重新打开」时，showMaximized() 里的
-          setWindowState(Maximized) 因为状态没变而早退，原生侧从未收到
-          这次状态设置，Qt 记的状态和 Windows 的 WINDOWPLACEMENT 失配。
-          结果第一次点「还原」时 showNormal() 只是把 Qt 状态改回 Normal，
-          原生窗口纹丝不动 —— 看起来就是这一下被吞了，得再点一次才生效。
-
-        隐藏状态下调用 setWindowState 是安全的：Qt 的 setWindowState_sys
-        里有 `visible` 守卫，不可见时只更新内部状态、不会 ShowWindow，
-        所以没有任何视觉副作用。
-        """
-        if self.isMinimized():
-            return                        # 最小化不算隐藏，别把状态记错
-        self._saved_maximized = self.isMaximized()
-        if not self._saved_maximized:
-            g = self.geometry()
-            if g.isValid():
-                self._normal_geometry = g
-        if self.windowState() != Qt.WindowNoState:
-            try:
-                self.setWindowState(Qt.WindowNoState)
-            except Exception:
-                pass
-
-    def resizeEvent(self, e):
-        super().resizeEvent(e)
-        self._apply_window_chrome_state()
-        self._update_mask()
-
-    def _update_backdrop(self):
-        hwnd = int(self.winId())
-        # 亚克力模糊为窗口核心视觉效果，始终启用（DWM 不可用时 apply_backdrop 为 no-op）
-        apply_backdrop(hwnd, DWMSBT_TRANSIENTWINDOW)
-        apply_dark_mode(hwnd, self.theme.dark)
-
-    def _toggle_maximize(self):
-        if self.isMaximized():
-            self.showNormal()
-            # 不要在这里硬 setGeometry：会和 Windows 自己的还原逻辑打架。
-            # 只在还原确实没生效时兜底（见 _ensure_normal_geometry）。
-            QTimer.singleShot(0, self._ensure_normal_geometry)
-        else:
-            # 最大化前保存普通几何，供恢复时使用
-            g = self.geometry()
-            if g.isValid():
-                self._normal_geometry = g
-            self.showMaximized()
-
-    def _clear_native_maximized(self):
-        """无边框窗口在隐藏态下调 setWindowState(NoState) 不会清掉原生 WS_MAXIMIZE 样式，
-        导致重新显示时窗口仍带最大化样式：setGeometry 被钳到工作区（报
-        'Unable to set geometry' 警告），且 WM_NCHITTEST 在 maximized 下禁用缩放热区，
-        表现成「窗口卡住、无法缩小」。这里直接用原生 API 清掉 WS_MAXIMIZE 并刷新样式，
-        让窗口回到可缩放的普通态。"""
-        try:
-            hwnd = int(self.winId())
-            if not hwnd:
-                return
-            user32 = ctypes.windll.user32
-            GWL_STYLE = -16
-            WS_MAXIMIZE = 0x01000000
-            style = user32.GetWindowLongW(hwnd, GWL_STYLE)
-            if style & WS_MAXIMIZE:
-                user32.SetWindowLongW(hwnd, GWL_STYLE, style & ~WS_MAXIMIZE)
-                # NOMOVE | NOSIZE | NOZORDER | FRAMECHANGED：仅刷新样式，使去最大化立即生效
-                user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0020)
-        except Exception:
-            pass
-
-    def _ensure_normal_geometry(self):
-        """还原后若窗口仍占满工作区，说明 showNormal 没真正落地，用保存值兜底。
-
-        关键：先清掉原生 WS_MAXIMIZE 残留（见 _clear_native_maximized），否则窗口会卡在
-        最大化态——既报 'Unable to set geometry' 警告，又因 WM_NCHITTEST 在 maximized 下
-        禁用缩放热区而「无法缩小」。"""
-        if not self.isVisible() or self.isMinimized():
-            return
-        self._clear_native_maximized()
-        if self.isMaximized():
-            self.showNormal()
-        geom = getattr(self, "_normal_geometry", None)
-        if geom is None or not geom.isValid():
-            return
-        try:
-            avail = self.screen().availableGeometry()
-        except Exception:
-            return
-        cur = self.geometry()
-        if cur.width() >= avail.width() - 2 and cur.height() >= avail.height() - 2:
-            self.setGeometry(geom)
+        # 窗口状态的保存/清零统一放在 hideEvent：close() 与 hide()（选中颜文字后
+        # 收起面板）两条路径都会经过它，不会漏。
 
     def _update_max_btn_glyph(self):
         self._max_btn.setText("\u25a1" if not self.isMaximized() else "\u25d9")
@@ -1027,146 +556,4 @@ class UnifiedSettingsWindow(QMainWindow):
     def changeEvent(self, e):
         super().changeEvent(e)
         if e.type() == QEvent.WindowStateChange:
-            self._track_minimize_restore(e.oldState())
             self._update_max_btn_glyph()
-            self._apply_window_chrome_state()
-            self._update_mask()
-            self.update()
-
-    def _track_minimize_restore(self, old_state):
-        """让最大化状态扛得住「任务栏图标连点」。
-
-        点一下任务栏图标 = 最小化，再点一下 = 还原。连点两下就是
-        最小化 + 还原。无边框窗口接管了 WM_GETMINMAXINFO，这条还原路径上
-        Windows 偶尔会把窗口还原成普通尺寸而不是最大化，用户看到的就是
-        「莫名其妙退出了最大化」。这里自己记住「最小化之前是不是最大化」，
-        还原后如果掉出了最大化，就补一次 showMaximized 拉回来。
-        """
-        if self.isMinimized():
-            # 进入最小化：记下之前是否最大化。Qt 在最小化时会保留
-            # WindowMaximized 位，所以新旧状态都查一遍更稳。
-            self._max_before_min = bool(old_state & Qt.WindowMaximized) or bool(
-                self.windowState() & Qt.WindowMaximized
-            )
-            return
-        if old_state & Qt.WindowMinimized:
-            # 从最小化还原
-            if self._max_before_min and not self.isMaximized():
-                # 延后一轮：等 Windows 把还原动画/几何处理完再拉回最大化，
-                # 否则会和系统的还原过程打架。
-                QTimer.singleShot(0, self._restore_maximized)
-            self._max_before_min = False
-
-    def _restore_maximized(self):
-        if not self.isVisible() or self.isMinimized() or self.isMaximized():
-            return
-        self.showMaximized()
-
-    def _title_btn_rects_window(self):
-        """三个标题栏按钮在窗口坐标系中的矩形（用于 WM_NCHITTEST 排除点击）。"""
-        rects = []
-        for btn in (self._min_btn, self._max_btn, self._close_btn):
-            top_left = btn.mapTo(self, QPoint(0, 0))
-            rects.append(QRect(top_left, btn.size()))
-        return rects
-
-    def nativeEvent(self, eventType, message):
-        """处理原生消息：
-        * WM_GETMINMAXINFO：让最大化贴合显示器工作区（不含任务栏），
-          避免无边框窗口最大化时盖住任务栏 / 边缘留白；
-        * WM_NCHITTEST：标题栏原生拖拽、窗口八向缩放（最大化时禁用缩放热区）。
-        """
-        if eventType != "windows_generic_MSG":
-            return super().nativeEvent(eventType, message)
-        msg = MSG.from_address(int(message))
-
-        # 1) 最大化贴合工作区
-        if msg.message == WM_GETMINMAXINFO:
-            try:
-                hwnd = int(self.winId())
-                monitor = ctypes.windll.user32.MonitorFromWindow(hwnd, 2)  # MONITOR_DEFAULTTONEAREST
-                mi = _MONITORINFO()
-                mi.cbSize = ctypes.sizeof(_MONITORINFO)
-                if ctypes.windll.user32.GetMonitorInfoW(monitor, ctypes.byref(mi)):
-                    wa, mon = mi.rcWork, mi.rcMonitor
-                    mmi = _MINMAXINFO.from_address(int(msg.lParam))
-                    # ptMaxPosition 是**相对于所在显示器**的坐标，不是屏幕绝对坐标。
-                    # 主屏原点为 (0,0) 时两者恰好相同，所以单屏看不出问题；
-                    # 副屏上用绝对坐标会把窗口最大化到错误位置。
-                    mmi.ptMaxPosition.x = wa.left - mon.left
-                    mmi.ptMaxPosition.y = wa.top - mon.top
-                    mmi.ptMaxSize.x = wa.right - wa.left
-                    mmi.ptMaxSize.y = wa.bottom - wa.top
-            except Exception:
-                pass
-            return True, 0
-
-        if msg.message != WM_NCHITTEST:
-            return super().nativeEvent(eventType, message)
-
-        x = ctypes.c_short(msg.lParam & 0xFFFF).value
-        y = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
-        g = self.frameGeometry()
-        lx = x - g.x()
-        ly = y - g.y()
-        w, h = self.width(), self.height()
-        maximized = self.isMaximized()
-        P = 0 if maximized else self._PAD
-        TH = self._TITLEBAR_H
-
-        # 2) 缩放热区（仅非最大化时有留白时才生效）
-        if not maximized and P > 0:
-            R = P  # 缩放热区覆盖整圈留白
-            if lx <= R and ly <= R:
-                return True, HTTOPLEFT
-            if lx >= w - R and ly <= R:
-                return True, HTTOPRIGHT
-            if lx <= R and ly >= h - R:
-                return True, HTBOTTOMLEFT
-            if lx >= w - R and ly >= h - R:
-                return True, HTBOTTOMRIGHT
-            if lx <= R:
-                return True, HTLEFT
-            if lx >= w - R:
-                return True, HTRIGHT
-            if ly >= h - R:
-                return True, HTBOTTOM
-            if ly <= R:
-                return True, HTTOP
-        # 3) 标题栏区域：拖动移动（标题按钮除外，保证可点击）
-        if P <= ly <= P + TH:
-            for rect in self._title_btn_rects_window():
-                if rect.contains(lx, ly):
-                    return True, HTCLIENT
-            return True, HTCAPTION
-        return True, HTCLIENT
-
-    def paintEvent(self, e):
-        """自绘：亚克力基底（由 DWM 提供模糊）+ 细微竖向渐变 + 1px 圆角边框 + 柔和外阴影。
-
-        最大化时取消阴影、圆角与边框，让面板贴合屏幕工作区。
-        具体笔法见 ui/frameless_panel（与日志窗口/插件弹窗共用同一实现）。
-        """
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        maximized = self.isMaximized()
-        P = 0 if maximized else self._PAD
-        r = 0 if maximized else self._RADIUS
-        t = self.theme
-        if maximized:
-            panel = QRect(0, 0, self.width(), self.height())
-        else:
-            panel = QRect(P, P, self.width() - 2 * P, self.height() - 2 * P)
-
-        # 面板基底按 panel_alpha 缩放透明度，让「面板透明度」滑块真实作用于整块面板
-        # 背景（此前只缩放了被卡片遮挡的内容区表面，几乎看不出变化）。
-        paint_frameless_panel(
-            p, panel, radius=r,
-            tint=self._adjusted_panel_base(),
-            grad_top=t.window_grad_top,
-            grad_bottom=t.window_grad_bottom,
-            border=None if maximized else t.window_border,
-            shadow=None if maximized else self._shadow_color,
-            shadow_pad=P,
-        )
-        super().paintEvent(e)

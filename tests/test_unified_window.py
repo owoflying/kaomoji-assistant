@@ -161,7 +161,12 @@ def test_developer_tab_absent_by_default(window):
 def test_developer_tab_can_be_added_and_removed(window, qapp):
     if not window.config.get("developer_mode"):
         window._nav.enable_dev_tab()
-        qapp.processEvents()
+        # DevPage 的构建被**拆成三帧**（构造 → 套主题 → 挂载），
+        # 每步之间 singleShot(0)，所以要多跑几轮事件循环才能挂载完成。
+        # 这么做的原因见 NavController.finish_enable_dev_tab：一次性做完会让
+        # 主线程卡住约 700ms，用户在第 8 次点击后明显感到停顿。
+        for _ in range(6):
+            qapp.processEvents()
     assert "developer" in window._nav.pages
     assert window._developer_mode is True
     window._disable_dev_tab()

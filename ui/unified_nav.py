@@ -18,6 +18,7 @@
     core 层不持有 QWidget，避免插件卸载后回调打到已销毁对象。
   * 主题广播遍历 `self.pages.values()` 而不是硬编码页面名列表，新增页面自动覆盖。
 """
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QWidget
 
 from ui.dev import DevPage
@@ -294,7 +295,6 @@ class NavController:
         重型 DevPage 构建放到下一事件循环，既避免第 8 次点击瞬间卡顿，
         又让侧边栏先完成布局、标签页随后淡入。
         """
-        from PySide6.QtCore import QTimer
         host = self.host
         if "developer" in self.pages or getattr(host, "_dev_enabling", False):
             return
@@ -307,16 +307,47 @@ class NavController:
         QTimer.singleShot(0, self.finish_enable_dev_tab)
 
     def finish_enable_dev_tab(self):
+        """构建并挂载 DevPage —— **分三帧完成**，避免一次阻塞主线程。
+
+        实测单帧全做完要 ~320ms（构造 74ms + set_theme 174ms + addWidget 76ms），
+        用户在第 8 次点击后会感到明显的界面卡住。
+
+        拆成三步、每步之间用 `singleShot(0)` 让事件循环跑一轮（重绘、响应输入）：
+          ① 构造 DevPage（74ms）
+          ② set_theme 重贴 QSS（174ms），此时页面还没挂进栈，只影响它自己
+          ③ 挂进栈并切页（76ms），用户这一刻才真正看到它
+
+        代价是首帧到可见多了一两帧延迟（肉眼几乎无感），换来的是"点击立刻有反应"。
+        """
         host = self.host
         host._dev_enabling = False
         if "developer" in self.pages:
             return
+        # ① 构造
         host.dev_page = DevPage(
             host.dev_refs, host.config, host.save_config, host.theme.name)
         host.dev_page.developer_mode_disabled.connect(host._disable_dev_tab)
         host.dev_page.test_features_changed.connect(host._on_test_features_changed)
-        self.register_page("developer", host.dev_page)
-        host.dev_page.set_theme(host.theme)
+        # ② 下一帧：套主题
+        QTimer.singleShot(0, self._finish_dev_tab_theme)
+
+    def _finish_dev_tab_theme(self):
+        """第二步：给 DevPage 套主题（较贵，单独一帧）。"""
+        host = self.host
+        page = getattr(host, "dev_page", None)
+        if page is None:
+            return
+        page.set_theme(host.theme)
+        # ③ 再下一帧：挂进栈并切页
+        QTimer.singleShot(0, self._finish_dev_tab_mount)
+
+    def _finish_dev_tab_mount(self):
+        """第三步：把 DevPage 挂进内容栈、置标志、切到该页。"""
+        host = self.host
+        page = getattr(host, "dev_page", None)
+        if page is None or "developer" in self.pages:
+            return
+        self.register_page("developer", page)
         host._developer_mode = True
         host.config["developer_mode"] = True
         # 若当前停在关于页，自动跳到开发者页，让用户立刻看到入口

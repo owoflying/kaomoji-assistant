@@ -163,9 +163,17 @@ class AboutPage(QWidget):
         croot.addWidget(name)
 
         # 版本号：显示当前 commit 短哈希（如 f94d0d4），点击 8 次解锁开发者模式
+        #
+        # ⚠ 点击热区：QLabel 默认尺寸贴文字（实测高度只有 13px），
+        # 作为"点 8 次"的目标太细了，手感很差。这里给它撑到至少 24px 高
+        # （Windows 触控指南的最小点击目标），并加一点左右内边距。
         ver = QLabel("版本 " + get_app_version())
         ver.setObjectName("BodyText")
         ver.setCursor(Qt.PointingHandCursor)
+        ver.setMinimumHeight(24)
+        ver.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+        ver.setContentsMargins(0, 4, 0, 4)
+        ver.setToolTip("点击 8 次可解锁开发者模式")
         ver.installEventFilter(self)
         self._ver_label = ver
         croot.addWidget(ver)
@@ -441,9 +449,25 @@ class AboutPage(QWidget):
 
     # ---------- 事件过滤：捕获版本号点击 ----------
     def eventFilter(self, obj, event):
-        if obj is self._ver_label and event.type() == QEvent.MouseButtonPress \
+        """处理版本号的连点解锁。
+
+        ⚠ 用 **MouseButtonRelease** 而不是 MouseButtonPress：
+        按下就计数的话，按住后拖开、或按住久一点松手都会被算作多次点击，
+        手感非常"贼"。release 才是用户心智里的"我点了一下"。
+
+        ⚠ 不 echo 事件（不 return True 吞掉）会有副作用：label 需要收到
+        后续事件才能完成 Qt 内部的鼠标状态机。这里只处理 release，
+        其余事件照常放行给 super()。
+        """
+        if obj is self._ver_label and event.type() == QEvent.MouseButtonRelease \
                 and event.button() == Qt.LeftButton:
-            self._on_version_clicked()
+            # 只有"在标签内释放"才算有效点击（按下后拖出去松手 = 取消）
+            try:
+                inside = self._ver_label.rect().contains(event.position().toPoint())
+            except (AttributeError, TypeError):
+                inside = True
+            if inside:
+                self._on_version_clicked()
             return True
         return super().eventFilter(obj, event)
 
@@ -452,7 +476,7 @@ class AboutPage(QWidget):
             self._dev_hint.setText("开发者模式已启用")
             return
         self._click_count += 1
-        self._flash_version()  # 每次点击即时反馈，避免“点了没反应”的卡顿感
+        self._flash_version()  # 每次点击即时反馈，避免"点了没反应"的卡顿感
         remaining = _CLICK_TARGET - self._click_count
         if remaining <= 0:
             self._enter_developer_mode(announce=True)
@@ -461,10 +485,25 @@ class AboutPage(QWidget):
         self._click_timer.start()   # 重置超时
 
     def _flash_version(self):
-        """点击版本号时的轻量视觉反馈：短暂高亮，确认点击已被接收。"""
-        style = getattr(self, "_ver_label_flash_style", "color:#0a84ff;font-weight:bold;")
+        """点击版本号时的轻量视觉反馈：短暂高亮，确认点击已被接收。
+
+        `_flash_count` 用于"有新的闪烁时，旧的定时器不要提前把样式清掉"
+        —— 连点时每秒会起 6~8 个 singleShot(150ms)，若不判断，前一次的回调
+        会把后一次的闪烁样式清空，表现为"闪两下就没了"。
+        """
+        self._flash_count = getattr(self, "_flash_count", 0) + 1
+        token = self._flash_count
+        style = getattr(self, "_ver_label_flash_style",
+                        "color:#0a84ff;font-weight:bold;")
         self._ver_label.setStyleSheet(style)
-        QTimer.singleShot(150, lambda: self._ver_label.setStyleSheet(""))
+
+        def _restore():
+            # 只有当这仍是"最后一次"闪烁时才清空样式
+            if getattr(self, "_flash_count", 0) != token:
+                return
+            self._ver_label.setStyleSheet("")
+
+        QTimer.singleShot(150, _restore)
 
     def _reset_clicks(self):
         self._click_count = 0

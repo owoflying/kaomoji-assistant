@@ -32,6 +32,7 @@ from PySide6.QtGui import QColor, QFont
 
 from ui.frameless_shell import FramelessShell
 from ui.win_style import _has_dwm
+from core.applog import append_log
 from ui.win11_theme import (
     Theme, apply_child_theme, parse_color, resolve_theme_name,
 )
@@ -152,7 +153,7 @@ class UnifiedSettingsWindow(FramelessShell):
 
     def __init__(self, data, config, state, user_kao, triggers,
                  save_config=None, open_log=None, dev_refs=None,
-                 plugins=None, parent=None):
+                 plugins=None, parent=None, ui_registry=None):
         super().__init__(parent)
         self.data = data
         self.config = config
@@ -163,6 +164,8 @@ class UnifiedSettingsWindow(FramelessShell):
         self.open_log = open_log
         self.dev_refs = dev_refs or {}
         self.plugins = plugins      # PluginManager（可为 None：插件功能整体禁用）
+        # 界面元素登记表：插件靠它按 id 定位控件（见 core/ui_registry.py）
+        self.ui_registry = ui_registry
         # 开发者模式权威状态：用独立标志位，不依赖 self.config["developer_mode"]，
         # 避免与设置页自动保存时的字典替换/刷新相互干扰。
         self._developer_mode = bool(config.get("developer_mode", False))
@@ -245,7 +248,44 @@ class UnifiedSettingsWindow(FramelessShell):
 
         self._build_pages()
         self._wire_page_signals()
+        self._register_ui_elements()
         self._set_page("home", animate=False)
+
+    def _register_ui_elements(self):
+        """把所有内置界面的稳定 id 登记到 registry，供插件定位。
+
+        路径遍历的根由 `set_roots_provider` 提供：这里返回各业务页，
+        让 `home/GreetingCard[0]/QLabel[1]` 这类路径能解析。
+        """
+        reg = self.ui_registry
+        if reg is None:
+            return
+        from core import ui_ids
+        try:
+            ui_ids.register_shell(reg, self)
+            names = ui_ids.register_home(reg, self.home_page)
+            reg.set_roots_provider(self._ui_roots)
+            append_log("info", "ui", "已登记 %d 个界面元素 id（主页）" % names)
+            # 界面就绪：重放插件在 setup() 期间排队的 api.ui 操作。
+            # 装配顺序是「先加载插件、后建窗口」，插件 setup 时元素表还是空的，
+            # 那些调用被排队到这里才真正生效。
+            pending = len(getattr(reg, "_on_ready", []))
+            reg.mark_ready()
+            if pending:
+                append_log("info", "ui", "界面就绪，已重放 %d 项插件界面修改" % pending)
+        except Exception as e:
+            append_log("warn", "ui", "登记界面元素失败：%r" % (e,))
+
+    def _ui_roots(self):
+        """路径遍历的根容器：各业务页（其 objectName 即路径首段）。"""
+        out = []
+        for key, page in self._nav.pages.items():
+            if page is None:
+                continue
+            if not page.objectName():
+                page.setObjectName(key)
+            out.append(page)
+        return out
 
     def _build_titlebar(self):
         """自定义标题栏：最小化 / 最大化 / 关闭三键。"""

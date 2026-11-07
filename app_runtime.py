@@ -28,6 +28,7 @@ from core.hotkey import NativeHotkeyManager
 from core.injector import KaomojiInjector
 from core.kaomoji_data import KaomojiData
 from core.plugins import PluginManager
+from core.ui_registry import UiRegistry
 from core.user_kaomoji import UserKaomoji
 from core.user_state import UserState
 from core.user_triggers import UserTriggers
@@ -173,6 +174,10 @@ class AppRuntime:
 
     def _build_core(self):
         self.data = KaomojiData()
+        # 界面元素登记表：插件通过 api.ui.find("home.greeting.title") 定位控件。
+        # 窗口还没建，先把 registry 造出来并注入 manager；等 _build_windows 之后
+        # 再让窗口把自己登记的 id 写进来（见 _register_ui_elements）。
+        self.ui_registry = UiRegistry()
         self.plugins = PluginManager(
             plugins_dir=runtime.plugins_dir(),
             config=self.config,
@@ -186,6 +191,7 @@ class AppRuntime:
             ui_hooks=build_ui_hooks(
                 theme_provider=lambda: resolve_theme_name(
                     self.config.get("theme", "light"))),
+            ui_registry=self.ui_registry,
         )
         self.plugins.discover()
         # 测试模式门控：关闭时不加载任何插件（启用状态仍保留在配置里）
@@ -221,8 +227,10 @@ class AppRuntime:
                 "injector": self.injector, "data": self.data,
                 "config": self.config, "window": self.window, "bus": self.bus,
                 "log_buffer": LOG_BUFFER, "plugins": self.plugins,
+                "ui_registry": self.ui_registry,
             },
             plugins=self.plugins,
+            ui_registry=self.ui_registry,
         )
 
     def _wire_components(self):

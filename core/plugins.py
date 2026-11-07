@@ -53,7 +53,9 @@ import time
 
 from PySide6.QtCore import QObject, Signal
 
+from core.plugin_ui import PluginUi
 from core.ui_hooks import NullUiHooks, UiHooks
+from core.ui_mutation import MutatorHub
 
 # 当前支持的插件 API 版本；清单里声明更高版本时拒绝加载（提示升级主程序）
 # v1：数据源 / 转换 / 事件 / 配置；v2：追加 UI 扩展（设置面板 / 独立页 / 弹窗 / 通知）
@@ -229,6 +231,40 @@ class PluginAPI:
         return self._manager._add_page(
             self.id, pid, str(title or pid), factory, icon)
 
+    # ---- 能力 7b：主页卡片 ----
+    def register_home_card(self, factory, card_id=None, position="top"):
+        """在**自带的主页**上插入一张卡片（v2 新增的正式扩展点）。
+
+        这是"修改自带界面"的官方姿势：插件不再需要沿 Qt 父子链爬对象树，
+        卡片由宿主创建、挂载、跟随主题、并在插件停用/卸载时自动销毁。
+
+        :param factory:  ``factory(parent) -> QWidget``，由宿主在需要时调用
+        :param card_id:  卡片标识（同插件内唯一，缺省自动生成）；用于原地更新
+        :param position: 插入位置——``"top"``（问候卡片之后，默认）
+                         / ``"bottom"``（所有插件卡片之后）
+        :return: 完整 key（形如 ``plugin:<id>:home_card:<card_id>``）
+
+        约束：返回的 widget 必须能独立显示（宿主只负责排布）。
+        宿主会给它垫上完整主题 QSS，插件无需自己处理深浅色。
+        """
+        self._require_ui()
+        if not callable(factory):
+            raise PluginError(
+                "register_home_card 需要 factory(parent) 可调用对象")
+        cid = str(card_id or "").strip() or "card%d" % (
+            len(self._manager._home_cards_for(self.id)) + 1)
+        if not _PAGE_ID_RE.match(cid):
+            raise PluginError("card_id 只能含字母/数字/下划线/连字符（最长 32）")
+        pos = str(position or "top").strip().lower()
+        if pos not in ("top", "bottom"):
+            raise PluginError("position 只能是 'top' 或 'bottom'")
+        return self._manager._add_home_card(self.id, cid, factory, pos)
+
+    def unregister_home_card(self, card_id):
+        """撤销本插件注册的一张主页卡片（幂等）。"""
+        self._require_ui()
+        return self._manager._remove_home_card(self.id, str(card_id or "").strip())
+
     # ---- 能力 8：主题化弹窗 / 消息框 ----
     def show_dialog(self, factory=None, title="", width=0, height=0, modal=True):
         """弹出一个与主窗口同风格（无边框+圆角+亚克力色）的对话框。
@@ -273,6 +309,33 @@ class PluginAPI:
         """
         return self._manager._theme_tokens()
 
+    # ------------------------------------------------------------------
+    # 能力 11：通用界面修改（v2，本次新增的核心能力）
+    # ------------------------------------------------------------------
+    @property
+    def ui(self):
+        """通用界面修改入口，返回一个 `PluginUi` 对象。
+
+        这是「自由修改内置界面」的官方通道：可以定位任意已登记元素
+        （含其他插件注册的界面），改文字/样式/可见性、增删控件、替换整页渲染。
+
+        **所有修改都会被宿主记录，插件停用/卸载/崩溃时自动完整回滚。**
+
+        示例::
+
+            api.ui.set_text("home.greeting.title", "欢迎回来")
+            api.ui.set_visible("home.welcome", False)
+            api.ui.on("home.actions.search", "clicked", my_handler)
+            api.ui.insert("home.greeting", my_widget, index=0)
+        """
+        self._require_ui()
+        return PluginUi(self._manager, self.id)
+
+    def find(self, target):
+        """按 id 或路径定位控件（快捷方式，等价于 api.ui.find）。"""
+        self._require_ui()
+        return PluginUi(self._manager, self.id).find(target)
+
 
 class PluginManager(QObject):
     """插件生命周期管理：发现 -> 校验 -> 加载 -> 注册能力 -> 事件分发。"""
@@ -285,7 +348,7 @@ class PluginManager(QObject):
 
     def __init__(self, plugins_dir, config, save_config=None,
                  log=None, settings_dir=None, theme_provider=None, parent=None,
-                 ui_hooks=None):
+                 ui_hooks=None, ui_registry=None):
         super().__init__(parent)
         self.plugins_dir = plugins_dir
         self._config = config                      # 主配置的权威字典引用（只读写 plugins_enabled）
@@ -297,6 +360,13 @@ class PluginManager(QObject):
         # UI 能力注入点（弹窗 / 消息框 / 通知 / 主题令牌）。
         # 未注入时退化为 NullUiHooks：弹窗返回 None、消息框返回 False，绝不崩溃。
         self._ui_hooks = ui_hooks if ui_hooks is not None else NullUiHooks()
+        # 通用界面修改：元素登记表 + 按插件的修改收集器。
+        # 宿主（AppRuntime）会把真实的 registry 注入进来（由窗口登记元素）；
+        # 未注入时插件调 api.ui.* 只会"找不到目标"，不会崩溃。
+        self._ui_registry = ui_registry
+        self._ui_hub = MutatorHub(self._ui_registry, on_change=self._audit_change)
+        # 插件通过 api.register_home_card() 注册的主页卡片：key -> spec
+        self._home_cards = {}
         # plugin_id -> 记录 dict；见 discover()
         self.plugins = {}
         # 运行期能力注册表
@@ -350,6 +420,24 @@ class PluginManager(QObject):
             self._log_fn(level, source, message)
         except Exception:
             pass
+
+    def _audit_change(self, change):
+        """每次插件修改界面时记一条审计日志。
+
+        跨作用域修改尤其值得留痕：插件 A 改了插件 B 的界面时，出问题能查到谁动的。
+        """
+        target = change.ui_id
+        # 判断是否跨插件：目标路径/ id 里带 "plugin:<id>:" 前缀即为其他插件的界面
+        cross = ""
+        if target.startswith("plugin:") and not target.startswith(
+                "plugin:%s:" % change.plugin_id):
+            cross = "（跨插件）"
+        self._log("info", "plugin:%s" % change.plugin_id,
+                  "修改界面%s %s [%s]" % (cross, target, change.kind))
+
+    def audit_log(self, plugin_id=None):
+        """列出插件做过的界面修改（当前未回滚的）。"""
+        return self._ui_hub.pending(plugin_id)
 
     # ---------- 配置读写 ----------
     def _config_get(self, key, default=None):
@@ -627,6 +715,12 @@ class PluginManager(QObject):
         """
         self._sources.pop(plugin_id, None)
         self._transforms = [t for t in self._transforms if t["plugin"] != plugin_id]
+        # 回滚该插件做过的**全部界面修改**（改文字/隐藏控件/插入/替换渲染/信号绑定）。
+        # 必须放在最前面：插件能力还没摘，回滚动作可能依赖仍存在的控件引用。
+        rolled = self._ui_hub.rollback(plugin_id)
+        if rolled:
+            self._log("info", "plugins",
+                      "插件 %s 卸载：已回滚 %d 项界面修改" % (plugin_id, rolled))
         for event in list(self._listeners):
             self._listeners[event] = [
                 l for l in self._listeners[event] if l["plugin"] != plugin_id]
@@ -782,6 +876,26 @@ class PluginManager(QObject):
             self._log("warn", "plugins", "合并插件数据源失败：%r" % (e,))
 
     # ---------- 转换与事件 ----------
+    def _rollback_on_crash(self, plugin_id, what):
+        """插件回调崩溃时回滚它的界面修改。
+
+        为什么必须做：插件可能在回调里改界面改到一半抛异常（例如先隐藏了控件、
+        再访问一个不存在的元素崩溃）。此时那些修改已成事实、而插件的逻辑已断，
+        不还原就会留下"半残"的界面，且用户无法通过停用插件修复——
+        因为插件看起来还是"已启用"。
+
+        与卸载回滚的区别：这里**只回滚界面修改**，不禁用插件（一次回调异常
+        不该让整个插件下线）；但会记一条 error，让用户/开发者知道界面被复原过。
+        """
+        try:
+            n = self._ui_hub.rollback(plugin_id)
+        except Exception:
+            return 0
+        if n:
+            self._log("warn", "plugin:%s" % plugin_id,
+                      "%s 抛异常，已自动回滚 %d 项界面修改" % (what, n))
+        return n
+
     def _timed_call(self, plugin_id, what, fn, args, on_error):
         """在主线程同步执行插件回调，并对其耗时做告警。
 
@@ -789,12 +903,16 @@ class PluginManager(QObject):
         同步执行，没有超时保护，一个写坏的插件就能卡住整个界面。这里给出可观测的
         信号：超过 SLOW_CALL_WARN_SEC 记一条 warn 日志（带插件 id 与耗时），
         让"界面偶尔卡一下"这类难以复现的问题能直接在日志里定位到元凶。
+
+        回调抛异常时会先调用 `on_error` 记录，再触发**崩溃回滚**（见
+        `_rollback_on_crash`），保证界面不会停在"改了一半"的状态。
         """
         start = time.perf_counter()
         try:
             return fn(*args)
         except Exception as e:
             on_error(e)
+            self._rollback_on_crash(plugin_id, what)
             return None
         finally:
             elapsed = time.perf_counter() - start

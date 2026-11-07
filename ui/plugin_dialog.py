@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
 )
 
-from ui.win11_theme import Theme, parse_color
+from ui.win11_theme import Theme, parse_color, apply_child_theme
 from ui.win_style import apply_backdrop, apply_dark_mode, DWMSBT_TRANSIENTWINDOW
 from ui.fluent_icons import icon_label
 from ui.frameless_panel import paint_frameless_panel
@@ -210,6 +210,9 @@ class PluginDialog(QWidget):
 def show_plugin_dialog(body=None, title="", theme=None, parent=None,
                        width=0, height=0, modal=False):
     """弹出自定义内容弹窗；modal=True 时同步阻塞并返回结果码。"""
+    # 插件自建 body 若带样式表会切断祖先级联，这里把完整主题 QSS 垫在前
+    if body is not None:
+        apply_child_theme(body, theme)
     dlg = PluginDialog(body, title, theme, parent, width, height)
     if modal:
         dlg.exec()

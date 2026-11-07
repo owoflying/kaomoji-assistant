@@ -33,6 +33,7 @@ from core.user_state import UserState
 from core.user_triggers import UserTriggers
 from ui.log_viewer import show_log_viewer
 from ui.picker_window import PickerWindow
+from ui.plugin_ui_hooks import build_ui_hooks
 from ui.unified_window import UnifiedSettingsWindow
 from ui.win11_theme import (
     Theme, resolve_theme_name, set_app_theme, system_theme_name,
@@ -180,6 +181,11 @@ class AppRuntime:
             settings_dir=runtime.plugin_settings_dir(),
             # 主题提供者：插件弹窗据此取当前深浅色（避免 core 反向依赖 ui）
             theme_provider=lambda: resolve_theme_name(self.config.get("theme", "light")),
+            # UI 能力注入点：core 只声明协议，实现留在 ui/（见 core/ui_hooks.py）。
+            # 托盘尚未创建，notify 由 _build_tray 用 set_ui_hooks 后置补齐。
+            ui_hooks=build_ui_hooks(
+                theme_provider=lambda: resolve_theme_name(
+                    self.config.get("theme", "light"))),
         )
         self.plugins.discover()
         # 测试模式门控：关闭时不加载任何插件（启用状态仍保留在配置里）

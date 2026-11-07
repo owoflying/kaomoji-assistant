@@ -49,8 +49,11 @@ import json
 import os
 import re
 import sys
+import time
 
 from PySide6.QtCore import QObject, Signal
+
+from core.ui_hooks import NullUiHooks, UiHooks
 
 # 当前支持的插件 API 版本；清单里声明更高版本时拒绝加载（提示升级主程序）
 # v1：数据源 / 转换 / 事件 / 配置；v2：追加 UI 扩展（设置面板 / 独立页 / 弹窗 / 通知）
@@ -66,6 +69,9 @@ _PAGE_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,32}$")
 
 # 单个插件允许注册的侧边栏页数上限（防止恶意插件刷爆侧边栏）
 _MAX_PLUGIN_PAGES = 8
+
+# 插件回调耗时告警阈值（秒）：回调在 Qt 主线程同步执行，越久界面卡顿越明显
+SLOW_CALL_WARN_SEC = 0.05
 
 # 清单必填字段；缺任一即判定清单无效
 _MANIFEST_REQUIRED = ("name", "version", "entry")
@@ -278,15 +284,19 @@ class PluginManager(QObject):
     ui_changed = Signal()
 
     def __init__(self, plugins_dir, config, save_config=None,
-                 log=None, settings_dir=None, theme_provider=None, parent=None):
+                 log=None, settings_dir=None, theme_provider=None, parent=None,
+                 ui_hooks=None):
         super().__init__(parent)
         self.plugins_dir = plugins_dir
         self._config = config                      # 主配置的权威字典引用（只读写 plugins_enabled）
         self._save_config = save_config
         self._log_fn = log or (lambda *a, **k: None)
         self.settings_dir = settings_dir
-        # 当前主题名提供者（由 main 注入，避免 core 反向依赖 ui.win11_theme）
+        # 当前主题名提供者（由装配层注入，避免 core 反向依赖 ui.win11_theme）
         self._theme_provider = theme_provider
+        # UI 能力注入点（弹窗 / 消息框 / 通知 / 主题令牌）。
+        # 未注入时退化为 NullUiHooks：弹窗返回 None、消息框返回 False，绝不崩溃。
+        self._ui_hooks = ui_hooks if ui_hooks is not None else NullUiHooks()
         # plugin_id -> 记录 dict；见 discover()
         self.plugins = {}
         # 运行期能力注册表
@@ -297,17 +307,24 @@ class PluginManager(QObject):
         self._settings_widgets = {}   # plugin_id -> {"factory","title"}
         self._plugin_pages = {}       # page_key -> {"plugin","page_id","title","factory","icon"}
         self._dialogs = {}            # plugin_id -> [PluginDialog]
-        self._notify_fn = None        # 托盘气泡回调（main 注入）
         self._theme_override = None   # UI 侧显式同步的主题名（优先于 provider）
 
-    # ---------- 提供给外部（main）的 UI 钩子 ----------
+    # ---------- 提供给外部的 UI 钩子 ----------
     def set_ui_hooks(self, notify=None):
-        """注入 UI 相关回调（目前只有托盘通知）。
+        """在启动期补齐/替换 UI 能力（托盘通知等后置注入）。
 
-        托盘在 main 里比 PluginManager 晚创建，因此用后置注入而不是构造参数。
+        托盘比 PluginManager 晚创建，因此用后置注入而不是构造参数。已注入的
+        其它能力（弹窗、消息框、主题令牌）保持不动，只替换传入的那几项。
         """
         if notify is not None:
-            self._notify_fn = notify
+            old = self._ui_hooks
+            self._ui_hooks = UiHooks(
+                theme_tokens=getattr(old, "theme_tokens", None),
+                open_dialog=getattr(old, "_open_dialog", None),
+                show_message=getattr(old, "_show_message", None),
+                notify=notify,
+                close_dialogs=getattr(old, "_close_dialogs", None),
+            )
 
     def set_theme_name(self, name):
         """显式同步当前主题名（已解析过的 light/dark，不含 "system"）。
@@ -689,26 +706,30 @@ class PluginManager(QObject):
         return bool(rec and rec.get("state") == STATE_LOADED)
 
     # ---------- 弹窗 / 消息框 / 通知 ----------
-    def _open_dialog(self, plugin_id, factory, title, width, height, modal):
-        # 延迟 import：core 层不在模块顶层依赖 ui.*（保持分层，也利于离屏测试）
-        from ui.plugin_dialog import show_plugin_dialog
-        from ui.win11_theme import Theme, apply_child_theme
+    def _ui_call(self, method, *args, default=None):
+        """调用注入的 UI 能力；缺失/异常一律退化为 default，绝不阻断插件流程。"""
+        fn = getattr(self._ui_hooks, method, None)
+        if not callable(fn):
+            return default
+        try:
+            return fn(*args)
+        except Exception as e:
+            self._log("warn", "plugins", "UI 能力 %s 调用失败：%r" % (method, e))
+            return default
 
-        theme = Theme(self.current_theme_name())
-        body = None
-        if factory is not None:
-            body = factory(None)
-            # 插件自建 body 若带样式表会切断祖先级联，这里把完整主题 QSS 垫在前
-            apply_child_theme(body, theme)
-        dlg = show_plugin_dialog(body, title, theme, None, width, height, modal)
-        if modal:
-            # 模态弹窗在 show_plugin_dialog 内部已 exec 完并关闭，无需登记
-            return dlg.result()
+    def _open_dialog(self, plugin_id, factory, title, width, height, modal):
+        dlg = self._ui_call(
+            "open_dialog", plugin_id, factory, title, width, height, modal)
+        if dlg is None or modal:
+            # 无 UI 宿主时返回 None；模态弹窗在宿主内部已 exec 完并关闭，无需登记
+            return dlg.result() if hasattr(dlg, "result") else dlg
         self._dialogs.setdefault(plugin_id, []).append(dlg)
         # 非模态弹窗关闭后自动从登记表摘除，否则会随插件生命周期越攒越多
         # （旧实现只在插件卸载时统一 close，已关闭的窗口会一直挂在列表里）
-        dlg.finished.connect(
-            lambda _result, d=dlg, p=plugin_id: self._forget_dialog(p, d))
+        finished = getattr(dlg, "finished", None)
+        if finished is not None and hasattr(finished, "connect"):
+            finished.connect(
+                lambda _result, d=dlg, p=plugin_id: self._forget_dialog(p, d))
         return dlg
 
     def _forget_dialog(self, plugin_id, dlg):
@@ -724,37 +745,17 @@ class PluginManager(QObject):
             self._dialogs.pop(plugin_id, None)
 
     def _open_message(self, plugin_id, text, title, ok_text, cancel_text):
-        from ui.plugin_dialog import show_message
-        from ui.win11_theme import Theme
-
-        return show_message(text, title, Theme(self.current_theme_name()),
-                            None, ok_text, cancel_text)
+        return bool(self._ui_call(
+            "show_message", text, title, ok_text, cancel_text, default=False))
 
     def _notify(self, title, message, ms):
-        fn = self._notify_fn
-        if not callable(fn):
+        if not callable(getattr(self._ui_hooks, "notify", None)):
             return False
-        try:
-            fn(title, message, ms)
-            return True
-        except Exception as e:
-            self._log("warn", "plugins", "托盘通知失败：%r" % (e,))
-            return False
+        return bool(self._ui_call("notify", title, message, ms, default=False))
 
     def _theme_tokens(self):
-        from ui.win11_theme import Theme
-
-        t = Theme(self.current_theme_name())
-        return {
-            "dark": t.dark, "name": t.name,
-            "text": t.text, "text_secondary": t.text_secondary,
-            "text_tertiary": t.text_tertiary,
-            "accent": t.accent, "accent_hover": t.accent_hover,
-            "card": t.card, "card_hover": t.card_hover,
-            "card_border": t.card_border, "divider": t.divider,
-            "input_bg": t.input_bg, "input_border": t.input_border,
-            "nav_hover": t.nav_hover, "nav_selected": t.nav_selected,
-        }
+        """当前主题的颜色令牌（由 UI 侧提供；无 UI 宿主时返回空 dict）。"""
+        return self._ui_call("theme_tokens", default={}) or {}
 
     def close_plugin_dialogs(self, plugin_id=None):
         """关闭插件弹窗；plugin_id 为 None 时关闭全部。"""
@@ -766,6 +767,8 @@ class PluginManager(QObject):
                     dlg.deleteLater()
                 except RuntimeError:
                     pass    # C++ 对象已销毁
+        # 通知 UI 侧回收它自己创建的弹窗（manager 从不持有 QWidget）
+        self._ui_call("close_dialogs", plugin_id)
 
     # ---------- 数据源合并 ----------
     def refresh_sources(self, data):
@@ -779,27 +782,54 @@ class PluginManager(QObject):
             self._log("warn", "plugins", "合并插件数据源失败：%r" % (e,))
 
     # ---------- 转换与事件 ----------
+    def _timed_call(self, plugin_id, what, fn, args, on_error):
+        """在主线程同步执行插件回调，并对其耗时做告警。
+
+        插件约定 setup/transform/事件回调必须毫秒级返回——它们在 Qt 主线程里
+        同步执行，没有超时保护，一个写坏的插件就能卡住整个界面。这里给出可观测的
+        信号：超过 SLOW_CALL_WARN_SEC 记一条 warn 日志（带插件 id 与耗时），
+        让"界面偶尔卡一下"这类难以复现的问题能直接在日志里定位到元凶。
+        """
+        start = time.perf_counter()
+        try:
+            return fn(*args)
+        except Exception as e:
+            on_error(e)
+            return None
+        finally:
+            elapsed = time.perf_counter() - start
+            if elapsed >= SLOW_CALL_WARN_SEC:
+                self._log("warn", "plugin:%s" % plugin_id,
+                          "%s 耗时 %.0f ms（建议 < %.0f ms，插件回调在主线程同步执行）"
+                          % (what, elapsed * 1000, SLOW_CALL_WARN_SEC * 1000))
+
     def run_transforms(self, text, ctx=None):
         """按优先级把文本依次交给各插件转换；任何异常只记日志不阻断注入。"""
         for t in self._transforms:
-            try:
-                out = t["fn"](text, ctx if ctx is not None else {})
-                if isinstance(out, str) and out:
-                    text = out
-            except Exception as e:
-                self._log("error", "plugin:%s" % t["plugin"],
-                          "转换函数 %s 抛异常：%s: %s" % (t["name"] or "<anon>",
-                                                     type(e).__name__, e))
+            pid = t["plugin"]
+
+            def _on_error(e, _t=t):
+                self._log("error", "plugin:%s" % _t["plugin"],
+                          "转换函数 %s 抛异常：%s: %s"
+                          % (_t["name"] or "<anon>", type(e).__name__, e))
+
+            out = self._timed_call(
+                pid, "转换函数 %s" % (t["name"] or "<anon>"),
+                t["fn"], (text, ctx if ctx is not None else {}), _on_error)
+            if isinstance(out, str) and out:
+                text = out
         return text
 
     def emit(self, event, *args):
         """同步分发事件给所有订阅者；单个订阅者异常不影响其它订阅者。"""
         for l in list(self._listeners.get(event, [])):
-            try:
-                l["fn"](*args)
-            except Exception as e:
-                self._log("error", "plugin:%s" % l["plugin"],
+            pid = l["plugin"]
+
+            def _on_error(e, _pid=pid):
+                self._log("error", "plugin:%s" % _pid,
                           "事件 %s 处理异常：%s: %s" % (event, type(e).__name__, e))
+
+            self._timed_call(pid, "事件 %s 回调" % event, l["fn"], args, _on_error)
 
     # ---------- 统计（供主页/开发者页展示） ----------
     def stats(self):

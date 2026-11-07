@@ -114,8 +114,70 @@ ctypes 默认 `restype=c_int`。HWND/HMONITOR 超过 2^31 会被截断成负数�
 QSS 的 `font-family` 会盖掉 `setFont()`。图标字体必须显式
 `setStyleSheet("font-family:...")` 才生效。
 
-另：`QRawFont.supportsCharacter` 对印度语系字符（ಠ/દ）返回**假阳性**，
+另：`QRawFont.supportsCharacter` 对印度语系字符（ಠ/દ)返回**假阳性**，
 判断字形是否可用只能"真画一遍比对像素"。
+
+### 2.7 `setParent(None)` 会让控件变成顶层窗口并闪一下
+
+Qt 语义：**没有父级的 QWidget 就是独立顶层窗口**。所以这段"销毁旧控件"的
+常规写法会出问题：
+
+```python
+for old in self._cards:
+    layout.removeWidget(old)   # 只移出布局，不隐藏
+    old.setParent(None)        # ← 此刻 old 变成顶层窗口并显示出来
+    old.deleteLater()          # 销毁排到下一轮事件循环
+```
+
+`removeWidget` 只把控件移出布局，**不改可见性**；紧接着 `setParent(None)`
+让它失去父级、成为顶层窗口，而 `deleteLater()` 要等事件循环才执行 ——
+中间这一帧控件真实地显示在屏幕上。
+
+**症状**：启用/停用一个插件，屏幕上闪过好几个小窗口（卡片有几张就闪几个）。
+
+**正确姿势**：`hide()` 必须在 `setParent(None)` **之前**。
+
+```python
+old.hide()                 # 关键
+old.setParent(None)
+old.deleteLater()
+```
+
+**已修位置**：`PluginPage.refresh`（重建卡片）、`PluginPage.build_settings`
+（复用缓存面板）、`forget_settings` / `discard_settings`、
+`NavController.drop_page`（移除页面）、`remove_nav_item`（移除导航项）、
+`PickerWindow._rebuild_chips`（重建候选 chip）、`UiMutator.insert/remove/swap_widget`。
+
+> 相关：`tests/test_stray_windows.py` 遍历真实操作路径，断言过程中可见顶层
+> 窗口数量不增加 —— 以后任何"脱离父级的控件清理"写错，这套用例都会拦下。
+
+### 2.8 `removeWidget` 会留下空布局项，清空容器要用 `takeAt`
+
+想把一个容器的内容全部换掉时，这样写是错的：
+
+```python
+for i in range(lay.count()):
+    w = lay.itemAt(i).widget()
+    if w: lay.removeWidget(w)     # ❌ 只摘控件，布局项仍在
+```
+
+`removeWidget` 只把控件摘走，**布局项本身留在原地**（`itemAt` 之后返回
+`None`，`count()` 不减少）。容器里会残留一排"看不见的占位"，
+后续插入的控件位置和间距都会错乱。
+
+**正确姿势**：用 `takeAt(0)` 循环，连布局项一起摘走。
+
+```python
+items = []
+while lay.count():
+    items.append(lay.takeAt(0))
+```
+
+回滚时按原顺序把控件、嵌套布局、spacer 分别还原（`addWidget` /
+`addLayout` / `addStretch`）。
+
+**踩到的位置**：`UiMutator.replace_render` 第一版就踩了这个 ——
+测试断言"容器内容应只剩插件产物"时才发现 `itemAt(0)` 是 `None`。
 
 ---
 
@@ -319,6 +381,37 @@ setup 半途抛异常时 `_detach` 清理半注册的脏能力。
 **缓解**：`PluginManager._timed_call` 对超过 `SLOW_CALL_WARN_SEC`(50ms) 的回调
 记 warn 日志（带插件 id 与耗时），让"界面偶尔卡一下"能在日志里定位元凶。
 
+### 7.8 官方 UI 能力只"能加不能改"的时代结束了
+
+> **状态：已解决。** 主程序现提供 `api.ui`（见 `docs/PLUGIN_GUIDE.md`），
+> 可按 id/路径定位任意已登记元素、改属性、增删控件、替换渲染，
+> 且全部**自动回滚**。下面保留历史记录，供理解"为什么值得专门做这套 API"。
+
+插件的早期官方 UI 能力全是**新增**：`register_page`、
+`register_settings_widget`、`show_dialog`/`notify`、`theme_tokens`（只读）。
+**没有任何 API 能修改自带页面**。
+
+但插件是进程内全权限 Python 代码，Qt 的 `QWidget.window()` 会沿父子链爬到
+顶层窗口。实测：`register_page` 的 factory 收到的 parent 是 `AnimatedStackedWidget`，
+`.window()` 直达 `UnifiedSettingsWindow`，随后 `.home_page` / `.settings_page` /
+`._set_page()` / `.theme` 全部可及。
+
+`plugins/home_greeting/` 是这条路的完整示例，但它是**反面教材**：
+
+| 成本 | 具体表现 |
+|------|---------|
+| 依附私有结构 | `home_page` 一旦重构（哪怕多包一层容器）就静默失效 |
+| 无版本契约 | API v1/v2 从未承诺过这些属性存在 |
+| 失败是静默的 | 不报错不崩溃，就是卡片不见了 |
+| 必须自己收尾 | 宿主只销毁自己创建的 widget，插进去的得自己摘 |
+| API 只进不出 | `register_page` 没有注销接口，撤销只能改 `manager._plugin_pages` |
+
+该插件为"自己收尾"试错 **7 轮**：`destroyed` 信号 → 加标志位 → 断开连接 →
+`QTimer` 轮询 → 最后才落到"监听 `changed` 信号 + 状态自检"。
+
+**结论**：遇到"必须爬对象树才能实现"的需求，正确做法是**给主程序提需求**，
+而不是每个插件各爬各的。`api.ui` 就是这么长出来的。
+
 ---
 
 ## 8. 打包与部署
@@ -343,6 +436,8 @@ setup 半途抛异常时 `_detach` 清理半注册的脏能力。
 | 整窗发黑 / 浅色主题也黑 | `QColor("rgba(...,0.88)")` invalid → 用 `parse_color()` |
 | 某个按钮白底白字不可见 | QSS 级联被中间容器的 `setStyleSheet` 切断 |
 | 切页面时闪一下桌面 | 页面动画用了透明度（半透窗体） |
+| 启用/停用插件时闪过好几个小窗口 | 销毁控件前没 `hide()` 就 `setParent(None)`（§2.7） |
+| 换掉容器内容后位置/间距错乱 | `removeWidget` 留了空布局项，该用 `takeAt`（§2.8） |
 | 切页面卡成 PPT | `QGraphicsOpacityEffect` 每帧离屏渲染 |
 | 改设置卡近一秒 | QSS 重贴没做幂等短路 |
 | 窗口卡住拖不动/缩不小 | 原生 `WS_MAXIMIZE` 残留 → `_clear_native_maximized()` |

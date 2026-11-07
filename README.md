@@ -10,6 +10,7 @@ Win11 风格的颜文字输入辅助工具。按全局热键唤起候选面板�
 - 实时搜索、`1`–`9` 直接选字、最近使用与收藏夹
 - 失焦自动关闭，行为与原生输入法一致
 - 系统托盘常驻，设置可视化修改
+- 主页时间问候卡片（按上午/中午/下午/晚上自动变化）
 
 ## 环境
 - Windows 10 / 11
@@ -79,6 +80,7 @@ Apache-2.0。
 文档：
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) —— 架构设计（分层、数据流、关键机制）
+- [docs/PLUGIN_GUIDE.md](docs/PLUGIN_GUIDE.md) —— 插件开发指南（含 api.ui 界面修改 API）
 - [docs/PITFALLS.md](docs/PITFALLS.md) —— 踩坑手册（改代码前建议先扫一眼）
 - [PROJECT_ARCHITECTURE.md](PROJECT_ARCHITECTURE.md) —— 现状梳理（逐模块职责与信号接线）
 
@@ -95,5 +97,6 @@ Apache-2.0。
 文档：
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) —— 架构设计（分层、数据流、关键机制）
+- [docs/PLUGIN_GUIDE.md](docs/PLUGIN_GUIDE.md) —— 插件开发指南（含 api.ui 界面修改 API）
 - [docs/PITFALLS.md](docs/PITFALLS.md) —— 踩坑手册（改代码前建议先扫一眼）
 - [PROJECT_ARCHITECTURE.md](PROJECT_ARCHITECTURE.md) —— 现状梳理（逐模块职责与信号接线）

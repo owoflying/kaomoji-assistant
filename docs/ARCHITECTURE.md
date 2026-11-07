@@ -155,7 +155,7 @@ emotion_detected / trigger_detected 信号
 **四条约定**：异常隔离（单插件故障只标记自己 error）、所有权分离（manager 不持 QWidget）、
 路径约束（`entry` 必须在校验过的插件目录内）、数据不落盘。
 
-### 5.2 UI 钩子分层（本版重点改造）
+### 5.2 UI 钩子分层
 
 插件需要弹窗/消息框/主题令牌，但这些是 `ui/` 的实现。原先 `core/plugins.py`
 在函数内延迟 `from ui.plugin_dialog import ...` —— 虽避开循环依赖，
@@ -172,6 +172,71 @@ app_runtime._build_core  注入：PluginManager(..., ui_hooks=build_ui_hooks(...
 好处：core 拿不到实现时（离屏单测、纯 core 使用）自动降级为
 "弹窗返回 None、消息框返回 False、令牌返回空 dict"，插件代码无需判断宿主是否存在 UI；
 分层由 `tests/test_plugins.py::test_core_does_not_import_ui` 静态扫描强制。
+
+### 5.2b 通用界面修改 API（`api.ui`）
+
+**需求**：插件要能自由修改内置界面（含其他插件的界面），而不是只有固定的
+"加一页/加一张卡"槽位。
+
+**三个模块**：
+
+```
+core/ui_registry.py    元素登记 + 双轨寻址（手工 id / 自动路径）
+core/ui_mutation.py    修改记录与回滚（UiMutator / MutatorHub）
+core/plugin_ui.py      插件侧门面（PluginUi -> api.ui）
+```
+
+**双轨寻址**（关键设计）：
+
+| 轨道 | 形式 | 优点 | 代价 |
+|------|------|------|------|
+| 手工 id | `home.greeting.title` | 稳定，宿主重构不碎 | 只能触达主动登记的元素 |
+| 自动路径 | `home/GreetingCard[0]/QLabel[1]` | 能触达任何控件 | 布局层级一变就失配 |
+
+之所以需要两轨：实测主页里 `objectName` 严重重复（`Card` × 12、`BodyText` × 8），
+光靠名字定位不到唯一节点；而全部手工登记又会让 id 表变成控件树的镜像，失去契约意义。
+
+**回滚机制**：所有修改都经过 `UiMutator`，每条记录带一个 `undo()` 闭包：
+
+```
+读原值 -> 记录 -> 施加修改
+回滚 = 倒序执行所有 undo
+```
+
+`PluginManager._detach` 里调 `MutatorHub.rollback(plugin_id)`，
+所以插件停用/卸载/重载都会自动还原。四类修改各有还原策略：
+
+| 类型 | 还原方式 |
+|------|---------|
+| 属性（文字/样式/可见/属性） | 写回记录的原值 |
+| 插入控件 | 摘出 + 销毁 |
+| 移除控件 | 按原索引插回（不销毁，只是隐藏） |
+| 替换渲染 | 按原顺序重建布局项（控件/嵌套布局/spacer 分别还原） |
+| 信号绑定 | `disconnect` |
+
+**权限模型**：默认允许修改任意元素（含跨插件），但每次修改都记审计日志，
+跨插件标注「（跨插件）」。这是刻意取舍——插件是同进程全权限代码，
+与其假装隔离，不如**把修改全部记下来、可回滚、可审计**。
+
+**时序重放**（关键坑）：装配顺序是 `_build_core`（加载插件、执行 `setup`）
+先于 `_build_windows`（建窗口、登记元素）。插件在 `setup()` 里调
+`api.ui.set_text(...)` 时元素表还是空的，会静默失败。
+
+解法：`UiRegistry` 有 `ready` 标志与 `when_ready(fn)` 队列；
+`PluginUi` 的**修改类**方法在未就绪时排队，窗口登记完元素后
+`mark_ready()` 统一重放。插件作者无需关心时序。
+
+代价：**读取类方法不排队**（需要立即返回值），所以"先读原值再改"必须放进
+`startup` 事件。这一点在 `docs/PLUGIN_GUIDE.md` §3.9 有明确说明。
+
+**崩溃回滚**：插件回调（transform / 事件）抛异常时，`_timed_call` 会调
+`_rollback_on_crash()` 回滚该插件的全部界面修改，但**不禁用插件**——
+一次回调异常不该让整个插件下线。`setup()` 崩溃则走加载失败路径
+（本来就会 `_detach` + 回滚）。
+
+**元素 id 契约**：`core/ui_ids.py` 集中定义 id 常量与登记函数。
+已发布的 id 不应改名（等于破坏 API），控件重构时若必须删除，
+应先标记 `@deprecated` 并保留一个版本。
 
 ### 5.3 测试功能门控（三层）
 
@@ -240,13 +305,21 @@ HashWorker(QThread)  下载后 SHA-256 校验
 ## 9. 测试
 
 ```bat
-.venv\Scripts\python.exe -m pytest tests -q      :: 100 个用例，约 10s
+.venv\Scripts\python.exe -m pytest tests -q      :: 148 个用例，约 65s
 ```
 
 - 全部走 `QT_QPA_PLATFORM=offscreen`，无需显示器；
 - `tests/conftest.py` 把 `APPDATA` 重定向到临时目录，**绝不动工作区的 config.json**；
 - 覆盖：配置校验与门禁、情绪识别、数据 store 的脏数据容错、插件生命周期与异常隔离、
-  分层不变式（core 不 import ui）、统一窗口的拆分边界与主题链路。
+  分层不变式（core 不 import ui）、统一窗口的拆分边界与主题链路、
+  **`api.ui` 全套能力与回滚**（`test_ui_api.py`）、
+  **正面示例插件含时序重放**（`test_ui_tweaks_example.py`）、
+  **游离顶层窗口回归**（`test_stray_windows.py`）。
+
+> ⚠ 测试必须覆盖**真实事件循环**。历史上出现过"9 个用例全绿、真机却看不到卡片"——
+> 因为那些断言只查构造期状态，而撤销锚点页引发的连锁销毁要等 `processEvents()`
+> 之后才发生。现在 `test_ui_api.py` 与 `test_home_greeting_plugin.py` 都会
+> 显式 `processEvents()` 并走 `show()` 路径。
 
 ---
 

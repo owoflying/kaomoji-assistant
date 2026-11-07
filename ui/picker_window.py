@@ -318,6 +318,7 @@ class PickerWindow(QWidget):
     def _rebuild_chips(self):
         for c in self._chips:
             self.root.removeWidget(c)
+            c.hide()          # 先隐藏，否则 setParent(None) 会让它成为顶层窗口闪一下
             c.setParent(None)
             c.deleteLater()
         self._chips = []

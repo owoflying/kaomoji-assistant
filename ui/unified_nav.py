@@ -93,6 +93,7 @@ class NavController:
         if item is not None:
             try:
                 nav_layout.removeWidget(item)
+                item.hide()               # 先隐藏，避免 setParent(None) 后闪现为顶层窗口
                 item.setParent(None)
                 item.deleteLater()
             except RuntimeError:
@@ -111,7 +112,11 @@ class NavController:
 
         :param shutdown: 是否先调用页面的 shutdown()（PluginPage 需要释放缓存的
                          插件设置面板）。销毁顺序：pause -> removeWidget ->
-                         setParent(None) -> shutdown -> deleteLater。
+                         hide -> setParent(None) -> shutdown -> deleteLater。
+
+        ⚠ **hide() 不能省**：`setParent(None)` 会把无父控件变成独立顶层窗口，
+        在 deleteLater 真正执行前它会显示出来 —— 表现为"停用插件/切页面时
+        屏幕上闪一下"。removeWidget 只移出栈、不隐藏，所以必须自己 hide。
         """
         page = self.pages.pop(key, None)
         if page is None:
@@ -120,6 +125,7 @@ class NavController:
             page.set_active(False)        # 先停后台计时器，避免移除过程中仍刷新
         try:
             self.host.content.removeWidget(page)
+            page.hide()                   # 关键：脱离父级前先隐藏，避免闪现为顶层窗口
             page.setParent(None)
         except RuntimeError:
             pass

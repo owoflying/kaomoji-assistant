@@ -263,6 +263,9 @@ class PluginPage(QWidget):
         cached = self._settings_cache.get(plugin_id)
         if cached is not None:
             try:
+                # 脱离旧容器前先 hide：否则 setParent(None) 瞬间它会成为
+                # 独立顶层窗口闪一下（同 refresh 里的卡片问题）
+                cached.hide()
                 cached.setParent(None)      # 先脱离旧容器，交给新卡片重新挂载
                 return cached
             except RuntimeError:
@@ -280,6 +283,7 @@ class PluginPage(QWidget):
         w = self._settings_cache.pop(plugin_id, None)
         if w is not None:
             try:
+                w.hide()            # 先隐藏，避免 setParent(None) 时闪现为顶层窗口
                 w.setParent(None)
                 w.deleteLater()
             except RuntimeError:
@@ -301,6 +305,7 @@ class PluginPage(QWidget):
             w = self._settings_cache.pop(pid, None)
             if w is not None:
                 try:
+                    w.hide()        # 先隐藏，避免 setParent(None) 时闪现为顶层窗口
                     w.setParent(None)
                     w.deleteLater()
                 except RuntimeError:
@@ -363,9 +368,23 @@ class PluginPage(QWidget):
         # 先把留存的插件设置面板摘出卡片树，否则下面的 deleteLater 会连带析构它
         self.release_settings()
         # 清空旧卡片
+        #
+        # ⚠ 必须先 hide() 再 setParent(None)：`setParent(None)` 会把控件变成
+        # **独立顶层窗口**（Qt 语义：无父的 widget 就是窗口），在 deleteLater()
+        # 真正执行前它会以顶层窗口身份显示出来 —— 表现为启用/停用一个插件时
+        # 屏幕上闪过好几个小窗口（卡片有几个就闪几个）。
+        # 正确姿势：removeWidget 摘出布局 → hide 隐藏 → setParent(None) → deleteLater。
         for old in self._cards:
-            old.setParent(None)
-            old.deleteLater()
+            try:
+                self._body_layout.removeWidget(old)
+            except RuntimeError:
+                pass
+            try:
+                old.hide()              # 关键：脱离父级前先隐藏，避免成为可见顶层窗口
+                old.setParent(None)
+                old.deleteLater()
+            except RuntimeError:
+                pass
         self._cards = []
 
         recs = sorted(self.manager.plugins.values(), key=lambda r: r["id"])

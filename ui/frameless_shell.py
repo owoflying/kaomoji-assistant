@@ -54,6 +54,7 @@ class _MONITORINFO(ctypes.Structure):
 # WM 消息与 NCHITTEST 命中测试返回值
 WM_NCHITTEST = 0x0084
 WM_GETMINMAXINFO = 0x0024
+WM_NCLBUTTONDOWN = 0x00A1
 HTCLIENT, HTCAPTION = 1, 2
 HTLEFT, HTRIGHT, HTTOP = 10, 11, 12
 HTTOPLEFT, HTTOPRIGHT = 13, 14
@@ -115,6 +116,108 @@ class FramelessShell(QMainWindow):
         return []
 
     # ---------- 圆角遮罩与留白 ----------
+    def _restore_from_maximized_drag(self, lparam, enter_drag_loop=True):
+        """最大化状态下按住标题栏拖动：还原窗口并让鼠标落在标题栏上，然后进入拖动。
+
+        :param lparam: WM_NCLBUTTONDOWN 的 lParam，低 16 位为光标 x、高 16 位为 y
+                       （屏幕坐标，已含符号扩展）。
+        :param enter_drag_loop: 是否在最后发 `SC_MOVE` 进入系统拖动循环。
+        设为 False 用于测试——那个调用会让 `SendMessageW` 阻塞到用户松开鼠标，
+        在自动化测试里会直接挂住。
+
+        三个要点：
+
+        1. **必须先清原生 WS_MAXIMIZE 再 showNormal**（复用 `_clear_native_maximized`），
+           否则窗口还原后被钳回工作区，拖动会"甩不动"；
+        2. **还原尺寸用上次的普通几何**（`_normal_geometry`），没有就用
+           "工作区 × 0.75" 兜底，保证还原后是一个正常大小的窗口；
+        3. **窗口要摆到鼠标正下方**，且鼠标相对窗口的位置按"最大化时的相对比例"
+           换算——这样用户按下时手指在哪、还原后窗口就在哪，不会突兀跳走。
+        """
+        try:
+            x = ctypes.c_short(lparam & 0xFFFF).value
+            y = ctypes.c_short((lparam >> 16) & 0xFFFF).value
+        except Exception:
+            return
+
+        # 最大化时窗口的几何（用来算鼠标的相对位置比例）
+        max_geo = self.geometry()
+        max_w = max(1, max_geo.width())
+        # 鼠标在窗口中的相对横向比例（0=最左，1=最右）
+        rel_x = (x - max_geo.x()) / max_w if max_w else 0.5
+        rel_x = min(1.0, max(0.0, rel_x))
+
+        # 还原尺寸：优先用上次的普通几何
+        target = self._normal_geometry
+        if target is None or not target.isValid():
+            try:
+                avail = self.screen().availableGeometry()
+            except Exception:
+                avail = None
+            if avail is not None:
+                # 兜底尺寸：取工作区的 75%，但**不得低于窗口最小尺寸**，
+                # 否则会被 minimumSize 撑开，出现"还原后比预期还小/还怪"
+                # 的结果（实测 728×0.75≈546 被 minHeight 640 撑成 640）。
+                min_w = max(self.minimumWidth(), 320)
+                min_h = max(self.minimumHeight(), 240)
+                w = max(int(avail.width() * 0.75), min_w)
+                h = max(int(avail.height() * 0.75), min_h)
+                w = min(w, avail.width())
+                h = min(h, avail.height())
+                target = QRect(avail.x() + (avail.width() - w) // 2,
+                               avail.y() + (avail.height() - h) // 2, w, h)
+            else:
+                target = QRect(x - 100, y, 1024, 720)
+
+        # 还原（先清原生最大化样式，否则 setGeometry 会被钳住）
+        self._clear_native_maximized()
+        if self.isMaximized():
+            self.showNormal()
+
+        # ⚠ 顺序很关键：**先**把窗口外观状态从"最大化态"切回"普通态"
+        # （留白 _PAD 恢复），**再** setGeometry。
+        # 反过来的话，setGeometry 发生时根布局边距仍是最大化时的 0，
+        # 窗口内容按错误边距重算，实测会把 720 高的窗口压成 640。
+        self._apply_window_chrome_state()
+        self._update_mask()
+        self.setGeometry(target)
+        self.update()
+
+        # 把窗口摆到鼠标正下方：鼠标落在标题栏纵向中心，
+        # 横向位置按上面算出的相对比例映射到新宽度
+        grab_x = int(target.width() * rel_x)
+        grab_y = self._PAD + self._TITLEBAR_H // 2
+        new_x = x - grab_x
+        new_y = y - grab_y
+
+        # 夹到工作区内：最大化时鼠标常贴在屏幕顶端（y≈0），
+        # 直接减标题栏高度会让窗口顶部跑到屏幕外（实测 new_y = -12，
+        # 标题栏被任务栏/屏幕边缘吃掉一部分，用户抓不到）。
+        # 规则：**标题栏必须完整可见**，即窗口顶不高于工作区顶部。
+        try:
+            screen = self.screen()
+            avail = screen.availableGeometry() if screen is not None else None
+        except Exception:
+            avail = None
+        if avail is not None:
+            new_y = max(avail.y(), min(new_y,
+                                       avail.y() + avail.height() - self._TITLEBAR_H))
+            new_x = max(avail.x() - self._PAD,
+                        min(new_x, avail.x() + avail.width() - target.width() // 2))
+        self.move(new_x, new_y)
+
+        # 交给系统进入拖动循环（等价于原生"按住标题栏拖"）
+        if not enter_drag_loop:
+            return
+        try:
+            user32 = ctypes.windll.user32
+            user32.ReleaseCapture()
+            WM_SYSCOMMAND = 0x0112
+            SC_MOVE = 0xF010
+            user32.SendMessageW(int(self.winId()), WM_SYSCOMMAND, SC_MOVE, 0)
+        except Exception:
+            pass
+
     def _update_mask(self):
         """把内容区裁剪到圆角矩形内，使子控件四角随窗口一起圆角化。
 
@@ -288,6 +391,15 @@ class FramelessShell(QMainWindow):
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
+        # 只要是在「普通态」下改变尺寸，就记下它作为还原基准。
+        # 这样无论用户是点最大化按钮、双击标题栏还是走系统菜单进入最大化，
+        # 都能还原到正确的普通尺寸——原先只在 _toggle_maximize 里记录，
+        # 走其它路径进入最大化时 _normal_geometry 仍是 None，只能靠兜底尺寸，
+        # 会出现"还原后窗口尺寸不对"的问题。
+        if not self.isMaximized() and not self.isMinimized():
+            g = self.geometry()
+            if g.isValid() and g.width() > 0 and g.height() > 0:
+                self._normal_geometry = QRect(g)
         self._apply_window_chrome_state()
         self._update_mask()
 
@@ -303,9 +415,22 @@ class FramelessShell(QMainWindow):
         """处理原生消息：
         * WM_GETMINMAXINFO：让最大化贴合显示器工作区（不含任务栏），
           避免无边框窗口最大化时盖住任务栏 / 边缘留白；
-        * WM_NCHITTEST：标题栏原生拖拽、窗口八向缩放（最大化时禁用缩放热区）。
+        * WM_NCHITTEST：标题栏原生拖拽、窗口八向缩放（最大化时禁用缩放热区）；
+        * WM_NCLBUTTONDOWN：最大化时按住标题栏拖动 → 还原为普通窗口并跟随鼠标。
         """
-        if eventType != "windows_generic_MSG":
+        # ⚠ eventType 可能是 str、bytes 或 QByteArray：
+        # PySide6 在真实消息派发时传 QByteArray，测试里常传 bytes/str。
+        # 直接 `!= "windows_generic_MSG"` 在 bytes 情形下恒为真，
+        # 会让整个 nativeEvent 逻辑被静默跳过（测试表现为 ValueError）。
+        etype = eventType
+        if isinstance(etype, (bytes, bytearray)):
+            etype = etype.decode("ascii", "ignore")
+        elif etype is not None and not isinstance(etype, str):
+            try:
+                etype = bytes(etype).decode("ascii", "ignore")
+            except Exception:
+                etype = str(etype)
+        if etype != "windows_generic_MSG":
             return super().nativeEvent(eventType, message)
         msg = MSG.from_address(int(message))
 
@@ -329,6 +454,19 @@ class FramelessShell(QMainWindow):
             except Exception:
                 pass
             return True, 0
+
+        # 2) 最大化时按住标题栏拖动 → 还原成普通窗口
+        #
+        # 原生窗口由 DefWindowProc 处理这条消息时会自动"还原并拖动"，
+        # 但无边框窗口在 WM_NCHITTEST 里自己返回 HTCAPTION，等于接管了标题栏，
+        # 系统就不再替我们做这件事 —— 表现为"最大化后拖下来没反应"。
+        #
+        # 这里手动实现：先还原（恢复上次的普通尺寸），再把窗口摆到鼠标正下方，
+        # 最后交给系统进入拖动循环（SendMessage SC_MOVE），手感与原生一致。
+        if msg.message == WM_NCLBUTTONDOWN and msg.wParam == HTCAPTION:
+            if self.isMaximized():
+                self._restore_from_maximized_drag(msg.lParam)
+                return True, 0
 
         if msg.message != WM_NCHITTEST:
             return super().nativeEvent(eventType, message)

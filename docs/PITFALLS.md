@@ -222,6 +222,50 @@ Qt 状态与 Windows `WINDOWPLACEMENT` 失配。
 **修复**：`_remember_and_reset_state()` 在隐藏时把 Qt 状态清零
 （隐藏态调 `setWindowState` 有 `visible` 守卫，无视觉副作用）。
 
+### 3.5 最大化后拖标题栏不会还原成普通窗口
+
+**症状**：最大化后按住标题栏往下拖，窗口纹丝不动/拖不动。
+
+**根因**：原生窗口由 `DefWindowProc` 处理 `WM_NCLBUTTONDOWN + HTCAPTION` 时
+会自动"还原并拖动"。但无边框窗口在 `WM_NCHITTEST` 里自己返回 `HTCAPTION`
+接管了标题栏，系统就不再替我们做这件事——**只返回 HTCAPTION 是不够的，
+还得自己处理按下后的还原**。
+
+**修复**：在 `nativeEvent` 拦截 `WM_NCLBUTTONDOWN`：
+
+```
+清原生 WS_MAXIMIZE → showNormal → 恢复普通几何 → 摆到鼠标下方 → SendMessage(SC_MOVE)
+```
+
+`SC_MOVE` 会让系统进入拖动循环，手感与原生一致。
+
+### 修复这块时连带踩到的三个坑
+
+| 坑 | 现象 | 根因 |
+|----|------|------|
+| 还原后尺寸不对 | 720 被压成 640 | 只在 `_toggle_maximize()` 里记录普通几何；走 `showMaximized()` 时 `_normal_geometry` 是 None，只能靠兜底尺寸，而兜底算出的高度低于 `minimumHeight` 被撑开 |
+| 同上（顺序问题） | 依旧 640 | `setGeometry` 在 `_apply_window_chrome_state()` **之前**，此刻根布局边距还是最大化态的 0，内容按错误边距重算 |
+| 窗口顶部跑出屏幕 | y = -12 | 鼠标贴屏幕顶端时 `new_y = y - 标题栏中心` 为负；夹取边界写成了 `avail.y() - _PAD`（允许 -12），应为 `avail.y()`（标题栏必须完整可见） |
+
+**最终正确顺序**（`_restore_from_maximized_drag`）：
+
+1. `_clear_native_maximized()` —— 不清的话 `setGeometry` 被钳回工作区；
+2. `showNormal()`；
+3. **`_apply_window_chrome_state()`** —— 先切回普通态留白；
+4. **`setGeometry(target)`** —— 再设几何；
+5. 摆到鼠标下方并夹进工作区；
+6. `SendMessage(SC_MOVE)`。
+
+**普通几何的可靠记录点**：放在 `resizeEvent` 里，条件为"非最大化、非最小化"。
+原先只在 `_toggle_maximize()` 记录，其它进入最大化的路径（双击标题栏、
+系统菜单、`showMaximized()`）都会漏记。
+
+> 相关：`tests/test_frameless_drag_restore.py` 共 10 例，覆盖常量正确性、
+> 尺寸还原、顶部不越界、多个横向位置、兜底尺寸不低于最小尺寸、
+> 两条进入最大化的路径、边距恢复顺序。
+> `_restore_from_maximized_drag(..., enter_drag_loop=False)` 是为测试准备的开关
+> —— `SendMessage(SC_MOVE)` 会阻塞到用户松手，自动化测试里会挂住。
+
 ---
 
 ## 4. 全局钩子 / 线程
@@ -525,6 +569,8 @@ setup 半途抛异常时 `_detach` 清理半注册的脏能力。
 | 切页面卡成 PPT | `QGraphicsOpacityEffect` 每帧离屏渲染 |
 | 改设置卡近一秒 | QSS 重贴没做幂等短路 |
 | 窗口卡住拖不动/缩不小 | 原生 `WS_MAXIMIZE` 残留 → `_clear_native_maximized()` |
+| 最大化后拖标题栏不还原 | 只返回 HTCAPTION，没处理 `WM_NCLBUTTONDOWN`（§3.5） |
+| 最大化拖拽还原后尺寸不对 | 普通几何未记录 / 边距未先切回普通态（§3.5） |
 | 最大化后盖住任务栏 / 贴错屏 | `WM_GETMINMAXINFO` 未处理，或 `restype` 被截断 |
 | 面板拉满不透明度还是很透 | 叠加了 `window_tint` 的固有 alpha |
 | 上屏后又弹一次候选 | 三重防重触发保险缺了一环 |

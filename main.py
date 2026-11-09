@@ -42,6 +42,13 @@ def main():
         write_diag()
         return
 
+    # 本次是否由「UAC 提权申请」启动的新实例。
+    # 看过这个参数就标记下来，避免新进程再次弹 UAC（防无限弹窗循环）。
+    from core import elevate
+    if "--elevated-by-app" in sys.argv:
+        elevate.mark_guarded()
+        append_log("info", "app", "本次为提权启动（由程序自身申请管理员权限）")
+
     from app_runtime import AppRuntime
     from core.config_store import load_config
 

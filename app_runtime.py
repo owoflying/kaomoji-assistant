@@ -376,7 +376,12 @@ class AppRuntime:
             append_log("error", "config", "配置落盘失败：%r" % (e,))
 
         if "autostart" in changed and autostart.is_supported():
-            autostart.set_enabled(bool(self.config.get("autostart", False)))
+            # 开启 UIA 提权时，自启动要改用「计划任务」才能真正带管理员权限；
+            # 否则每次开机启动后还得再弹一次 UAC（本功能就是要避免这个）。
+            want = bool(self.config.get("autostart", False))
+            use_task = bool(self.config.get("use_uia_elevation", False))
+            ok, msg = autostart.set_autostart(want, use_task=want and use_task)
+            append_log("info" if ok else "warn", "autostart", msg)
 
         effective_theme = resolve_theme_name(self.config.get("theme", "light"))
         # 幂等：样式串没变就不重贴（详见 _apply_app_theme 注释）
@@ -397,7 +402,11 @@ class AppRuntime:
             # 录制完新热键必须立刻重注册，否则新组合键要等下次启动才生效。
             self._reload_hotkey()
 
-        self._handle_uia_status()
+        # 只有「用户本次主动把 UIA 提权开关打开」才允许弹 UAC：
+        # 启动期或改其它设置时都不弹，否则每次开机都弹窗，与目标相反。
+        uia_turned_on = ("use_uia_elevation" in changed
+                         and bool(self.config.get("use_uia_elevation", False)))
+        self._handle_uia_status(allow_elevate=uia_turned_on)
         self._sync_auto_popup()
 
     def _reload_hotkey(self):
@@ -407,14 +416,45 @@ class AppRuntime:
             return
         self.hotkey.start(self.config.get("hotkey", HOTKEY_DEFAULT))
 
-    def _handle_uia_status(self):
-        """开启了 UIA 提权但本次没生效时，给出一次性提示。"""
-        status = uia_elevation.ensure_uiaccess(self.config, append_log)
+    def _handle_uia_status(self, allow_elevate=False):
+        """开启了 UIA 提权但本次没生效时，给出一次性提示。
+
+        :param allow_elevate: 是否允许弹 UAC 申请管理员权限。
+            **只在用户主动开启该功能时传 True**——启动期必须传 False，
+            否则每次开机都会弹 UAC，这与"开机自启自动提权"的目标相反。
+        """
+        status = uia_elevation.ensure_uiaccess(
+            self.config, append_log, allow_elevate=allow_elevate)
         if not self.config.get("use_uia_elevation", False):
             return
-        if status.get("granted") or status.get("relaunched"):
+        if status.get("granted"):
+            return
+        # 已经弹过 UAC 并以管理员重启：旧进程必须退出，否则会有两个实例
+        # （新实例会继续走 UIAccess 令牌流程）。
+        if status.get("relaunched") and status.get("elevate_requested"):
+            self._quit_for_elevation()
+            return
+        if status.get("relaunched"):
             return
         self._warn_uia_once(status)
+
+    def _quit_for_elevation(self):
+        """UAC 提权已成功启动新实例，优雅退出当前进程。"""
+        try:
+            append_log("info", "uia_elev",
+                       "已以管理员身份启动新实例，当前进程退出")
+        except Exception:
+            pass
+        try:
+            # 先把插件与各类 store 收尾，避免半写文件
+            self.plugins.emit("shutdown")
+            for obj in (self.state, self.user_kao, self.triggers):
+                flush = getattr(obj, "flush", None)
+                if callable(flush):
+                    flush()
+        except Exception:
+            pass
+        self.app.quit()
 
     def _warn_uia_once(self, uia_status):
         """「已开启 UIA 提权但本次未生效」只提示一次。

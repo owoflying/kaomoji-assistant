@@ -65,18 +65,23 @@ class TOKEN_PRIVILEGES(ctypes.Structure):
                 ("Privileges", LUID_AND_ATTRIBUTES * 1)]
 
 
-def ensure_uiaccess(config, log=None, on_result=None):
+def ensure_uiaccess(config, log=None, on_result=None, allow_elevate=False):
     """若配置开启「使用UIA提权」，尝试为进程获取 UIAccess 以便与屏幕键盘互相覆盖。
 
     config: 配置字典；log: 可选 callable(level, source, message) 用于记录结果；
     on_result: 可选 callable(status_dict)，在「未重启」（已具备/失败/需管理员）时回调，
                便于 UI 弹出提示；成功重启进程前不会回调（进程即将退出）。
+    allow_elevate: 非管理员时是否**弹 UAC 申请管理员权限并提权重启**。
+               仅应在"用户主动开启该功能"的场景传 True——启动期自动传 False，
+               否则每次开机都会弹 UAC（这正是本功能要避免的）。
 
-    返回 status 字典：{"attempted","granted","needs_admin","relaunched","message"}。
+    返回 status 字典：{"attempted","granted","needs_admin","relaunched",
+    "elevate_requested","message"}。
     注意：开启且以管理员运行时，本函数会在获取成功后**重启当前进程**（不返回）。
     """
     status = {"attempted": False, "granted": False,
-              "needs_admin": False, "relaunched": False, "message": ""}
+              "needs_admin": False, "relaunched": False,
+              "elevate_requested": False, "message": ""}
     # —— 功能隔离：配置未开启时 ——
     if not config or not config.get("use_uia_elevation", False):
         # 但若当前进程仍带 UIAccess（之前开启过并重启过自己），必须另起一个不带
@@ -98,10 +103,38 @@ def ensure_uiaccess(config, log=None, on_result=None):
         _log(log, "warn", "uia_elev", status["message"])
         _emit(on_result, status)
         return status
-    # —— 管理员权限检查：未通过则不可用（满足“检查通过才能使用”的约定）——
+
+    # —— 管理员权限检查 ——
+    # SeTcbPrivilege 只在管理员令牌里存在（实测非管理员令牌查不到该特权），
+    # 所以这一步不是"建议"而是硬门槛。
     if not is_user_admin():
         status["needs_admin"] = True
-        status["message"] = "需要以管理员身份运行本程序，UIA 提权才会生效"
+
+        # 用户主动开启功能时可以弹 UAC 申请提权（启动期不弹，避免每次开机扰民）
+        if allow_elevate:
+            from core import elevate
+            if elevate.guard_is_active():
+                # 本次就是从提权申请启动的，说明用户已授权但仍未拿到管理员
+                # （极少见：UAC 被策略降级）。不再重复弹窗。
+                status["message"] = "已尝试提权但仍不是管理员身份，请检查系统 UAC 设置"
+                _log(log, "warn", "uia_elev", status["message"])
+                _emit(on_result, status)
+                return status
+            status["elevate_requested"] = True
+            result = elevate.spawn_with_guard()
+            if result.started:
+                status["relaunched"] = True
+                status["message"] = "已弹窗申请管理员权限，正在以管理员身份重启…"
+                _log(log, "info", "uia_elev", status["message"])
+                # 不 emit：调用方需要立刻退出旧进程
+                return status
+            # 用户取消或启动失败
+            status["message"] = result.message
+            _log(log, "warn", "uia_elev", status["message"])
+            _emit(on_result, status)
+            return status
+
+        status["message"] = "需要管理员权限才能启用 UIA 提权"
         _log(log, "warn", "uia_elev", status["message"])
         _emit(on_result, status)
         return status

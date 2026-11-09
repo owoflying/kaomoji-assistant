@@ -71,8 +71,20 @@ python build.py
 ## 开机自启动
 
 - 在「设置 → 系统 → 开机自动启动」中开启。
-- 通过写入当前用户注册表 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 实现，**无需管理员权限**。
+- 默认通过写入当前用户注册表 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 实现，**无需管理员权限**。
+- **开启「UIA 提权」时会自动改用计划任务**（以最高权限运行、登录时触发），
+  这样开机后直接具备管理员权限，不必每次弹 UAC 确认。
 - 已安装版本的用户配置位于 `%APPDATA%\KaomojiAssistant\`（含 `config.json`、`user_state.json`），重装不丢失。
+
+## UIA 提权
+
+用于让候选栏成为 UIAccess 顶级窗口，能与屏幕键盘等系统级窗口互相覆盖。
+
+- 在「设置 → 高级 → UIA 提权」开启；
+- **不需要手动以管理员身份运行**——开启时会弹 Windows 的 UAC 确认框，
+  同意后程序自动以管理员身份重启，再派生 UIAccess 令牌；
+- 同时开启「开机自动启动」的话，会创建计划任务，以后开机即为管理员权限，不再弹 UAC；
+- 退出程序后恢复普通权限。
 
 ## 协议
 

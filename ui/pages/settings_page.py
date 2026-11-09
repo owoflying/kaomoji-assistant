@@ -232,7 +232,8 @@ class SettingsPage(QWidget):
         self.auto_check.toggled.connect(lambda *_a: self._on_apply())
         self.blur_hide_check.toggled.connect(lambda *_a: self._on_apply())
         self.autostart_check.toggled.connect(lambda *_a: self._on_apply())
-        self.uia_elevation_check.toggled.connect(lambda *_a: self._on_apply())
+        # UIA 提权涉及 UAC 提权 + 计划任务，属于敏感操作：先二次确认再落配置。
+        self.uia_elevation_check.toggled.connect(self._on_uia_toggled)
 
     # ---------- 子控件工厂 ----------
     def _section_title(self, text):
@@ -349,23 +350,30 @@ class SettingsPage(QWidget):
 
     def _uia_elevation_toggle(self):
         self.uia_elevation_check = ToggleSwitch(self._theme)
-        self.uia_elevation_check.setToolTip(
-            "开启后尝试为进程启用 uiAccess，使候选栏成为顶级窗口、能与屏幕键盘互相覆盖；"
-            "需本程序也以管理员身份运行才生效，否则无效果"
-        )
-        # 管理员权限检查：未通过则禁用开关（满足“检查通过才能使用”的约定），
-        # 避免用户在无权提权的进程上白白开启却毫无反应。
-        if not uia_elevation.is_user_admin():
-            self.uia_elevation_check.setEnabled(False)
+        # 注意：**不再因为"非管理员"而禁用开关**。
+        # 现在开启时会弹 UAC 申请管理员权限（见 core/elevate.py），
+        # 用户不必自己去"右键 → 以管理员身份运行"。
+        if uia_elevation.is_user_admin():
             self.uia_elevation_check.setToolTip(
-                "需要以管理员身份运行本程序，UIA 提权才能使用（当前非管理员）。")
+                "开启后尝试为进程启用 uiAccess，使候选栏成为顶级窗口、"
+                "能与屏幕键盘互相覆盖。")
+        else:
+            self.uia_elevation_check.setToolTip(
+                "开启后将弹窗申请管理员权限并重启本程序；\n"
+                "若同时开启「开机自动启动」，会改用计划任务实现"
+                "（登录时自动以管理员权限运行，不再弹 UAC）。")
         return self.uia_elevation_check
 
     def _refresh_uia_status(self):
-        """根据真实状态刷新 UIA 行下方的状态文案，杜绝“配置开着但没生效”的假象。"""
+        """根据真实状态刷新 UIA 行下方的状态文案，杜绝"配置开着但没生效"的假象。"""
         if not uia_elevation.is_user_admin():
-            self.uia_status.setText("⚠ 需以管理员身份运行本程序，UIA 提权才会生效。")
-            self.uia_status.setStyleSheet("color:#c0392b;")
+            if self.config.get("use_uia_elevation", False):
+                self.uia_status.setText(
+                    "⚠ 当前非管理员：开启时会弹窗申请管理员权限并重启程序。")
+            else:
+                self.uia_status.setText(
+                    "开启后将弹窗申请管理员权限（无需手动以管理员身份运行）。")
+            self.uia_status.setStyleSheet("color:#a06000;")
             return
         if not self.config.get("use_uia_elevation", False):
             self.uia_status.setText("")
@@ -626,6 +634,68 @@ class SettingsPage(QWidget):
             return
         self.opacity_value.setText("%d%%" % value)
         self.opacity_preview.emit(value / 100.0)
+
+    def _on_uia_toggled(self, checked):
+        """UIA 提权开关：先明确告知影响并二次确认，再落配置。
+
+        **为什么要二次确认**：开启后程序会
+          1. 弹系统 UAC 确认框；
+          2. 以管理员身份重启自身；
+          3. 若同时开了「开机自动启动」，还会创建**以最高权限运行的计划任务**
+             （登录时自动以管理员权限启动，不再弹 UAC）。
+        用户有权在按下开关前就知道这些。
+        """
+        if getattr(self, "_loading", False):
+            return
+        if not checked:
+            self._on_apply()
+            return
+
+        from PySide6.QtWidgets import QMessageBox
+
+        is_admin = uia_elevation.is_user_admin()
+        autostart_on = bool(self.config.get("autostart", False))
+
+        lines = [
+            "开启 UIA 提权后：",
+            "",
+        ]
+        if not is_admin:
+            lines += [
+                "• 会弹出 Windows 的「用户账户控制」确认框，",
+                "  同意后程序将以管理员身份重启；",
+            ]
+        lines.append(
+            "• 候选栏将获得 UIAccess 权限，能与屏幕键盘等"
+            "系统级窗口互相覆盖。")
+        if autostart_on:
+            lines += [
+                "",
+                "同时检测到「开机自动启动」已开启：",
+                "• 会创建以最高权限运行的计划任务，",
+                "  以后开机自动以管理员权限启动，不再弹 UAC。",
+            ]
+
+        lines += [
+            "",
+            "注意：退出程序后将恢复为普通权限。",
+        ]
+
+        reply = QMessageBox.question(
+            self.window(), "启用 UIA 提权",
+            "\n".join(lines),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            # 用户放弃：把开关拨回去，不落配置
+            self._loading = True
+            try:
+                self.uia_elevation_check.setChecked(False)
+            finally:
+                self._loading = False
+            return
+        self._on_apply()
 
     def _on_apply(self):
         if getattr(self, "_loading", False):

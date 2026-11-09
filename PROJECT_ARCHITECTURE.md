@@ -556,7 +556,7 @@ build.py
 | **插件权限边界清晰** | manager 只登记不持 widget、异常全隔离、路径前缀校验、数据不落盘 |
 | **踩坑知识沉淀** | `docs/PITFALLS.md` 记录 19 类根因（ctypes 常量、QSS 级联、亚克力 alpha 语义、线程复活、插件生命周期…）+ 症状索引表 + 提交前自检清单 |
 | **分层可被强制执行** | `tests/test_plugins.py::test_core_does_not_import_ui` 静态扫描 `core/`，任何人加回反向依赖都会立刻失败 |
-| **测试隔离** | `tests/conftest.py` 把 `APPDATA` 重定向到临时目录；100 个用例跑完后工作区零污染 |
+| **测试隔离** | `tests/conftest.py` 把 `APPDATA` 重定向到临时目录；176 个用例跑完后工作区零污染 |
 
 ---
 

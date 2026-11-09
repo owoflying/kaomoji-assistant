@@ -305,7 +305,7 @@ HashWorker(QThread)  下载后 SHA-256 校验
 ## 9. 测试
 
 ```bat
-.venv\Scripts\python.exe -m pytest tests -q      :: 148 个用例，约 65s
+.venv\Scripts\python.exe -m pytest tests -q      :: 176 个用例，约 80s
 ```
 
 - 全部走 `QT_QPA_PLATFORM=offscreen`，无需显示器；

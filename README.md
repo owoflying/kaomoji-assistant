@@ -5,6 +5,7 @@
 Win11 风格的颜文字输入辅助工具。按全局热键唤起候选面板，搜索并选择颜文字，回车即输入到当前光标位置。
 
 ## 功能
+
 - 全局热键唤起（默认 `Ctrl+Shift+K`）
 - Win11 风格面板：半透明、圆角、亚克力模糊、浅/深双主题
 - 实时搜索、`1`–`9` 直接选字、最近使用与收藏夹
@@ -13,11 +14,13 @@ Win11 风格的颜文字输入辅助工具。按全局热键唤起候选面板�
 - 主页时间问候卡片（按上午/中午/下午/晚上自动变化）
 
 ## 环境
+
 - Windows 10 / 11
 - Python 3.10+
 - 依赖：`PySide6`、`pynput`
 
 ## 运行
+
 ```bat
 python -m venv .venv
 .venv\Scripts\activate
@@ -26,27 +29,33 @@ python main.py
 ```
 
 ## 键位
-| 操作 | 按键 |
-| --- | --- |
-| 唤起 | `Ctrl+Shift+K` |
-| 选字 | `1`–`9` |
-| 移动选择 | `←` / `→` |
-| 翻页 | `-` / `=` |
-| 上屏 | `Enter` / `Space` |
-| 关闭 | `Esc` |
-| 收藏 | `Ctrl+D` |
+
+| 操作   | 按键                |
+| ---- | ----------------- |
+| 唤起   | `Ctrl+Shift+K`    |
+| 选字   | `1`–`9`           |
+| 移动选择 | `←` / `→`         |
+| 翻页   | `-` / `=`         |
+| 上屏   | `Enter` / `Space` |
+| 关闭   | `Esc`             |
+| 收藏   | `Ctrl+D`          |
 
 ## 配置
+
 编辑 `config.json`，或托盘右键「设置」可视化修改（即时生效）：
+
 - `hotkey` 热键 · `theme` 主题 · `opacity` 不透明度 · `acrylic` 亚克力 · `input_method` 输入方式（三选一：`clipboard` 剪贴板粘贴为默认，发 Ctrl+V 不被中文输入法拦截、兼容性最好；`direct` 直接字符投递用 WM_CHAR 直送焦点控件，绕过输入法、无乱码、不污染剪贴板，推荐在中文 Windows 下替代 `type` 使用；`type` 模拟键入在微软拼音等中文输入法下可能产生乱码，仅推荐英文输入模式使用）
 
 ## 自定义颜文字
+
 编辑 `data/kaomoji.json`，在对应分类的 `items` 中增删即可：
+
 ```json
 { "categories": [ { "name": "开心", "items": ["(｡･ω･｡)", "(◕‿◕)"] } ] }
 ```
 
 ## 编译 EXE（发布版）
+
 把项目打包成 Windows 可执行程序（onedir 模式，无控制台窗口，托盘常驻）：
 
 ```bat
@@ -60,11 +69,13 @@ python build.py
 - 只读资源 `data/kaomoji.json` 由 `core/runtime.py` 在运行时自动定位（源码态取项目目录，冻结态取 `_internal`），两种形态互不干扰。
 
 ## 开机自启动
+
 - 在「设置 → 系统 → 开机自动启动」中开启。
 - 通过写入当前用户注册表 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 实现，**无需管理员权限**。
 - 已安装版本的用户配置位于 `%APPDATA%\KaomojiAssistant\`（含 `config.json`、`user_state.json`），重装不丢失。
 
 ## 协议
+
 Apache-2.0。
 
 ## 开发与测试
@@ -74,29 +85,12 @@ Apache-2.0。
 .venv\Scripts\python.exe -m pytest tests -q
 ```
 
-约 100 个用例，全部离屏（`QT_QPA_PLATFORM=offscreen`）运行，无需显示器，
-约 10 秒跑完。测试会把 `APPDATA` 重定向到临时目录，**不会改动你的 `config.json`**。
+176 个用例，全部离屏（`QT_QPA_PLATFORM=offscreen`）运行，无需显示器，
+约 80 秒跑完。测试会把 `APPDATA` 重定向到临时目录，**不会改动你的 `config.json`**。
 
 文档：
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) —— 架构设计（分层、数据流、关键机制）
-- [docs/PLUGIN_GUIDE.md](docs/PLUGIN_GUIDE.md) —— 插件开发指南（含 api.ui 界面修改 API）
-- [docs/PITFALLS.md](docs/PITFALLS.md) —— 踩坑手册（改代码前建议先扫一眼）
-- [PROJECT_ARCHITECTURE.md](PROJECT_ARCHITECTURE.md) —— 现状梳理（逐模块职责与信号接线）
-
-## 开发与测试
-
-```bat
-.venv\Scripts\python.exe -m pip install pytest
-.venv\Scripts\python.exe -m pytest tests -q
-```
-
-约 100 个用例，全部离屏（`QT_QPA_PLATFORM=offscreen`）运行，无需显示器，
-约 10 秒跑完。测试会把 `APPDATA` 重定向到临时目录，**不会改动你的 `config.json`**。
-
-文档：
-
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) —— 架构设计（分层、数据流、关键机制）
-- [docs/PLUGIN_GUIDE.md](docs/PLUGIN_GUIDE.md) —— 插件开发指南（含 api.ui 界面修改 API）
+- [docs/PLUGIN_GUIDE.md](docs/PLUGIN_GUIDE.md) —— 插件开发指南（含 `api.ui` 界面修改 API）
 - [docs/PITFALLS.md](docs/PITFALLS.md) —— 踩坑手册（改代码前建议先扫一眼）
 - [PROJECT_ARCHITECTURE.md](PROJECT_ARCHITECTURE.md) —— 现状梳理（逐模块职责与信号接线）

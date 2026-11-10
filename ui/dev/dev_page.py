@@ -467,9 +467,10 @@ class DevPage(QWidget):
     # ---- 11. 测试功能总开关 ----
     def _build_test_card(self):
         card, v = self._card("测试功能")
-        tip = QLabel("开启后，设置页中处于「测试模式」的新功能（如 UIA 提权）将显示并可用；"
-                     "未开启时这些功能默认隐藏。新开发功能默认归入测试模式，"
-                     "仅确认可正式上线后才移出测试模式并开放给正式环境。")
+        tip = QLabel("这里是「还没正式上线」的新功能开关。开着时，这些功能会出现在设置页里；"
+                     "关掉后它们被隐藏并恢复默认值。\n\n"
+                     "目前没有处于测试阶段的功能——插件、UIA 提权、三种输入方式都已经转正，"
+                     "不再受这个开关影响。以后新做的功能会先在这里放一段时间。")
         tip.setObjectName("BodyText")
         tip.setWordWrap(True)
         v.addWidget(tip)

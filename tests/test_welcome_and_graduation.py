@@ -68,57 +68,98 @@ def test_welcome_force_flag(appdata, monkeypatch):
 
 
 def test_welcome_may_show_uses_flag_file(appdata):
-    """maybe_show 在已弹过时直接返回 False，不再构造弹窗。"""
+    """maybe_show 在已弹过时返回 None（不构造弹窗、不阻塞）。"""
     from core import version as ver
 
     ver.mark_welcome_shown()
 
     from ui.welcome_dialog import WelcomeDialog
-    # 已弹过：不应该走到 exec()（否则会阻塞）。返回 False 即证明提前退出。
-    assert WelcomeDialog.maybe_show(theme_name="light") is False
+    assert WelcomeDialog.maybe_show(theme_name="light") is None
 
 
 # ======================================================================
-# 欢迎界面组件
+# 欢迎界面组件（新手引导：介绍 + 配置，不再是风险告知书）
 # ======================================================================
-def _make_welcome(qapp):
+def _make_welcome(qapp, config=None):
     from ui.fluent_icons import ensure_icon_font
     ensure_icon_font()
     from ui.welcome_dialog import WelcomeDialog
-    return WelcomeDialog(theme_name="light", version="v1.3(abc)")
+    return WelcomeDialog(
+        theme_name="light", version="v1.3(abc)",
+        config=config or {"hotkey": "<ctrl>+<shift>+k", "theme": "system"})
 
 
-def test_welcome_requires_checkbox(qapp):
-    """未勾选「我已了解」时不能点「开始使用」。"""
+def test_welcome_offers_basic_setup(qapp):
+    """引导页要让用户当场定下热键与主题。"""
     dlg = _make_welcome(qapp)
     try:
-        assert dlg._start.isEnabled() is False
-        dlg._agree.setChecked(True)
-        assert dlg._start.isEnabled() is True
-        dlg._agree.setChecked(False)
-        assert dlg._start.isEnabled() is False, "取消勾选后又该禁用"
+        assert dlg._hotkey_combo.count() > 0
+        assert dlg._theme_combo.count() > 0
+        # 回填当前值
+        assert dlg._hotkey_combo.currentData() == "<ctrl>+<shift>+k"
+        assert dlg._theme_combo.currentData() == "system"
     finally:
         dlg.deleteLater()
 
 
-def test_welcome_lists_risks(qapp):
-    """风险说明必须覆盖两项正式功能的真实风险。"""
-    from ui.welcome_dialog import RISK_ITEMS
-
-    text = " ".join(n + d for n, d in RISK_ITEMS)
-    assert "管理员" in text, "应说明 UIA 提权需要管理员权限"
-    assert "插件" in text, "应说明插件风险"
-    assert "权限" in text
-
-
-def test_welcome_accept_sets_ok(qapp):
+def test_welcome_collects_changes(qapp):
+    """用户改了热键/主题，accept() 后应收集到 chosen 里。"""
     dlg = _make_welcome(qapp)
     try:
-        assert dlg.result_ok() is False
+        dlg._hotkey_combo.setCurrentIndex(1)
+        dlg._theme_combo.setCurrentIndex(2)
         dlg.accept()
-        assert dlg.result_ok() is True
+        assert "hotkey" in dlg.chosen
+        assert "theme" in dlg.chosen
     finally:
         dlg.deleteLater()
+
+
+def test_welcome_collects_nothing_when_unchanged(qapp):
+    """没改动时 chosen 为空——不产生无意义的配置写入。"""
+    dlg = _make_welcome(qapp)
+    try:
+        dlg.accept()
+        assert dlg.chosen == {}
+    finally:
+        dlg.deleteLater()
+
+
+def test_welcome_has_highlights(qapp):
+    """有宣传/介绍内容（不是一屏免责声明）。"""
+    from ui.welcome_dialog import HIGHLIGHTS
+
+    assert len(HIGHLIGHTS) >= 3
+    text = " ".join(n + d for _i, n, d in HIGHLIGHTS)
+    assert "插件" in text or "更新" in text
+
+
+# ======================================================================
+# 风险提示：挪到各功能的首次入口
+# ======================================================================
+def test_risk_dialog_flags_are_separate(appdata):
+    """插件与 UIA 各自独立标记，互不影响。"""
+    from ui import risk_dialog
+
+    assert risk_dialog._seen(risk_dialog._PLUGIN_FLAG) is False
+    assert risk_dialog._seen(risk_dialog._UIA_FLAG) is False
+
+    risk_dialog._mark(risk_dialog._PLUGIN_FLAG)
+    assert risk_dialog._seen(risk_dialog._PLUGIN_FLAG) is True
+    assert risk_dialog._seen(risk_dialog._UIA_FLAG) is False, \
+        "标记插件风险不该顺带标记 UIA"
+
+
+def test_risk_texts_are_plain(appdata):
+    """文案说人话：讲清楚会发生什么，不用套话。"""
+    from ui import risk_dialog
+
+    for text in (risk_dialog.PLUGIN_TEXT, risk_dialog.UIA_TEXT):
+        assert "不会留下" not in text
+        assert "副作用" not in text
+
+    assert "管理员" in risk_dialog.UIA_TEXT
+    assert "权限" in risk_dialog.PLUGIN_TEXT
 
 
 # ======================================================================

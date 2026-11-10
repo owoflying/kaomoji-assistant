@@ -11,12 +11,45 @@
 """
 from PySide6.QtWidgets import QStackedWidget
 from PySide6.QtCore import QAbstractAnimation, QPropertyAnimation, QEasingCurve, QPoint
+from PySide6.QtGui import QColor, QPainter
 
 
 class AnimatedStackedWidget(QStackedWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._busy = False
+        #: 内容区表面背景色（None = 不画，靠样式表/父级）
+        self._surface = None
+
+    # ---------- 背景自绘 ----------
+    def set_surface(self, color):
+        """设置内容区表面背景色并重绘。
+
+        **为什么不走 QSS**：`setStyleSheet` 会让整棵子树重新 polish ——
+        内容区有 7 个页面、几百个控件，一次实测 **260ms**。
+        而拖动「不透明度」滑块需要逐档更新这个颜色，用 QSS 每档卡 260ms。
+
+        改成自绘后，更新一次是「设个 QColor + update()」，亚毫秒级；
+        子页本来就有 `SettingsBody` 之类的透明规则，背景透上来正好。
+        """
+        c = QColor(color) if color is not None else None
+        if c is not None and not c.isValid():
+            return
+        self._surface = c
+        self.viewport().update()
+        self.update()
+
+    def surface(self):
+        return self._surface
+
+    def paintEvent(self, e):
+        # 先画自己的背景，再让 QStackedWidget 画子页
+        s = self._surface
+        if s is not None and s.isValid():
+            p = QPainter(self)
+            p.fillRect(self.rect(), s)
+            p.end()
+        super().paintEvent(e)
 
     def slide_to(self, widget, duration=200, rise=8):
         """切换到指定 widget，仅让新页做「上浮就位」过渡（无透明度变化）。

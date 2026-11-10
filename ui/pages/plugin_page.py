@@ -1,7 +1,7 @@
 """插件管理页：浏览已安装插件、启用/停用、重载、打开插件目录。
 
-按项目规范归入「测试功能」：use_test_features 关闭时导航项与页面整体隐藏
-（见 unified_window._sync_plugin_tab），确认稳定后再移出测试模式。
+插件是**正式功能**，不再受「测试功能」开关门控（早期曾在测试门控下，
+现已转正）。首次启用插件时会弹一次风险说明，见 `ui/risk_dialog.py`。
 
 视觉沿用 Win11 设置风格：PageTitle + Card 卡片 + ToggleSwitch 开关。
 """
@@ -191,6 +191,15 @@ class _PluginCard(QFrame):
 
     def _on_toggle(self, checked):
         # ToggleSwitch.mouseReleaseEvent 已自改状态，这里只把结果交给管理器
+        if checked:
+            # 第一次启用插件时说明一下：插件权限和主程序一样高
+            try:
+                from ui import risk_dialog
+                risk_dialog.maybe_show_plugin_risk(
+                    parent=self.window(),
+                    theme_name=getattr(self._theme, "name", "light"))
+            except Exception:
+                pass
         self.manager.set_enabled(self.rec["id"], bool(checked))
 
     def set_theme(self, t):

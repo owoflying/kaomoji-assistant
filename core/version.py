@@ -155,10 +155,16 @@ def should_show_welcome(force=False):
 
     **判定与版本号无关**：用独立标记文件，弹过一次就永不再弹。
     这与 `should_show_update_popup`（每个版本首次启动都弹）刻意区分开——
-    欢迎 + 风险告知只在用户第一次接触这个软件时出现一次。
+    欢迎 + 首次配置引导只在用户第一次接触这个软件时出现一次。
 
     :param force: 开发者模式「模拟首启」用，绕过标记检查。
+
+    环境变量：
+      * ``KAOMOJI_FORCE_WELCOME=1``  —— 强制弹（调试用）；
+      * ``KAOMOJI_SKIP_WELCOME=1``   —— 强制不弹（自动化测试/截图用）。
     """
+    if os.environ.get("KAOMOJI_SKIP_WELCOME") == "1":
+        return False
     if force or os.environ.get("KAOMOJI_FORCE_WELCOME") == "1":
         return True
     return not has_shown_welcome()

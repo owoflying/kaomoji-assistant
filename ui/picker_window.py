@@ -115,6 +115,9 @@ class CandidateChip(QWidget):
     def __init__(self, slot, parent=None):
         super().__init__(parent)
         self._slot = slot
+        self._active = False
+        #: 高亮色（由 PickerWindow 在应用主题时注入）
+        self._active_color = "#0067c0"
         self.setObjectName("chip")
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setCursor(Qt.PointingHandCursor)
@@ -133,9 +136,31 @@ class CandidateChip(QWidget):
         self.kao.setText(text)
 
     def set_active(self, on):
-        self.setProperty("active", "true" if on else "false")
-        self.style().unpolish(self)
-        self.style().polish(self)
+        """设置选中/悬停高亮。
+
+        ⚠ **不用 unpolish/polish**：那会让 Qt 重新计算这个控件的整棵样式表，
+        鼠标划过每个候选都会触发一次——表现为"鼠标滑动不跟手、一顿一顿"。
+        改为记录状态 + `update()`，由 `paintEvent` 自绘背景，亚毫秒级。
+        """
+        on = bool(on)
+        if self._active == on:
+            return
+        self._active = on
+        self.update()
+
+    def paintEvent(self, e):
+        # 自绘圆角高亮背景（选中/悬停）
+        if self._active:
+            p = QPainter(self)
+            p.setRenderHint(QPainter.Antialiasing)
+            c = QColor(self._active_color)
+            c.setAlpha(38)
+            p.setPen(Qt.NoPen)
+            p.setBrush(c)
+            r = self.rect().adjusted(0, 0, -1, -1)
+            p.drawRoundedRect(r, 6, 6)
+            p.end()
+        super().paintEvent(e)
 
     def enterEvent(self, e):
         self.hovered.emit(self._slot)
@@ -286,6 +311,14 @@ class PickerWindow(QWidget):
         # 否则边框会与面板同色而"消失"。
         alpha = int(pal["border"])
         self._border_color = QColor(0, 0, 0, alpha) if alpha <= 40 else QColor(255, 255, 255, alpha)
+
+        # 候选项高亮色：由 chip 在 paintEvent 里自绘（不再走 QSS polish）
+        accent = pal.get("accent") or pal.get("fg") or "0067c0"
+        chip_color = QColor("#" + accent.lstrip("#"))
+        if not chip_color.isValid():
+            chip_color = QColor("#0067c0")
+        for chip in getattr(self, "_chips", []):
+            chip._active_color = chip_color
 
     # ---------- UI ----------
     def _init_ui(self):

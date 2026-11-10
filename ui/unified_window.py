@@ -519,6 +519,40 @@ class UnifiedSettingsWindow(FramelessShell):
         self._update_backdrop()
         self.update()
 
+    def refresh_visuals(self):
+        """只重绘、不重贴 QSS / 不刷子页。
+
+        用于「仅影响绘制」的配置变更（如 `panel_alpha` 不透明度）。
+        走完整的 `apply_config()` 会重贴 QSS 并刷新所有子页，实测 ≈320ms；
+        这类改动下一帧就能反映新值。
+
+        ⚠ 内容区表面色（`content_surface`）随 panel_alpha 变化，但**不能**
+        在这里调 `_refresh_content_sheet()` —— 它会把完整主题 QSS（几百条规则）
+        重贴到内容区，实测 **348ms**，拖动滑块时每一档都会卡。改为只更新
+        `ContentArea` 那一条规则（见 `_patch_content_surface`）。
+        """
+        surface = self._adjusted_content_surface()
+        if surface != self._content_surface:
+            self._content_surface = surface
+            self._patch_content_surface(surface)
+        self.update()
+
+    def _patch_content_surface(self, surface):
+        """更新内容区表面背景色（自绘，不走 QSS）。
+
+        **为什么不用样式表**：`setStyleSheet` 会让整棵子树重新 polish ——
+        内容区有 7 个页面、几百个控件，实测 **260ms**。拖动不透明度滑块
+        逐档触发就是"一卡一卡"的直接原因。
+
+        改成 `AnimatedStackedWidget.set_surface()` 自绘后，一次更新是
+        「设个 QColor + update()」，亚毫秒级。
+        """
+        try:
+            self.content.set_surface(surface)
+        except Exception:
+            # 极端情况（老控件）退回全量重贴，保证功能不乱
+            self._refresh_content_sheet()
+
     def apply_config(self, config):
         """外部配置变更后刷新窗口主题与内部页。"""
         self.config = config
@@ -579,19 +613,26 @@ class UnifiedSettingsWindow(FramelessShell):
         return _rgba_str(r, g, b, max(0.0, min(1.0, a * alpha)))
 
     def _refresh_content_sheet(self):
-        """刷新内容区样式表：在完整主题 QSS 基础上追加其内容区表面背景。
+        """刷新内容区：主题 QSS 贴一次 + 表面色走自绘。
 
-        关键点：self.content 自身 setStyleSheet 会切断主窗口全局 QSS 的级联，
-        因此必须把完整 style_sheet() 一并设给它；否则仅设 background 会让派生
-        控件「降级」为原生样式（浅色模式下 AccentButton 白底白字、不可见）。
+        历史坑（仍然成立）：`content` 自身 `setStyleSheet` 会切断主窗口全局
+        QSS 的级联，所以**完整主题 QSS 必须一并设给它**，否则子页里的
+        `QPushButton#AccentButton`、滑块、开关会降级成原生样式
+        （浅色模式下白底白字不可见）。
+
+        但「表面色」不再写进 QSS —— 它随不透明度滑块频繁变化，每次
+        `setStyleSheet` 都要 260ms（整棵内容树重新 polish）。改由
+        `AnimatedStackedWidget.set_surface()` 自绘。
+
+        这里仍保留一次 QSS 重贴，但只在**主题变化**时发生（由 `_apply_theme`
+        的幂等判定守着，不会每次拖动都跑）。
         """
         if not getattr(self, "_theme_ss", ""):
             return
-        surface = self._adjusted_content_surface()
-        self.content.setStyleSheet(
-            self._theme_ss
-            + "\nQStackedWidget#ContentArea { background: %s; border: none; }" % surface
-        )
+        # 只贴完整主题 QSS（不带 surface 规则），子页样式得以继承
+        if self.content.styleSheet() != self._theme_ss:
+            self.content.setStyleSheet(self._theme_ss)
+        self.content.set_surface(self._adjusted_content_surface())
 
     def _adjusted_panel_base(self):
         """面板基底色，按 panel_alpha（语义=不透明度，值越大越实）缩放。

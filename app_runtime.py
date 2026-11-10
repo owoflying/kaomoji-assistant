@@ -15,7 +15,7 @@
   4. 「欢迎更新」弹窗与插件 startup 事件都用 `QTimer.singleShot(0)` 投递，
      靠投递顺序保证前者先弹，避免两个模态框抢焦点。
 """
-from PySide6.QtCore import QObject, QTimer, Signal
+from PySide6.QtCore import QObject, QTimer, Qt, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QMenu, QMessageBox, QSystemTrayIcon
 
@@ -59,6 +59,16 @@ HOTKEY_DEFAULT = DEFAULT_CONFIG["hotkey"]
 SYSTEM_THEME_POLL_MS = 3000
 # 因外部点击/继续打字关闭面板后，热键在此时长内视为同一次关闭，避免抖动重开
 DISMISS_GUARD_SEC = 0.4
+
+#: 只影响「绘制」而不影响「布局/控件结构」的配置项。
+#:
+#: 这类改动走 `refresh_visuals()`（只重绘）而不是 `apply_config()`
+#: （重贴 QSS + 刷全部子页，实测 ≈320ms）。用户拖动不透明度滑块时
+#: 每一档都走全量刷新会明显卡顿。
+_LIGHT_CHANGE_KEYS = frozenset({
+    "panel_alpha",   # 面板不透明度：只影响 paintEvent 的基底色
+    "opacity",       # 候选条不透明度：只影响窗口透明度
+})
 
 
 def _valid_item_pool(data, user_kao, triggers):
@@ -338,20 +348,27 @@ class AppRuntime:
         self._schedule_auto_update()
 
     def _maybe_show_welcome(self):
-        """首次使用欢迎界面（含风险告知与勾选确认）。
+        """首次使用引导：介绍用法 + 让用户定下热键和主题。
 
-        只在「真正第一次」弹一次，用独立标记文件判定（见 core/version.py）。
-        用户点「退出」不算完成，下次启动还会看到。
+        用户选的配置会合并进主配置并立即生效（不必再进设置页改一遍）。
+        风险提示**不在这里**——它挂在各自功能的入口上，见 ui/risk_dialog.py。
         """
         try:
             from ui.welcome_dialog import WelcomeDialog
-            shown = WelcomeDialog.maybe_show(
+            chosen = WelcomeDialog.maybe_show(
                 theme_name=resolve_theme_name(self.config.get("theme", "light")),
+                config=self.config,
                 parent=self.unified)
-            if shown:
-                append_log("info", "app", "首次使用：已展示欢迎页并确认风险")
         except Exception as e:
             append_log("warn", "app", "欢迎页展示失败：%r" % (e,))
+            return
+        if not chosen:
+            return
+        # 用户在引导页里改了热键/主题：直接应用，省掉再进设置页的步骤
+        merged = dict(self.config)
+        merged.update(chosen)
+        append_log("info", "app", "首次使用：已应用引导设置 %s" % dict(chosen))
+        self.apply_settings(merged)
 
     def _start_services(self):
         self.hotkey.start(self.config.get("hotkey", HOTKEY_DEFAULT))
@@ -556,8 +573,19 @@ class AppRuntime:
             self._theme_log_viewer(effective_theme)
             self._update_system_theme_watcher()
 
+        # ---------- 按"变化的内容"决定刷新广度 ----------
+        # 全量刷新实测 ≈320ms（unified.apply_config 160 + settings 刷新 152），
+        # 拖动不透明度滑块松手就走一遍会明显卡顿。但改 alpha 根本不需要
+        # 重贴 QSS、也不需要重建设置页控件——只需要重绘。
+        visual_only = changed <= _LIGHT_CHANGE_KEYS
+
         self.window.apply_config(self.config)
-        self.unified.apply_config(self.config)
+        if visual_only:
+            # 透明/不透明度这类只影响绘制的改动：全窗口 update() 即可。
+            # unified 内部会重新计算基底色，paintEvent 下一帧就反映新值。
+            self.unified.refresh_visuals()
+        else:
+            self.unified.apply_config(self.config)
         self.plugins.set_theme_name(effective_theme)
         self.state.max_recent = int(self.config.get("max_recent", 30))
         self.plugins.emit("config_changed", self.config)
@@ -566,11 +594,16 @@ class AppRuntime:
             # 录制完新热键必须立刻重注册，否则新组合键要等下次启动才生效。
             self._reload_hotkey()
 
-        # 只有「用户本次主动把 UIA 提权开关打开」才允许弹 UAC：
-        # 启动期或改其它设置时都不弹，否则每次开机都弹窗，与目标相反。
+        # 只有「用户本次主动把 UIA 提权开关打开」才做 UIA 检查。
+        # 原先每次 apply_settings 都调一次，既白跑一遍 native 调用，
+        # 又可能弹出模态提示框卡住界面（改个不透明度被 UIA 弹窗拦下）。
         uia_turned_on = ("use_uia_elevation" in changed
                          and bool(self.config.get("use_uia_elevation", False)))
-        self._handle_uia_status(allow_elevate=uia_turned_on)
+        if uia_turned_on:
+            self._handle_uia_status(allow_elevate=True)
+        elif "use_uia_elevation" in changed:
+            # 关掉时也要检查（要从 UIAccess 令牌重启回普通权限）
+            self._handle_uia_status(allow_elevate=False)
         self._sync_auto_popup()
 
     def _reload_hotkey(self):
@@ -627,14 +660,21 @@ class AppRuntime:
         函数内赋值却漏写 global，`if not uia_warn_shown` 会抛 UnboundLocalError，
         异常从 apply_settings 中途抛出，把它后面的「自动弹出监听启停」整段跳过，
         表现为开过 UIA 提权之后改自动弹出开关不生效。
+
+        ⚠ **用非模态弹窗**：`QMessageBox.warning()` 会开一个嵌套事件循环，
+        在 `apply_settings` 调用链里会卡住整个界面（用户感觉"点一下卡住"）。
+        改用 `open()` + `setAttribute(WA_DeleteOnClose)`，立即返回。
         """
         if self._uia_warn_shown:
             return
         self._uia_warn_shown = True
         try:
-            QMessageBox.warning(
-                self.unified, "UIA 提权",
-                uia_status.get("message") or "UIA 提权未生效，请查看日志。")
+            box = QMessageBox(
+                QMessageBox.Warning, "UIA 提权",
+                uia_status.get("message") or "UIA 提权未生效，请查看日志。",
+                QMessageBox.Ok, self.unified)
+            box.setAttribute(Qt.WA_DeleteOnClose, True)
+            box.open()
         except Exception:
             pass
 

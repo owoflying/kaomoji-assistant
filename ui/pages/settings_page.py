@@ -642,65 +642,21 @@ class SettingsPage(QWidget):
         self.opacity_preview.emit(value / 100.0)
 
     def _on_uia_toggled(self, checked):
-        """UIA 提权开关：先明确告知影响并二次确认，再落配置。
-
-        **为什么要二次确认**：开启后程序会
-          1. 弹系统 UAC 确认框；
-          2. 以管理员身份重启自身；
-          3. 若同时开了「开机自动启动」，还会创建**以最高权限运行的计划任务**
-             （登录时自动以管理员权限启动，不再弹 UAC）。
-        用户有权在按下开关前就知道这些。
-        """
+        """UIA 提权开关：**第一次开启时**给出风险说明，之后不再打扰。"""
         if getattr(self, "_loading", False):
             return
         if not checked:
             self._on_apply()
             return
 
-        from PySide6.QtWidgets import QMessageBox
-
-        is_admin = uia_elevation.is_user_admin()
-        autostart_on = bool(self.config.get("autostart", False))
-
-        lines = [
-            "开启 UIA 提权后：",
-            "",
-        ]
-        if not is_admin:
-            lines += [
-                "• 会弹出 Windows 的「用户账户控制」确认框，",
-                "  同意后程序将以管理员身份重启；",
-            ]
-        lines.append(
-            "• 候选栏将获得 UIAccess 权限，能与屏幕键盘等"
-            "系统级窗口互相覆盖。")
-        if autostart_on:
-            lines += [
-                "",
-                "同时检测到「开机自动启动」已开启：",
-                "• 会创建以最高权限运行的计划任务，",
-                "  以后开机自动以管理员权限启动，不再弹 UAC。",
-            ]
-
-        lines += [
-            "",
-            "注意：退出程序后将恢复为普通权限。",
-        ]
-
-        reply = QMessageBox.question(
-            self.window(), "启用 UIA 提权",
-            "\n".join(lines),
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if reply != QMessageBox.Yes:
-            # 用户放弃：把开关拨回去，不落配置
-            self._loading = True
-            try:
-                self.uia_elevation_check.setChecked(False)
-            finally:
-                self._loading = False
-            return
+        # 首次开启：说明会发生什么（弹 UAC、以管理员重启、获得系统级窗口权限）
+        try:
+            from ui import risk_dialog
+            risk_dialog.maybe_show_uia_risk(
+                parent=self.window(),
+                theme_name=resolve_theme_name(self.config.get("theme", "light")))
+        except Exception:
+            pass
         self._on_apply()
 
     def _on_apply(self):

@@ -245,6 +245,7 @@ class DevPage(QWidget):
         body.addWidget(self._build_control_card())
         body.addWidget(self._build_test_card())
         body.addWidget(self._build_upgrade_card())
+        body.addWidget(self._build_dialog_preview_card())
         body.addWidget(self._build_event_card())
         body.addWidget(self._build_diag_card())
         body.addWidget(self._build_emotion_card())
@@ -514,6 +515,139 @@ class DevPage(QWidget):
                 bus.log("错误", "重启",
                         "模拟升级失败：%s: %s" % (type(exc).__name__, exc))
 
+    # ---- 11c. 弹窗预览 ----
+    def _build_dialog_preview_card(self):
+        """手动重看那几个「只弹一次」的弹窗。
+
+        欢迎引导、插件风险提示、UIA 风险提示都是**一次性**的：看过就标了
+        标记文件，之后再也见不到。改文案/改视觉时只能靠清 APPDATA 才能复现，
+        非常别扭。这里给几个按钮，直接强制弹出，不用清数据。
+
+        注意：预览**不会**写入标记，也不改配置——纯粹是看一眼长什么样。
+        """
+        card, v = self._card("弹窗预览")
+        tip = QLabel("下面这些弹窗只会在「第一次」出现，看过之后就再也见不到了。"
+                     "改文案或改样式时，可以在这里直接强制重看（只是预览，"
+                     "不会修改任何设置，也不影响已记录的「已看过」状态）。")
+        tip.setObjectName("BodyText")
+        tip.setWordWrap(True)
+        v.addWidget(tip)
+
+        h = QHBoxLayout()
+        b1 = QPushButton("首次使用引导")
+        b1.setCursor(Qt.PointingHandCursor)
+        b1.setMinimumHeight(34)
+        b1.clicked.connect(self._preview_welcome)
+        h.addWidget(b1)
+
+        b2 = QPushButton("插件风险提示")
+        b2.setCursor(Qt.PointingHandCursor)
+        b2.setMinimumHeight(34)
+        b2.clicked.connect(self._preview_plugin_risk)
+        h.addWidget(b2)
+
+        b3 = QPushButton("UIA 风险提示")
+        b3.setCursor(Qt.PointingHandCursor)
+        b3.setMinimumHeight(34)
+        b3.clicked.connect(self._preview_uia_risk)
+        h.addWidget(b3)
+        h.addStretch(1)
+        v.addLayout(h)
+
+        # 显示当前的「已看过」状态，便于判断为什么日常见不到
+        self._dialog_state_lbl = QLabel("")
+        self._dialog_state_lbl.setObjectName("Caption")
+        self._dialog_state_lbl.setWordWrap(True)
+        v.addWidget(self._dialog_state_lbl)
+        self._refresh_dialog_state()
+        return card
+
+    def _refresh_dialog_state(self):
+        """刷新"哪些弹窗已被标记为看过"。"""
+        lbl = getattr(self, "_dialog_state_lbl", None)
+        if lbl is None:
+            return
+        try:
+            from core import version as ver
+            from ui import risk_dialog
+
+            items = [
+                ("首次使用引导",
+                 "已看过" if ver.has_shown_welcome() else "未看过（下次启动会弹）"),
+                ("插件风险提示",
+                 "已看过" if risk_dialog._seen(risk_dialog._PLUGIN_FLAG)
+                 else "未看过"),
+                ("UIA 风险提示",
+                 "已看过" if risk_dialog._seen(risk_dialog._UIA_FLAG)
+                 else "未看过"),
+            ]
+            lbl.setText("当前状态：" + "　｜　".join(
+                "%s %s" % (n, s) for n, s in items))
+        except Exception as e:
+            lbl.setText("状态读取失败：%r" % (e,))
+
+    def _theme_name(self):
+        t = getattr(self, "_theme", None)
+        return getattr(t, "name", "light")
+
+    def _preview_welcome(self):
+        """强制重看首次使用引导（不写标记）。"""
+        try:
+            from ui.welcome_dialog import WelcomeDialog
+            dlg = WelcomeDialog(theme_name=self._theme_name(),
+                                version=self._version_text(),
+                                config=self.config, parent=self.window())
+            dlg.exec()
+            dlg.deleteLater()
+            self._log_preview("首次使用引导")
+        except Exception as e:
+            self._log_preview_error("首次使用引导", e)
+        self._refresh_dialog_state()
+
+    def _preview_plugin_risk(self):
+        try:
+            from ui import risk_dialog
+            risk_dialog._ask(self.window(), risk_dialog.PLUGIN_TITLE,
+                             risk_dialog.PLUGIN_TEXT, self._theme_name())
+            self._log_preview("插件风险提示")
+        except Exception as e:
+            self._log_preview_error("插件风险提示", e)
+        self._refresh_dialog_state()
+
+    def _preview_uia_risk(self):
+        try:
+            from ui import risk_dialog
+            risk_dialog._ask(self.window(), risk_dialog.UIA_TITLE,
+                             risk_dialog.UIA_TEXT, self._theme_name())
+            self._log_preview("UIA 风险提示")
+        except Exception as e:
+            self._log_preview_error("UIA 风险提示", e)
+        self._refresh_dialog_state()
+
+    def _version_text(self):
+        try:
+            from core.version import get_app_version
+            return get_app_version()
+        except Exception:
+            return ""
+
+    def _log_preview(self, name):
+        bus = self._refs.get("bus")
+        if bus is not None:
+            try:
+                bus.log("信息", "弹窗预览", "已预览：%s（未写入标记）" % name)
+            except Exception:
+                pass
+
+    def _log_preview_error(self, name, exc):
+        bus = self._refs.get("bus")
+        if bus is not None:
+            try:
+                bus.log("错误", "弹窗预览",
+                        "预览 %s 失败：%s: %s" % (name, type(exc).__name__, exc))
+            except Exception:
+                pass
+
     def _update_test_btn(self):
         on = bool(self.config.get("use_test_features", False))
         self._test_btn.setText("关闭测试功能" if on else "开启测试功能")
@@ -537,6 +671,9 @@ class DevPage(QWidget):
         self._refresh_diag()
         self._refresh_data_report()
         self._detect_hotkey()
+        # 每次进开发者页都刷新"弹窗是否已看过"——用户可能刚在别的入口
+        # 触发过风险提示，状态变了要能立刻看到
+        self._refresh_dialog_state()
 
     def set_theme(self, theme):
         self._theme = theme
@@ -562,6 +699,10 @@ class DevPage(QWidget):
             # 仅当用户勾选了「自动刷新」才重启日志轮询，尊重用户选择
             if hasattr(self, "_log_panel") and self._log_panel._auto.isChecked():
                 self._log_panel._timer.start()
+            # 切回本页时刷新"弹窗是否已看过"的显示。
+            # 放在 set_active 而不是 showEvent：页面已在栈里时切回不会触发
+            # showEvent（只是 setCurrentWidget），只有 set_active 一定会调。
+            self._refresh_dialog_state()
         else:
             self._tick_timer.stop()
             if hasattr(self, "_log_panel"):

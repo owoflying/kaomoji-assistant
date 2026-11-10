@@ -163,6 +163,74 @@ def test_risk_texts_are_plain(appdata):
 
 
 # ======================================================================
+# 开发者页的「弹窗预览」
+# ======================================================================
+@pytest.fixture
+def dev_page(monkeypatch, tmp_path):
+    """建一个轻量的开发者页（不跑完整 AppRuntime 装配）。"""
+    monkeypatch.setenv("KAOMOJI_SKIP_WELCOME", "1")
+    from core import runtime as rt_mod
+    monkeypatch.setattr(rt_mod, "app_data_dir", lambda: str(tmp_path))
+
+    from core.config_store import load_config
+    from ui.dev import DevPage
+
+    page = DevPage({}, load_config(), None, "light")
+    try:
+        yield page
+    finally:
+        page.deleteLater()
+
+
+def test_dev_page_has_dialog_preview_card(dev_page):
+    """开发者页要有"重看一次性弹窗"的入口。
+
+    欢迎引导、插件风险、UIA 风险都只弹一次，用过就看不到。
+    改文案时只能清 APPDATA 才能复现——这个卡片就是为此准备的。
+    """
+    from PySide6.QtWidgets import QPushButton
+
+    texts = {b.text() for b in dev_page.findChildren(QPushButton)}
+    assert "首次使用引导" in texts
+    assert "插件风险提示" in texts
+    assert "UIA 风险提示" in texts
+
+
+def test_preview_does_not_mark_seen(dev_page, monkeypatch):
+    """预览不能写入"已看过"标记，否则日常使用时那两个弹窗就再也不会出现了。"""
+    from core import version as ver
+    from ui import risk_dialog
+
+    # 打桩避免真的弹模态框
+    monkeypatch.setattr(risk_dialog, "_ask", lambda *a, **k: True)
+
+    before = (ver.has_shown_welcome(),
+              risk_dialog._seen(risk_dialog._PLUGIN_FLAG),
+              risk_dialog._seen(risk_dialog._UIA_FLAG))
+
+    dev_page._preview_plugin_risk()
+    dev_page._preview_uia_risk()
+
+    after = (ver.has_shown_welcome(),
+             risk_dialog._seen(risk_dialog._PLUGIN_FLAG),
+             risk_dialog._seen(risk_dialog._UIA_FLAG))
+    assert before == after, "预览不应改变任何「已看过」状态"
+
+
+def test_dialog_state_label_reflects_marks(dev_page):
+    """状态行要如实反映三个弹窗是否已看过。"""
+    from core import version as ver
+
+    dev_page._refresh_dialog_state()
+    text = dev_page._dialog_state_lbl.text()
+    assert "首次使用引导" in text and "插件风险提示" in text
+
+    ver.mark_welcome_shown()
+    dev_page._refresh_dialog_state()
+    assert "首次使用引导 已看过" in dev_page._dialog_state_lbl.text()
+
+
+# ======================================================================
 # 功能毕业
 # ======================================================================
 def test_test_feature_defaults_is_empty():

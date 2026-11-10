@@ -24,6 +24,8 @@ import PyInstaller.__main__
 from core.app_icon import save_ico
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# 应用名（PyInstaller 的 --name，也是 onedir 产物目录名与发布包内顶层目录名）
+_APP_NAME = "KaomojiAssistant"
 DATA = os.path.join(HERE, "data", "kaomoji.json")
 FONT = os.path.join(HERE, "ui", "fonts", "FluentSystemIcons-Regular.ttf")
 # 应用图标：与系统托盘同款（白底圆角 + 颜文字），构建时自动生成 .ico
@@ -100,8 +102,61 @@ def _cleanup_build_version():
         print("[build] 清理构建版本文件失败（可忽略）: %s" % e)
 
 
+def _make_release_zip(version):
+    """把 onedir 产物打成自动更新用的 zip。
+
+    **为什么必须打 zip**：自动更新要把整份程序替换掉，而 GitHub Release 的
+    资产是单个文件。onedir 是"一个文件夹"，所以必须先压缩。
+
+    **压缩结构必须是**（auto-updater 的 `detect_layout` 依赖它）：
+
+        KaomojiAssistant/
+            KaomojiAssistant.exe
+            _internal/...
+
+    即**带一层顶层目录**。这样解压后天然是一个完整的程序目录；若把内容直接
+    放在根上，用户手工解压时会散落一地。
+
+    产物名带上版本，便于资产区分：``KaomojiAssistant-v1.2-win64.zip``。
+    开发构建（无版本标签）不打 zip —— 自动更新只对正式发布版有意义。
+    """
+    import zipfile
+
+    if not version:
+        print("[build] 开发构建（无版本标签），跳过发布包生成。")
+        return None
+
+    dist_dir = os.path.join(HERE, "dist", _APP_NAME)
+    if not os.path.isdir(dist_dir):
+        print("[build] 未找到产物目录 %s，跳过发布包生成。" % dist_dir)
+        return None
+
+    tag = version if version.lower().startswith("v") else "v" + version
+    out_name = "%s-%s-win64.zip" % (_APP_NAME, tag)
+    out_path = os.path.join(HERE, "dist", out_name)
+
+    print("[build] 正在生成发布包 %s ..." % out_path)
+    count = 0
+    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED,
+                         compresslevel=6) as z:
+        for root, _dirs, files in os.walk(dist_dir):
+            for fn in files:
+                full = os.path.join(root, fn)
+                rel = os.path.relpath(full, dist_dir)
+                # 包内路径统一用正斜杠，且带一层顶层目录
+                arc = "%s/%s" % (_APP_NAME, rel.replace("\\", "/"))
+                z.write(full, arc)
+                count += 1
+
+    size_mb = os.path.getsize(out_path) / (1024.0 * 1024.0)
+    print("[build] 发布包已生成：%s（%d 个文件，%.1f MB）"
+          % (out_path, count, size_mb))
+    print("[build] 上传到 GitHub Release 后，自动更新即可识别。")
+    return out_path
+
+
 def _build_with(version, notes):
-    """执行实际构建：生成 ico、烘焙版本信息、调用 PyInstaller。"""
+    """执行实际构建：生成 ico、烘焙版本信息、调用 PyInstaller、打发布包。"""
     # 构建前先生成与托盘同款的 ico 图标
     save_ico(ICO)
     # 烘焙版本信息，供关于页与更新弹窗使用
@@ -112,6 +167,12 @@ def _build_with(version, notes):
         # 无论成功失败，打包结束后清除源码树里的临时构建文件，
         # 否则源码态程序会误读它而导致版本号被覆盖。
         _cleanup_build_version()
+    if code == 0:
+        # 打包成功才生成可自动更新的发布包
+        try:
+            _make_release_zip(version)
+        except Exception as e:
+            print("[build] 生成发布包失败：%s" % e)
     sys.exit(code)
 
 

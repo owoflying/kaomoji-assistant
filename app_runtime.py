@@ -330,17 +330,161 @@ class AppRuntime:
         """
         QTimer.singleShot(0, self._maybe_show_update)
         QTimer.singleShot(0, lambda: self.plugins.emit("startup"))
+        # 自动更新：延迟检查（避开启动高峰），见 core/updater.py
+        self._schedule_auto_update()
 
     def _start_services(self):
         self.hotkey.start(self.config.get("hotkey", HOTKEY_DEFAULT))
         if self.config.get("auto_popup", True):
             self.monitor.start()
 
+    # ------------------------------------------------------------------
+    # 自动更新
+    # ------------------------------------------------------------------
+    def _schedule_auto_update(self):
+        """启动后延迟检查更新（每天最多一次）。
+
+        延迟而非立即：启动瞬间要建窗口、加载插件、注册热键，此时发起网络请求
+        与用户操作争资源；而且刚开机时用户往往还没准备好被打扰。
+        """
+        from core import updater
+
+        # 上次更新是否成功（有新版本但版本号没变 = 失败，提示一次）
+        self._report_pending_update_result()
+
+        # 关于页的「立即重启并更新」按钮接到本运行时
+        page = getattr(self.unified, "about_page", None)
+        if page is not None:
+            setter = getattr(page, "set_install_callback", None)
+            if callable(setter):
+                try:
+                    setter(self.install_update_now)
+                except Exception:
+                    pass
+
+        if not updater.is_supported():
+            msg = updater.unsupported_reason()
+            append_log("info", "update", "自动更新不可用：%s" % msg)
+            if page is not None:
+                fn = getattr(page, "set_update_unsupported", None)
+                if callable(fn):
+                    try:
+                        fn(msg)
+                    except Exception:
+                        pass
+            return
+        if not updater.should_check_now(self.config):
+            return
+
+        self.updater = updater.AutoUpdater(self.config, self)
+        self.updater.update_available.connect(self._on_update_available)
+        self.updater.up_to_date.connect(
+            lambda v: append_log("info", "update", "已是最新版本 %s" % v))
+        self.updater.error.connect(
+            lambda m: append_log("warn", "update", m))
+        self.updater.progress.connect(self._on_update_progress)
+        self.updater.ready_to_install.connect(self._on_update_ready)
+        self.updater.installing.connect(self._on_installing)
+
+        QTimer.singleShot(
+            int(updater.STARTUP_DELAY_SEC * 1000), self._check_update_quietly)
+
+    def _check_update_quietly(self):
+        if getattr(self, "updater", None) is None:
+            return
+        append_log("info", "update", "开始检查更新…")
+        self.updater.check()
+
+    def _on_update_available(self, version, release):
+        """发现新版本：静默下载（用户不必等）。"""
+        append_log("info", "update", "发现新版本 %s，开始下载" % version)
+        self._update_version = version
+        self.updater.download()
+
+    def _on_update_progress(self, pct):
+        # 进度只在关于页展示，不打扰用户
+        page = getattr(self.unified, "about_page", None)
+        fn = getattr(page, "set_update_progress", None)
+        if callable(fn):
+            try:
+                fn(int(pct))
+            except Exception:
+                pass
+
+    def _on_update_ready(self, version, path):
+        """下载并校验完成：通知用户（可立即重启，也可退出时自动装）。"""
+        append_log("info", "update",
+                   "新版本 %s 已下载并校验通过，退出程序时会自动安装" % version)
+        page = getattr(self.unified, "about_page", None)
+        fn = getattr(page, "set_update_ready", None)
+        if callable(fn):
+            try:
+                fn(version)
+            except Exception:
+                pass
+        try:
+            if self.tray is not None:
+                self.tray.showMessage(
+                    "更新已就绪",
+                    "新版本 %s 已下载。关闭程序时自动安装，或在「关于」页立即重启更新。"
+                    % version,
+                    QSystemTrayIcon.Information, 6000)
+        except Exception:
+            pass
+
+    def _on_installing(self, version):
+        append_log("info", "update", "正在安装 %s 并重启…" % version)
+
+    def install_update_now(self):
+        """关于页「立即重启更新」：安装后退出当前进程。"""
+        if getattr(self, "updater", None) is None:
+            return False
+        ok = self.updater.install_now(append_log)
+        if ok:
+            self.app.quit()
+        return ok
+
+    def _install_update_on_exit(self):
+        """退出时安装已下载的更新（对用户最无感）。"""
+        try:
+            if getattr(self, "updater", None) is not None \
+                    and self.updater.has_pending_package():
+                self.updater.install_on_exit(append_log)
+        except Exception as e:
+            append_log("warn", "update", "退出时安装更新失败：%r" % (e,))
+
+    def _report_pending_update_result(self):
+        """上次更新若未成功，提示一次（不重复安装，避免死循环）。"""
+        from core import updater_install
+        from core.version import get_build_version
+
+        try:
+            state, ver = updater_install.check_pending_result(get_build_version())
+        except Exception:
+            return
+        if state == "ok":
+            append_log("info", "update", "已成功更新到 %s" % ver)
+            try:
+                if self.tray is not None:
+                    self.tray.showMessage(
+                        "更新完成", "已更新到 %s" % ver,
+                        QSystemTrayIcon.Information, 4000)
+            except Exception:
+                pass
+        elif state == "failed":
+            append_log("warn", "update",
+                       "上次更新到 %s 未成功（可能被取消或文件被占用）" % ver)
+            updater_install.clear_pending()
+
     def _install_quit_hooks(self):
         q = self.app.aboutToQuit
         q.connect(self.hotkey.stop)
         q.connect(self.monitor.stop)
         q.connect(self.window.shutdown)
+        # 退出时若有已下载待安装的更新，顺手装上（下次启动即为新版）。
+        # 放在 flush 之前：安装脚本要等进程真正退出才开始替换文件，
+        # 这里只是"启动脚本"，不影响随后的收尾。
+        q.connect(self._install_update_on_exit)
         q.connect(self.state.flush)
         q.connect(self.user_kao.flush)
         q.connect(self.triggers.flush)

@@ -327,6 +327,21 @@ class AboutPage(QWidget):
         self._rel_link.clicked.connect(self._on_open_release_page)
         root.addWidget(self._rel_link)
 
+        # ---------- 自动更新状态（由 AppRuntime 驱动） ----------
+        # 与上面的"手动检查/下载"区分：这里是后台自动更新的进度与安装入口。
+        self._auto_status = QLabel("")
+        self._auto_status.setObjectName("Caption")
+        self._auto_status.setWordWrap(True)
+        self._auto_status.setVisible(False)
+        root.addWidget(self._auto_status)
+
+        self._auto_install = QPushButton("立即重启并更新")
+        self._auto_install.setObjectName("AccentButton")
+        self._auto_install.setMaximumWidth(260)
+        self._auto_install.setVisible(False)
+        self._auto_install.clicked.connect(self._on_install_now)
+        root.addWidget(self._auto_install)
+
         body_layout.addWidget(card)
 
         # 异步网络：持有 QNetworkAccessManager 的轻量封装
@@ -348,6 +363,44 @@ class AboutPage(QWidget):
         """检查/下载期间禁用触发按钮，避免重复请求。"""
         self._rel_check.setEnabled(not busy)
         self._rel_download.setEnabled(not busy)
+
+    def _on_install_now(self):
+        """「立即重启并更新」：安装已下载的包并退出程序。"""
+        cb = getattr(self, "_install_cb", None)
+        if not callable(cb):
+            self._auto_status.setText("自动更新不可用")
+            return
+        self._auto_status.setText("正在安装并重启…")
+        self._auto_install.setEnabled(False)
+        try:
+            cb()
+        except Exception as e:
+            self._auto_status.setText("安装失败：%r" % (e,))
+            self._auto_install.setEnabled(True)
+
+    # ---------- 自动更新状态（由 AppRuntime 调用） ----------
+    def set_update_progress(self, pct):
+        """下载进度（0~100）。"""
+        self._auto_status.setVisible(True)
+        self._auto_status.setText("正在后台下载新版本：%d%%" % int(pct))
+
+    def set_update_ready(self, version):
+        """新版本已下载并校验完成，等待安装。"""
+        self._auto_status.setVisible(True)
+        self._auto_status.setText(
+            "新版本 %s 已下载。关闭程序时会自动安装；也可点右侧按钮立即更新。"
+            % version)
+        self._auto_install.setVisible(True)
+        self._auto_install.setEnabled(True)
+
+    def set_update_unsupported(self, reason):
+        """当前形态不支持自动更新时说明原因。"""
+        self._auto_status.setVisible(True)
+        self._auto_status.setText(reason)
+
+    def set_install_callback(self, fn):
+        """由 AppRuntime 注入"立即安装"回调。"""
+        self._install_cb = fn
 
     def _on_check_update(self):
         self._rel_status.setText("正在获取最新发行版信息…")

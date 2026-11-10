@@ -32,6 +32,8 @@ DEFAULT_CONFIG = {
     "developer_mode": False,
     "use_uia_elevation": False,
     "use_test_features": False,
+    # 自动更新：启动后延迟检查新版本，下载校验通过后提示安装
+    "auto_update": True,
     # 插件启用状态表：{"<plugin_id>": True/False}；未出现的插件视为停用
     "plugins_enabled": {},
 }

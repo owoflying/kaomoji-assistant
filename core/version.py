@@ -9,6 +9,7 @@
 关于页与更新弹窗统一从这里取版本字符串，避免版本来源分散。
 """
 import os
+import re
 import sys
 import subprocess
 
@@ -135,3 +136,81 @@ def should_show_update_popup():
         return False
     cur = get_app_version()
     return bool(cur) and cur != load_seen_version()
+
+
+# ======================================================================
+# 版本比较（自动更新用）
+# ======================================================================
+_VERSION_RE = re.compile(r"^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:\.(\d+))?$")
+
+
+def parse_version(text):
+    """把 ``v1.2.3`` / ``1.2`` / ``v1.2.3.4`` 解析成可比较的元组。
+
+    只支持纯数字分段（本项目版本标签就是这么写的）。无法解析时返回 None，
+    调用方据此决定"无法比较就当作没有新版本"，避免误触发更新。
+
+    返回 ``(nums_tuple, is_prerelease)``：
+      * nums_tuple 长度统一补到 4 位，便于直接比较；
+      * ``is_prerelease`` 识别 ``-beta`` / ``-rc`` 之类的后缀（有后缀视为预发布）。
+    """
+    if not isinstance(text, str):
+        return None
+    s = text.strip()
+    if not s:
+        return None
+    prerelease = False
+    # 拆掉 -beta.1 / -rc2 这类后缀
+    for sep in ("-", "+"):
+        if sep in s:
+            s, _, _tail = s.partition(sep)
+            prerelease = True
+            break
+    m = _VERSION_RE.match(s)
+    if not m:
+        return None
+    nums = tuple(int(g) if g is not None else 0 for g in m.groups())
+    return nums, prerelease
+
+
+def compare_versions(a, b):
+    """比较两个版本字符串。返回 -1 / 0 / 1；任一无法解析时返回 None。
+
+    规则（与常见语义化版本一致的简化版）：
+      1. 逐段比数字，大者更新；
+      2. 数字完全相同时，**正式版 > 预发布版**（1.2.0 > 1.2.0-beta）。
+    """
+    pa, pb = parse_version(a), parse_version(b)
+    if pa is None or pb is None:
+        return None
+    na, pre_a = pa
+    nb, pre_b = pb
+    if na != nb:
+        return 1 if na > nb else -1
+    if pre_a != pre_b:
+        # 正式版更新
+        return -1 if pre_a else 1
+    return 0
+
+
+def is_newer_version(candidate, current):
+    """``candidate`` 是否比 ``current`` 更新。
+
+    两个关键取舍：
+      * **无法解析时返回 False**——宁可漏掉一次更新，也不能把开发构建的
+        commit 哈希当成版本号去比对，误触发下载；
+      * ``current`` 为空（开发构建无版本标签）时也返回 False，
+        理由同上：自动更新只对正式发布版有意义。
+    """
+    if not candidate or not current:
+        return False
+    r = compare_versions(candidate, current)
+    return r == 1
+
+
+def normalize_tag(tag):
+    """把发布标签（如 ``v1.2.0``）规范成纯版本串（``1.2.0``）。"""
+    s = (tag or "").strip()
+    if s[:1] in ("v", "V"):
+        s = s[1:]
+    return s

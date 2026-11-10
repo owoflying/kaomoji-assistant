@@ -38,13 +38,21 @@ DEFAULT_CONFIG = {
     "plugins_enabled": {},
 }
 
-# 处于测试模式的功能项（默认归属测试分组，确认上线后移出）；值为「关闭态默认」。
-TEST_FEATURE_DEFAULTS = {
-    "use_uia_elevation": False,
-}
+# 处于测试模式的功能项；值为「关闭态默认」。
+#
+# **已毕业的功能不再列在这里**。历史记录：
+#   * `use_uia_elevation` 曾在此，已转为正式功能（首次使用会在欢迎页给出
+#     风险说明并要求勾选确认，见 ui/welcome_dialog.py）；
+#   * 插件系统同批毕业，不再受 `use_test_features` 门控。
+# 现在这个表只剩「仍在测试中的功能」，新增未毕业功能时加到这里。
+TEST_FEATURE_DEFAULTS = {}
 
-# 输入方式中始终可用的默认项；其余（clipboard/type）属于测试功能。
-ALWAYS_AVAILABLE_INPUT_METHODS = frozenset({"direct"})
+# 输入方式中始终可用的默认项。
+#
+# 三种方式现已全部转为正式功能（原先把非 direct 的视为测试功能，
+# 关闭测试模式会被强制回退到 direct）。保留这个常量是为了向后兼容
+# 既有调用方与测试，语义改为「所有输入方式都可用」。
+ALWAYS_AVAILABLE_INPUT_METHODS = frozenset({"direct", "clipboard", "type"})
 
 # 取值受约束的配置项：值不在集合内即视为非法（回退默认）。
 _CONFIG_ENUMS = {    "theme": ("light", "dark", "system"),
@@ -150,13 +158,14 @@ def enforce_test_feature_gate(config):
 
     仅靠隐藏设置 UI 拦不住功能——已开启的测试项其配置位仍会被功能代码读取并生效。
     放在落盘前统一执行，可覆盖设置页保存、开发者页开关测试模式等所有写入路径。
+
+    ⚠ 现已毕业的功能**不受此门控**：UIA 提权、插件系统、三种输入方式
+    都是正式功能，关闭测试模式不会把它们关掉或回退。
     """
     if config.get("use_test_features", False):
         return
     for key, default in TEST_FEATURE_DEFAULTS.items():
         config[key] = default
-    if config.get("input_method") not in ALWAYS_AVAILABLE_INPUT_METHODS:
-        config["input_method"] = "direct"
 
 
 def save_config(config):

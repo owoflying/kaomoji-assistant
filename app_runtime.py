@@ -194,11 +194,11 @@ class AppRuntime:
             ui_registry=self.ui_registry,
         )
         self.plugins.discover()
-        # 测试模式门控：关闭时不加载任何插件（启用状态仍保留在配置里）
-        if self.config.get("use_test_features", False):
-            n_loaded = self.plugins.load_all()
-            if n_loaded:
-                append_log("info", "plugins", "已加载 %d 个插件" % n_loaded)
+        # 插件已是**正式功能**：不再受 use_test_features 门控，按 plugins_enabled 加载。
+        # （历史：插件曾在测试门控下，关闭测试模式时一个都不加载。）
+        n_loaded = self.plugins.load_all()
+        if n_loaded:
+            append_log("info", "plugins", "已加载 %d 个插件" % n_loaded)
         self.plugins.refresh_sources(self.data)
 
         # 用户自定义颜文字 / 快捷短语（可写，独立于只读库）
@@ -327,11 +327,31 @@ class AppRuntime:
         两者都走 `QTimer.singleShot(0)`，按投递顺序执行：先弹更新框，再发 startup
         事件，避免插件在回调里弹窗抢在界面初始化之前、或与更新框抢模态。
         startup 整个生命周期只发一次——中途启用的插件收不到，需重启生效。
+
+        **首次使用的欢迎页排在最前**：它是"第一次接触软件"的仪式，
+        要在任何其它弹窗之前出现（否则用户先看到更新提示会莫名其妙）。
         """
+        QTimer.singleShot(0, self._maybe_show_welcome)
         QTimer.singleShot(0, self._maybe_show_update)
         QTimer.singleShot(0, lambda: self.plugins.emit("startup"))
         # 自动更新：延迟检查（避开启动高峰），见 core/updater.py
         self._schedule_auto_update()
+
+    def _maybe_show_welcome(self):
+        """首次使用欢迎界面（含风险告知与勾选确认）。
+
+        只在「真正第一次」弹一次，用独立标记文件判定（见 core/version.py）。
+        用户点「退出」不算完成，下次启动还会看到。
+        """
+        try:
+            from ui.welcome_dialog import WelcomeDialog
+            shown = WelcomeDialog.maybe_show(
+                theme_name=resolve_theme_name(self.config.get("theme", "light")),
+                parent=self.unified)
+            if shown:
+                append_log("info", "app", "首次使用：已展示欢迎页并确认风险")
+        except Exception as e:
+            append_log("warn", "app", "欢迎页展示失败：%r" % (e,))
 
     def _start_services(self):
         self.hotkey.start(self.config.get("hotkey", HOTKEY_DEFAULT))

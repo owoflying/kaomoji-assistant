@@ -133,13 +133,37 @@ def test_save_config_writes_and_roundtrips(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------- 测试功能门禁
-def test_gate_resets_test_features_when_disabled():
+def test_gate_no_longer_resets_graduated_features():
+    """已毕业的功能不受测试模式门控。
+
+    `use_uia_elevation` 与三种输入方式都已成为正式功能：
+    关闭测试模式**不应**把它们归位或回退。
+    """
     cfg = dict(config_store.DEFAULT_CONFIG,
                use_test_features=False, use_uia_elevation=True,
                input_method="clipboard")
     config_store.enforce_test_feature_gate(cfg)
-    assert cfg["use_uia_elevation"] is False
-    assert cfg["input_method"] == "direct"
+    assert cfg["use_uia_elevation"] is True, "UIA 提权已毕业，不该被归位"
+    assert cfg["input_method"] == "clipboard", "输入方式已毕业，不该被回退"
+
+
+def test_gate_still_works_for_remaining_test_features():
+    """门控机制本身仍然有效：TEST_FEATURE_DEFAULTS 里的项仍会被归位。
+
+    当前表是空的（没有未毕业功能），这里临时注入一项验证机制没坏。
+    """
+    import core.config_store as cs
+
+    orig = dict(cs.TEST_FEATURE_DEFAULTS)
+    try:
+        cs.TEST_FEATURE_DEFAULTS["some_future_feature"] = False
+        cfg = dict(cs.DEFAULT_CONFIG, use_test_features=False,
+                   some_future_feature=True)
+        cs.enforce_test_feature_gate(cfg)
+        assert cfg["some_future_feature"] is False
+    finally:
+        cs.TEST_FEATURE_DEFAULTS.clear()
+        cs.TEST_FEATURE_DEFAULTS.update(orig)
 
 
 def test_gate_keeps_test_features_when_enabled():
@@ -152,15 +176,17 @@ def test_gate_keeps_test_features_when_enabled():
 
 
 def test_gate_applies_on_save(tmp_path, monkeypatch):
-    """门禁必须挂在落盘路径上，否则「设置页保存」等写入途径会绕过它。"""
+    """门禁挂在落盘路径上；对已毕业功能不做任何回退。"""
     path = tmp_path / "config.json"
     monkeypatch.setattr(runtime, "config_path", lambda: str(path))
     cfg = dict(config_store.DEFAULT_CONFIG,
                use_test_features=False, use_uia_elevation=True)
     config_store.save_config(cfg)
     on_disk = json.loads(path.read_text(encoding="utf-8"))
-    assert on_disk["use_uia_elevation"] is False
+    assert on_disk["use_uia_elevation"] is True
 
 
-def test_always_available_input_methods_is_only_direct():
-    assert config_store.ALWAYS_AVAILABLE_INPUT_METHODS == frozenset({"direct"})
+def test_all_input_methods_are_available():
+    """三种输入方式全部毕业，都应可用。"""
+    assert config_store.ALWAYS_AVAILABLE_INPUT_METHODS == frozenset(
+        {"direct", "clipboard", "type"})

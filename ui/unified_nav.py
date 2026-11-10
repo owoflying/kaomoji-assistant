@@ -195,9 +195,7 @@ class NavController:
             specs = host.plugins.plugin_pages()
         except Exception:
             specs = {}
-        # 测试模式关闭时，插件页整体不可用：清掉所有插件扩展页
-        if not host.config.get("use_test_features", False):
-            specs = {}
+        # 插件为正式功能：扩展页不再受测试模式门控，有就显示
         # 1) 新增
         for key, spec in specs.items():
             if key in self.plugin_pages:
@@ -258,34 +256,24 @@ class NavController:
         self.remove_nav_item(key, nav_layout)
         self.drop_page(key)
 
-    # ---------- 「插件」总页（测试功能门控） ----------
+    # ---------- 「插件」总页（正式功能） ----------
     def sync_plugin_tab(self):
-        """测试功能开关变化后同步「插件」导航项与页面的显隐。"""
+        """同步「插件」导航项与页面。
+
+        ⚠ 插件已是**正式功能**：不再受 `use_test_features` 门控。
+        此方法保留为幂等同步入口（开发者页切换开关时仍会调用它），
+        实际效果只是"确保插件页存在"。
+        """
         host = self.host
         if host.plugins is None:
             return
-        wanted = bool(host.config.get("use_test_features", False))
-        has = "plugin" in self.pages
-        if wanted and not has:
-            self.add_nav_item("plugin", "插件", "plugin")
-            host.plugin_page = PluginPage(host.plugins, host.theme.name)
-            self.register_page("plugin", host.plugin_page)
-            host.plugin_page.set_theme(host.theme)
-            host.sidebar.update()
-        elif not wanted and has:
-            leaving = host.content.currentWidget() is self.pages["plugin"]
-            nav_layout = self._nav_layout()
-            self.remove_nav_item("plugin", nav_layout)
-            nav_layout.update()
-            host.sidebar.update()
-            # 页面必须真正销毁（见模块文档：僵尸页面会重复刷新）
-            self.drop_page("plugin", shutdown=True)
-            host.plugin_page = None
-            if leaving:
-                self.set_page("home")
-        # 关闭测试模式时，插件的侧边栏扩展页也必须一并移除（否则会逃逸到正式环境）
-        if not wanted:
-            self.sync_plugin_pages()
+        if "plugin" in self.pages:
+            return
+        self.add_nav_item("plugin", "插件", "plugin")
+        host.plugin_page = PluginPage(host.plugins, host.theme.name)
+        self.register_page("plugin", host.plugin_page)
+        host.plugin_page.set_theme(host.theme)
+        host.sidebar.update()
 
     # ---------- 开发者页 ----------
     def enable_dev_tab(self):

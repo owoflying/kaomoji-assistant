@@ -16,6 +16,9 @@ import subprocess
 _DEFAULT = "unknown"
 _SEEN_FILE = "last_seen_version.txt"
 
+#: 首次运行欢迎页的标记文件（**与版本号无关**：弹过一次就永不再弹）
+_WELCOME_FILE = "welcome_shown.txt"
+
 
 def _git_commit():
     try:
@@ -121,6 +124,44 @@ def save_seen_version(version):
             f.write(version or "")
     except Exception:
         pass
+
+
+# ---------------------------------------------------------------- 首次运行欢迎页
+def has_shown_welcome():
+    """首次运行欢迎页是否已经弹过。"""
+    try:
+        from core import runtime
+        p = os.path.join(runtime.app_data_dir(), _WELCOME_FILE)
+        return os.path.exists(p)
+    except Exception:
+        # 读不到就当已弹过：宁可漏弹一次，也不要每次启动都弹
+        return True
+
+
+def mark_welcome_shown():
+    """标记欢迎页已弹过（此后永不再弹）。"""
+    try:
+        from core import runtime
+        p = os.path.join(runtime.app_data_dir(), _WELCOME_FILE)
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("1")
+        return True
+    except Exception:
+        return False
+
+
+def should_show_welcome(force=False):
+    """是否应弹「首次使用欢迎界面」。
+
+    **判定与版本号无关**：用独立标记文件，弹过一次就永不再弹。
+    这与 `should_show_update_popup`（每个版本首次启动都弹）刻意区分开——
+    欢迎 + 风险告知只在用户第一次接触这个软件时出现一次。
+
+    :param force: 开发者模式「模拟首启」用，绕过标记检查。
+    """
+    if force or os.environ.get("KAOMOJI_FORCE_WELCOME") == "1":
+        return True
+    return not has_shown_welcome()
 
 
 def should_show_update_popup():

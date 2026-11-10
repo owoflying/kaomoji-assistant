@@ -190,31 +190,27 @@ class SettingsPage(QWidget):
         self._add_row(croot, "开机自动启动", self._autostart_toggle())
         v.addWidget(card)
 
-        # 高级（测试功能分组：use_test_features 关闭时整体隐藏，见 _apply_test_feature_visibility）
+        # 高级（**正式功能**：UIA 提权已毕业，不再受 use_test_features 门控。
+        # 首次使用时会由欢迎页给出风险说明并要求勾选确认，见 ui/welcome_dialog.py）
         adv_title = self._section_title("高级")
         v.addWidget(adv_title)
         card = self._card()
         croot = QVBoxLayout(card)
         croot.setContentsMargins(16, 14, 16, 14)
         croot.setSpacing(12)
-        # 该行登记为测试功能行：use_test_features 关闭时由 apply_test_feature_visibility 隐藏
-        self._add_row(croot, "使用 UIA 提权", self._uia_elevation_toggle(),
-                      test_feature=True)
+        self._add_row(croot, "使用 UIA 提权", self._uia_elevation_toggle())
         tip = QLabel("开启后程序会尝试为自身进程启用 uiAccess，使候选栏成为 UIAccess 顶级窗口，"
                      "从而能与屏幕键盘(osk)等系统窗口处于同一 Z 序层级、互相覆盖。"
-                     "该操作需要本程序本身也以管理员身份启动，否则不会生效；默认关闭，不影响其他功能。")
+                     "开启时会弹窗申请管理员权限；默认关闭，不影响其他功能。")
         tip.setObjectName("Caption")
         tip.setWordWrap(True)
         croot.addWidget(tip)
-        # 真实状态行：反映“实际是否已拿到 UIAccess”，避免“配置开着但未生效”的假象。
+        # 真实状态行：反映"实际是否已拿到 UIAccess"，避免"配置开着但未生效"的假象。
         self.uia_status = QLabel("")
         self.uia_status.setObjectName("Caption")
         self.uia_status.setWordWrap(True)
         croot.addWidget(self.uia_status)
         v.addWidget(card)
-        # 登记：use_test_features 关闭时隐藏整段（标题 + 卡片 + 说明）。
-        self._test_section_title = adv_title
-        self._test_widgets.extend([card, tip, self.uia_status])
 
         v.addStretch(1)
         self.scroll.setWidget(body)
@@ -462,9 +458,12 @@ class SettingsPage(QWidget):
     def apply_test_feature_visibility(self):
         """按 use_test_features 显隐测试功能分组。
 
-        正式环境默认关闭，处于测试模式的新功能不显示；开发者模式里开启
-        「测试功能」后才会显示并可用。新功能默认归入此分组，确认上线后
-        再从此处移出并改为无条件显示。
+        ⚠ **当前没有"测试功能分组"了**：UIA 提权、插件系统、三种输入方式
+        都已毕业为正式功能，不再受此开关影响（见 core/config_store.py 的
+        TEST_FEATURE_DEFAULTS 注释）。
+
+        这个入口保留是因为开发者页的「测试功能」开关仍会调它；将来往
+        TEST_FEATURE_DEFAULTS 里加新功能时，登记到 _test_widgets 即可生效。
         """
         visible = bool(self.config.get("use_test_features", False))
         for w in self._test_widgets:
@@ -472,36 +471,18 @@ class SettingsPage(QWidget):
                 w.setVisible(visible)
         if self._test_section_title is not None:
             self._test_section_title.setVisible(visible)
-        # 输入方式里属于测试功能的选项（剪贴板粘贴/模拟键入）随测试模式同步禁用/启用
-        self._apply_input_method_availability()
 
     def _apply_input_method_availability(self):
-        """测试模式关闭时，禁用「输入方式」里属于测试功能的选项（剪贴板粘贴/模拟键入），
-        仅保留默认且始终可用的「直接字符投递」；开启测试模式时全部可选。
+        """三种输入方式现在都是正式功能，一律可选。
 
-        这样正常情况下其他输入模式不可选择，符合「默认=直接字符输入」的产品定位。
-        若当前选中了被禁用的项（例如先开测试模式选了剪贴板、再关测试模式），
-        自动回退到默认 direct，使显示与「保存时归位」后的配置保持一致。
+        历史：剪贴板粘贴/模拟键入曾属测试功能，关闭测试模式时会被禁用并
+        回退到 direct。现已毕业——保留这个方法只是为了兼容既有调用点。
         """
-        test = bool(self.config.get("use_test_features", False))
-        gated = {"clipboard", "type"}
         model = self.method_combo.model()
         for i in range(self.method_combo.count()):
-            data = self.method_combo.itemData(i)
-            if data in gated:
-                item = model.item(i) if model is not None else None
-                if item is not None:
-                    item.setEnabled(test)
-        if not test and self.method_combo.currentData() in gated:
-            idx = self.method_combo.findData("direct")
-            if idx >= 0:
-                # 临时屏蔽 _on_apply 信号，避免强制改选中项时触发隐式应用/保存
-                was_loading = self._loading
-                self._loading = True
-                try:
-                    self.method_combo.setCurrentIndex(idx)
-                finally:
-                    self._loading = was_loading
+            item = model.item(i) if model is not None else None
+            if item is not None and not item.isEnabled():
+                item.setEnabled(True)
 
     def _update_hotkey_label(self, hotkey_str=None):
         if self._captured is not None:

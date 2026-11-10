@@ -1,23 +1,25 @@
-"""回归测试：关闭开发者模式 / 测试模式时，插件必须真正卸载并回滚界面修改。
+"""测试：关闭开发者模式 / 测试模式**不影响插件**（插件已毕业为正式功能）。
 
-## Bug 现场
+## 语义变迁
 
-关闭开发者模式时只把 `use_test_features` 置为 `False`（配置层门控），
-**没有卸载已加载的插件**。于是：
+**过去（插件在测试门控下）**：关闭开发者模式必须卸载插件，否则
+数据源/转换/事件回调继续生效、`api.ui` 的界面修改也不回滚——
+表现为"关掉开发者模式后，插件插的东西还留在界面上"。
 
-- 插件状态仍是 `loaded`，数据源/转换/事件回调继续生效；
-- 它通过 `api.ui` 做的界面修改**不回滚**（回滚挂在 `_detach` 上）；
-- 现象：关掉开发者模式后，插件插的东西还留在界面上。
+**现在（插件已毕业）**：插件由自己的启用开关（`plugins_enabled`）控制，
+与开发者模式/测试模式**无关**。关闭开发者模式时：
+  * 插件保持 `loaded`；
+  * 它的界面修改保留（不回滚）；
+  * 「插件」导航页仍在。
 
-这是「测试功能逃逸」的另一种形式——UI 收敛了，功能还在跑。
+本文件验证新语义，并确认"用户主动停用插件"这条路径**仍然**会正确卸载并回滚
+（功能没丢，只是不再由关闭测试模式间接触发）。
 
-## 两条路径都要覆盖
+## 覆盖
 
-1. `UnifiedSettingsWindow._disable_dev_tab()`（开发者页点「关闭开发者模式」）
+1. `_disable_dev_tab()`（开发者页点「关闭开发者模式」）
 2. `DevPage._on_toggle_test()`（开发者页直接关「测试功能」）
-
-两条路径最终都会走到 `_on_test_features_changed()`，修复点放在那里 +
-`_disable_dev_tab()` 里显式卸载。
+3. `set_enabled(pid, False)`（用户主动停用——仍应回滚）
 """
 import os
 
@@ -118,8 +120,13 @@ def _assert_rolled_back(live):
 
 
 # ---------------------------------------------------------------- 路径 1
-def test_disable_dev_tab_unloads_plugins(live):
-    """关闭开发者模式：插件必须卸载（不只是 UI 隐藏）。"""
+def test_disable_dev_tab_keeps_plugins_loaded(live):
+    """关闭开发者模式**不应**影响插件（插件已是正式功能）。
+
+    历史：插件曾在测试门控下，关闭开发者模式必须卸载它，否则它通过 api.ui
+    做的界面修改不会回滚。插件毕业为正式功能后，这个约束消失——
+    插件由自己的启用开关控制，与开发者/测试模式无关。
+    """
     _assert_modified(live)
     assert live.plugins.plugins[PLUGIN_ID]["state"] == "loaded"
 
@@ -127,63 +134,60 @@ def test_disable_dev_tab_unloads_plugins(live):
     live.app.processEvents()
 
     assert live.config["use_test_features"] is False
-    assert live.plugins.plugins[PLUGIN_ID]["state"] != "loaded", \
-        "关闭开发者模式后插件仍是 loaded —— 功能还在跑"
-    _assert_rolled_back(live)
+    assert live.plugins.plugins[PLUGIN_ID]["state"] == "loaded", \
+        "插件已毕业，不该因关闭开发者模式而被卸载"
 
 
-def test_disable_dev_tab_removes_inserted_widgets(live):
-    """插件插入的卡片必须被移除，不能留在界面上。"""
+def test_disable_dev_tab_keeps_plugin_modifications(live):
+    """插件做的界面修改也应保留（不再被回滚）。"""
     cards_before = live.window.home_page.greeting_card.layout().count()
     assert cards_before >= 3          # 内置 2 项 + 插件插入 1 项
 
     live.window._disable_dev_tab()
     live.app.processEvents()
 
-    assert live.window.home_page.greeting_card.layout().count() == cards_before - 1, \
-        "插件插入的卡片未被移除"
+    assert live.window.home_page.greeting_card.layout().count() == cards_before, \
+        "插件插入的卡片不该被移除"
+    _assert_modified(live)
 
 
-def test_disable_dev_tab_removes_plugin_nav(live):
-    """「插件」导航页与插件扩展页都要消失。"""
+def test_disable_dev_tab_keeps_plugin_nav(live):
+    """「插件」导航页应保留（正式功能）。"""
     assert "plugin" in live.window._nav.pages
     live.window._disable_dev_tab()
     live.app.processEvents()
-    assert "plugin" not in live.window._nav.pages
+    assert "plugin" in live.window._nav.pages, \
+        "插件页是正式功能，不该随开发者模式消失"
 
 
 # ---------------------------------------------------------------- 路径 2
-def test_dev_page_toggle_test_features_unloads_plugins(live):
-    """开发者页直接关「测试功能」：同样要卸载插件并回滚。"""
+def test_dev_page_toggle_test_features_keeps_plugins(live):
+    """开发者页关「测试功能」：同样不影响插件。"""
     _assert_modified(live)
 
     live.window.dev_page._on_toggle_test()
     live.app.processEvents()
 
     assert live.config["use_test_features"] is False
+    assert live.plugins.plugins[PLUGIN_ID]["state"] == "loaded"
+    _assert_modified(live)
+
+
+# ---------------------------------------------------------------- 仍可显式卸载
+def test_plugin_can_still_be_disabled_explicitly(live):
+    """插件仍可被用户主动停用——只是不再由"关闭测试模式"间接触发。"""
+    _assert_modified(live)
+
+    live.plugins.set_enabled(PLUGIN_ID, False)
+    live.app.processEvents()
+
     assert live.plugins.plugins[PLUGIN_ID]["state"] != "loaded"
     _assert_rolled_back(live)
 
 
-# ---------------------------------------------------------------- 恢复
-def test_reenable_restores_plugin_effects(live):
-    """重新开启测试模式并启用插件后，效果应能重新生效（不是一次性破坏）。"""
-    live.window._disable_dev_tab()
-    live.app.processEvents()
-    _assert_rolled_back(live)
-
-    live.config["use_test_features"] = True
-    live.plugins.set_enabled(PLUGIN_ID, True)
-    live.app.processEvents()
-
-    assert live.plugins.plugins[PLUGIN_ID]["state"] == "loaded"
-    assert live.registry.resolve("home.greeting").styleSheet() != "", \
-        "重新启用后修改未重新生效"
-
-
 # ---------------------------------------------------------------- 不误伤
 def test_unload_all_is_idempotent(live):
-    """重复调用卸载不应抛异常（_disable_dev_tab 与 _on_test_features_changed 都会调）。"""
+    """重复调用卸载不应抛异常（保留为工具方法）。"""
     live.window._unload_all_plugins()
     live.window._unload_all_plugins()
     live.app.processEvents()

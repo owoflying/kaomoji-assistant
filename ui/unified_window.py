@@ -225,8 +225,8 @@ class UnifiedSettingsWindow(FramelessShell):
         # 开发者模式专属导航项：仅当已解锁才出现（插入到末尾的 stretch 之前）
         if self.config.get("developer_mode", False):
             self._nav.add_nav_item("developer", "开发者", "code")
-        # 测试功能专属导航项：「插件」页（use_test_features 门控，见 _sync_plugin_tab）
-        if self.plugins is not None and self.config.get("use_test_features", False):
+        # 「插件」页：**正式功能**，不再受 use_test_features 门控
+        if self.plugins is not None:
             self._nav.add_nav_item("plugin", "插件", "plugin")
         self._nav_layout_box.addStretch(1)
         sroot.addWidget(self._nav_container, 1)
@@ -359,9 +359,9 @@ class UnifiedSettingsWindow(FramelessShell):
             self.dev_page.developer_mode_disabled.connect(self._disable_dev_tab)
             self.dev_page.test_features_changed.connect(self._on_test_features_changed)
             self._nav.register_page("developer", self.dev_page)
-        # 插件页：测试功能开启且传入 PluginManager 时创建
+        # 插件页：**正式功能**，只要有 PluginManager 就创建
         self.plugin_page = None
-        if self.plugins is not None and self.config.get("use_test_features", False):
+        if self.plugins is not None:
             from ui.pages import PluginPage
             self.plugin_page = PluginPage(self.plugins, self.theme.name)
             self._nav.register_page("plugin", self.plugin_page)
@@ -417,18 +417,16 @@ class UnifiedSettingsWindow(FramelessShell):
         # 关闭开发者模式时连带关闭「测试模式」：测试功能总开关只存在于开发者页，
         # 关掉开发者模式应一并关掉测试模式，否则测试功能会逃逸到正式环境。
         # use_test_features=False 后，下方 save_config 会按 TEST_FEATURE_DEFAULTS
-        # 把各测试项（如 use_uia_elevation）强制归位默认值。
+        # 把仍在测试中的功能项强制归位默认值。
         self.config["use_test_features"] = False
         # 同步清空关于页的开发者模式状态，否则它仍记着 developer_mode=True，
         # 再次连点版本号会被短路、不再发出 developer_mode_enabled，无法二次进入。
         self.about_page.reset_developer_mode()
         self._nav.disable_dev_tab()
-        # ⚠ 必须真正卸载插件，而不只是把 UI 藏起来。
-        # 之前这里只改了 use_test_features 配置，插件仍处于 loaded 状态：
-        # 数据源/转换/事件回调继续生效，它们通过 api.ui 做的界面修改也不会回滚
-        # ——表现为"关掉开发者模式后，插件插的东西还留在界面上"。
-        # 这是「测试功能逃逸」的另一种形式：UI 收敛了，功能还在跑。
-        self._unload_all_plugins()
+        # ⚠ **不再卸载插件**：插件已是正式功能，与开发者模式无关。
+        # 历史：插件曾在测试门控下，关闭开发者模式时必须 unload，才能让它通过
+        # api.ui 做的界面修改回滚（否则"插件插的东西还留在界面上"）。
+        # 现在插件不归测试模式管，这里自然也不需要动它。
         # 跳回设置页（保留与进入一致的淡入动画体验）
         self._set_page("settings")
         # 保存放到 UI 更新之后：即使落盘异常，也不能让页签继续显示在界面上。
@@ -566,16 +564,11 @@ class UnifiedSettingsWindow(FramelessShell):
         use_test_features 已由 dev_page 写入共享 config 并存盘，这里仅把最新
         配置同步给设置页并刷新可见性，避免整页重排带来的额外开销。
 
-        ⚠ 关闭时必须**真正卸载插件**，不能只收起 UI：
-        插件已在内存里加载的话，数据源/转换/事件回调仍会生效，它们通过
-        `api.ui` 做的界面修改也不会回滚——表现为"关掉测试模式后插件插的
-        东西还留在界面上"。卸载走 `_detach`，其中包含界面修改回滚。
+        ⚠ **不再卸载插件**：插件已成为正式功能，关闭测试模式不应影响它。
+        （历史：插件曾在测试门控下，关闭时必须 unload 才能回滚其界面修改。）
         """
-        if not self.config.get("use_test_features", False):
-            self._unload_all_plugins()
         self.settings_page.config = self.config
         self.settings_page.apply_test_feature_visibility()
-        # 「插件」页同属测试功能：开关切换后同步其导航项与页面显隐
         self._sync_plugin_tab()
 
     # ---------- 面板基底 / 内容区表面（按 panel_alpha 缩放） ----------

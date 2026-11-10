@@ -104,6 +104,18 @@ def ensure_uiaccess(config, log=None, on_result=None, allow_elevate=False):
         _emit(on_result, status)
         return status
 
+    # —— 形态检查：源码态一律禁用 ——
+    # 提权依赖 sys.executable 指向"本程序"，而源码态它是 python.exe，
+    # 用 runas 启动它只会打开一个空解释器（详见 core/elevate.py 的说明）。
+    # UIAccess 本身也需要提权重启，所以在源码态根本走不通，直接拒绝，
+    # 免得用户开了开关却完全没反应、还查不出原因。
+    from core import elevate as _elevate
+    if not _elevate.is_supported():
+        status["message"] = _elevate.unsupported_reason()
+        _log(log, "warn", "uia_elev", status["message"])
+        _emit(on_result, status)
+        return status
+
     # —— 管理员权限检查 ——
     # SeTcbPrivilege 只在管理员令牌里存在（实测非管理员令牌查不到该特权），
     # 所以这一步不是"建议"而是硬门槛。

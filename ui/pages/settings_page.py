@@ -350,8 +350,19 @@ class SettingsPage(QWidget):
 
     def _uia_elevation_toggle(self):
         self.uia_elevation_check = ToggleSwitch(self._theme)
-        # 注意：**不再因为"非管理员"而禁用开关**。
-        # 现在开启时会弹 UAC 申请管理员权限（见 core/elevate.py），
+        from core import elevate as _elevate
+
+        # 源码态（python main.py）直接禁用：提权重启依赖 sys.executable
+        # 指向本程序，而源码态它是 python.exe，runas 只会打开空解释器。
+        # 这一步必须在"能不能弹 UAC"之前判断，否则用户开了开关也毫无反应。
+        if not _elevate.is_supported():
+            self.uia_elevation_check.setEnabled(False)
+            self.uia_elevation_check.setChecked(False)
+            self.uia_elevation_check.setToolTip(_elevate.unsupported_reason())
+            return self.uia_elevation_check
+
+        # 注意：**不因为"非管理员"而禁用开关**。
+        # 打包态下开启时会弹 UAC 申请管理员权限（见 core/elevate.py），
         # 用户不必自己去"右键 → 以管理员身份运行"。
         if uia_elevation.is_user_admin():
             self.uia_elevation_check.setToolTip(
@@ -366,6 +377,14 @@ class SettingsPage(QWidget):
 
     def _refresh_uia_status(self):
         """根据真实状态刷新 UIA 行下方的状态文案，杜绝"配置开着但没生效"的假象。"""
+        from core import elevate as _elevate
+
+        # 源码态：明确说明不支持，而不是显示"需要管理员"
+        if not _elevate.is_supported():
+            self.uia_status.setText("⚠ " + _elevate.unsupported_reason())
+            self.uia_status.setStyleSheet("color:#a06000;")
+            return
+
         if not uia_elevation.is_user_admin():
             if self.config.get("use_uia_elevation", False):
                 self.uia_status.setText(
@@ -426,7 +445,13 @@ class SettingsPage(QWidget):
             self.blur_hide_check.setChecked(bool(cfg.get("auto_hide_on_blur", True)))
             self.page_spin.setValue(int(cfg.get("page_size", 3)))
             self.autostart_check.setChecked(autostart.is_enabled())
-            self.uia_elevation_check.setChecked(bool(cfg.get("use_uia_elevation", False)))
+            # 源码态强制显示为关闭：开关本身已禁用，若还显示"开"会
+            # 让用户以为功能生效了（实际配置值可能是打包态遗留的 true）。
+            from core import elevate as _elevate
+            _uia_wanted = bool(cfg.get("use_uia_elevation", False))
+            if not _elevate.is_supported():
+                _uia_wanted = False
+            self.uia_elevation_check.setChecked(_uia_wanted)
         finally:
             self._loading = False
         # 测试功能分组：根据 use_test_features 决定高级分区(UIA 提权等)是否可见
@@ -713,7 +738,16 @@ class SettingsPage(QWidget):
         new_cfg["auto_hide_on_blur"] = self.blur_hide_check.isChecked()
         new_cfg["page_size"] = self.page_spin.value()
         new_cfg["autostart"] = self.autostart_check.isChecked()
-        new_cfg["use_uia_elevation"] = self.uia_elevation_check.isChecked()
+        # 源码态开关是禁用的、恒显示 False。此时**不能**把 False 写回配置，
+        # 否则用户在打包态开过 UIA 提权、临时用源码跑一次改个主题，
+        # 就会把那个 true 抹掉（下次打包运行还得重新开）。
+        # 只在"该形态支持 UIA 提权"时才由开关决定取值。
+        from core import elevate as _elevate
+        if _elevate.is_supported():
+            new_cfg["use_uia_elevation"] = self.uia_elevation_check.isChecked()
+        else:
+            new_cfg["use_uia_elevation"] = bool(
+                self.config.get("use_uia_elevation", False))
         self.config = new_cfg
         self.config_applied.emit(new_cfg)
 

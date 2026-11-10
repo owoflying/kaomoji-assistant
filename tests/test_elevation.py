@@ -180,9 +180,14 @@ def test_uia_without_elevate_never_requests_uac():
     """`allow_elevate=False`（启动期）绝不能弹 UAC。
 
     否则每次开机都会弹窗——这正是"开机自启自动提权"要避免的事。
+
+    ⚠ 源码态会更早被拦在"不支持"（见 is_supported），
+    所以这个用例只在打包态才真正走到 needs_admin 分支。
     """
     from core import uia_elevation
 
+    if not elevate.is_supported():
+        pytest.skip("源码态会先被形态检查拦下，走不到管理员判定")
     if uia_elevation.is_user_admin():
         pytest.skip("当前已是管理员，不会走到 needs_admin 分支")
 
@@ -201,3 +206,100 @@ def test_main_handles_elevated_marker():
         src = f.read()
     assert "--elevated-by-app" in src
     assert "mark_guarded" in src
+
+
+# ---------------------------------------------------------------- 源码态禁用
+def test_source_mode_is_not_supported():
+    """源码态（python main.py）必须判定为"不支持 UIA 提权"。
+
+    原因：提权重启依赖 `sys.executable` 指向"本程序"，而源码态它是
+    python.exe —— 用 runas 启动它只会打开一个空解释器，既不是本程序，
+    也走不通 UIAccess 流程。
+    """
+    if getattr(sys, "frozen", False):
+        pytest.skip("当前是打包态")
+    if sys.platform != "win32":
+        pytest.skip("仅 Windows")
+    assert elevate.is_supported() is False
+    assert "源码" in elevate.unsupported_reason()
+
+
+def test_source_mode_request_is_refused():
+    """源码态发起提权必须直接拒绝，不能真的去启动 python.exe。"""
+    if getattr(sys, "frozen", False) or sys.platform != "win32":
+        pytest.skip("仅源码态 Windows")
+    r = elevate.request_elevation([])
+    assert r.started is False
+    assert r.error_code == -3
+    assert "源码" in r.message
+
+
+def test_source_mode_uia_never_attempts():
+    """源码态即使 allow_elevate=True 也不应尝试任何提权动作。"""
+    from core import uia_elevation
+
+    if getattr(sys, "frozen", False) or sys.platform != "win32":
+        pytest.skip("仅源码态 Windows")
+
+    st = uia_elevation.ensure_uiaccess(
+        {"use_uia_elevation": True}, None, allow_elevate=True)
+    assert st["attempted"] is False
+    assert st["elevate_requested"] is False
+    assert st["granted"] is False
+    assert st["needs_admin"] is False, "源码态不该报'需要管理员'，应报'不支持'"
+    assert "源码" in st["message"]
+
+
+def test_unsupported_reason_non_windows(monkeypatch):
+    """非 Windows 平台给出各自的说明，不要混用源码态文案。"""
+    monkeypatch.setattr(elevate.sys, "platform", "linux")
+    assert elevate.is_supported() is False
+    assert "Windows" in elevate.unsupported_reason()
+
+
+# ---------------------------------------------------------------- 设置页
+def test_settings_does_not_clobber_config_in_source_mode(qapp, tmp_path):
+    """源码态改其它设置，不得把配置里的 use_uia_elevation=true 抹成 false。
+
+    真实场景：用户在打包态开了 UIA 提权，临时用源码跑一次改了主题——
+    如果这里把开关恒 False 写回配置，那个 true 就丢了。
+    """
+    import os
+
+    from core.kaomoji_data import KaomojiData
+    from core.user_kaomoji import UserKaomoji
+    from core.user_state import UserState
+    from core.user_triggers import UserTriggers
+    from ui.unified_window import UnifiedSettingsWindow
+
+    if getattr(sys, "frozen", False) or sys.platform != "win32":
+        pytest.skip("仅源码态 Windows")
+
+    cfg = {
+        "theme": "light", "panel_alpha": 1.0, "opacity": 0.98,
+        "hotkey": "<ctrl>+<shift>+k", "input_method": "direct",
+        "max_recent": 30, "page_size": 3, "auto_popup": True,
+        "autostart": False, "auto_hide_on_blur": True,
+        "developer_mode": True, "use_uia_elevation": True,
+        "use_test_features": True, "plugins_enabled": {},
+    }
+    d = str(tmp_path / "d")
+    os.makedirs(d, exist_ok=True)
+    w = UnifiedSettingsWindow(
+        KaomojiData(), cfg, UserState(path=os.path.join(d, "s.json")),
+        UserKaomoji(path=os.path.join(d, "u.json")),
+        UserTriggers(path=os.path.join(d, "t.json")),
+        save_config=lambda c: None, open_log=lambda: None, plugins=None)
+    try:
+        sp = w.settings_page
+        # 开关应禁用且显示为关
+        assert sp.uia_elevation_check.isEnabled() is False
+        assert sp.uia_elevation_check.isChecked() is False
+
+        # 改一个无关设置，配置里的 true 必须保留
+        sp.auto_check.setChecked(False)
+        assert sp.config.get("use_uia_elevation") is True, \
+            "源码态改其它设置把 use_uia_elevation 抹掉了"
+    finally:
+        w.hide()
+        w.deleteLater()

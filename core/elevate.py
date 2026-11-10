@@ -86,6 +86,36 @@ def is_elevated():
         return False
 
 
+#: 源码态（python main.py）不支持 UIA 提权的说明
+SOURCE_MODE_MESSAGE = (
+    "源码运行（python main.py）不支持 UIA 提权："
+    "提权后只能启动 python.exe 而不是本程序。请使用打包后的 exe。")
+
+
+def is_supported():
+    """当前形态是否支持 UIA 提权 / 提权申请。
+
+    **源码态一律禁用**。原因：提权重启依赖 `sys.executable` 指向"本程序"，
+    而源码态它是 `python.exe`——用 "runas" 启动 `python.exe` 只会打开一个
+    空的交互式解释器（还带着 `main.py` 之类的参数，实际是被忽略），
+    既不会启动本程序，也无法继续 UIAccess 流程。
+
+    只有 PyInstaller 打包后的 exe 形态（`sys.frozen`）才是指向自身的可执行文件。
+    """
+    if sys.platform != "win32":
+        return False
+    return bool(getattr(sys, "frozen", False))
+
+
+def unsupported_reason():
+    """不支持提权时返回原因文案；支持时返回空串。"""
+    if sys.platform != "win32":
+        return "当前平台非 Windows，不支持 UIA 提权。"
+    if not getattr(sys, "frozen", False):
+        return SOURCE_MODE_MESSAGE
+    return ""
+
+
 def guard_is_active():
     """本次启动是否由"提权申请"引发（用于防循环）。"""
     return os.environ.get(ELEVATE_GUARD) == "1"
@@ -110,8 +140,10 @@ def request_elevation(args=None):
     注意：调用成功时**新进程已在跑**，调用方应立即退出旧进程
     （见 `ui_elevation` 里的调用处），否则会出现两个实例。
     """
-    if sys.platform != "win32":
-        return ElevateResult(message="当前平台不支持提权")
+    # 源码态必须拒绝：sys.executable 是 python.exe，用 runas 启动它只会
+    # 打开一个空解释器，既不是本程序也走不通 UIAccess 流程。
+    if not is_supported():
+        return ElevateResult(message=unsupported_reason(), error_code=-3)
 
     exe = sys.executable
     if not exe:

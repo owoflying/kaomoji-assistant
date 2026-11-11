@@ -26,6 +26,12 @@ DEFAULT_CONFIG = {
     "input_method": "direct",
     "max_recent": 30,
     "auto_popup": True,
+    #: 打字时按情绪自动推荐颜文字（0 = 完全关闭）
+    "emotion_suggest": True,
+    #: 推荐灵敏度 0~100：越低越保守（少打扰），越高越容易触发
+    "emotion_sensitivity": 50,
+    #: 是否根据用户选择持续调整模型（个性化学习）
+    "emotion_learning": True,
     "page_size": 3,
     "autostart": False,
     "auto_hide_on_blur": True,
@@ -65,6 +71,7 @@ _CONFIG_RANGES = {
     "opacity": (0.1, 1.0),
     "max_recent": (0, 200),
     "page_size": (1, 20),
+    "emotion_sensitivity": (0, 100),
 }
 
 

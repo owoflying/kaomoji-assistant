@@ -38,7 +38,31 @@ from core import emotion_net as en
 from core.emotion import detect_last as keyword_detect
 
 #: 置信度阈值：低于此值认为网络"没把握"，交给关键词兜底
+#:
+#: 会被配置项 `emotion_sensitivity`（0~100）调整：
+#: 灵敏度低 → 阈值高 → 更保守；灵敏度高 → 阈值低 → 更容易触发。
 CONFIDENCE_THRESHOLD = 0.45
+
+#: 灵敏度换算区间：灵敏度 0 时阈值 0.65（保守），100 时 0.25（灵敏）
+_THRESHOLD_MAX = 0.65
+_THRESHOLD_MIN = 0.25
+
+
+def threshold_for_sensitivity(sensitivity):
+    """把 0~100 的灵敏度换算成置信度阈值。
+
+    线性插值：灵敏度 0 → 0.65，50 → 0.45，100 → 0.25。
+
+    为什么要暴露这个：不同人对"打扰"的容忍度差别很大。有人希望
+    多推荐几次（宁可错杀），有人只想要极准的那几次。给滑块比替用户决定好。
+    """
+    try:
+        s = float(sensitivity)
+    except (TypeError, ValueError):
+        s = 50.0
+    s = max(0.0, min(100.0, s))
+    return _THRESHOLD_MAX - (_THRESHOLD_MAX - _THRESHOLD_MIN) * (s / 100.0)
+
 
 #: 在线学习的步长。太小几乎学不动，太大一个样本就能把权重带偏。
 LEARN_RATE = 0.03
@@ -85,8 +109,25 @@ class EmotionClassifier:
         self._dirty = 0
         self.last_source = ""      # 最近一次判定来自 "net" / "keyword" / ""
         self.last_conf = 0.0
+        #: 触发阈值（由 `emotion_sensitivity` 配置调整，见 threshold_for_sensitivity）
+        self.threshold = CONFIDENCE_THRESHOLD
+        #: 是否启用个性化学习（配置项 emotion_learning）
+        self.learning_enabled = True
         if load_model:
             self.load()
+
+    def configure(self, sensitivity=None, learning_enabled=None,
+                  suggest_enabled=None):
+        """应用用户配置：灵敏度 / 是否学习 / 是否启用情绪推荐。
+
+        由 AppRuntime.apply_settings 调用，保证设置页改动实时生效。
+        """
+        if sensitivity is not None:
+            self.threshold = threshold_for_sensitivity(sensitivity)
+        if learning_enabled is not None:
+            self.learning_enabled = bool(learning_enabled)
+        if suggest_enabled is not None:
+            self._suggest_enabled = bool(suggest_enabled)
 
     # ---------- 加载 / 保存 ----------
     def load(self):
@@ -165,7 +206,7 @@ class EmotionClassifier:
         # ---------- 规则 2：含否定词 → 听网络的 ----------
         # 「今天一点都不开心」：关键词只看得到"开心"，必然判反。
         if self._has_negation(text):
-            if net_emo is not None and net_conf >= 0.5:
+            if net_emo is not None and net_conf >= max(0.5, self.threshold):
                 self.last_source = "net(negation)"
                 self.last_conf = net_conf
                 return self._as_hit(text, net_emo, None)
@@ -197,7 +238,7 @@ class EmotionClassifier:
             return kw_hit
 
         # ---------- 规则 3：网络给出情绪 ----------
-        if net_emo is not None and net_conf >= CONFIDENCE_THRESHOLD:
+        if net_emo is not None and net_conf >= self.threshold:
             self.last_source = "net"
             self.last_conf = net_conf
             return self._as_hit(text, net_emo, None)
@@ -328,13 +369,60 @@ class EmotionClassifier:
         return any(w in s for w in NEGATION_WORDS)
 
     # ---------- 在线学习 ----------
-    def learn_from_choice(self, text, emotion):
-        """用户选了一个"某情绪"分类下的颜文字 → 强化该分类。
+    # ---------- 在线学习 ----------
+    def learn_from_choice(self, text, emotion, strength=1.0):
+        """用户选了某情绪分类下的颜文字 → 强化该分类。
 
-        只在"当前判定就是这个情绪"或"这次选择能说明情绪"时才学，
-        避免把噪声当信号。返回是否真的更新了权重。
+        ## 学到的是什么
+
+        `text` 是**触发那次弹窗的原句**，`emotion` 是用户认可的类别。
+        一次 `train_one` 就是一次 SGD，权重朝"这句话属于这个情绪"移动。
+
+        :param strength: 学习强度倍数（0~2）。用于区分信号强弱：
+            * 1.0 = 用户主动从该情绪候选里选了一张（强信号）
+            * 0.5 = 间接确认（例如手动唤起初次就选，弱信号）
+
+        ⚠ 只应在**有情绪上下文**时调用，否则会把噪声教给网络。
         """
         if not text or not emotion:
+            return False
+        if not self.learning_enabled:
+            return False          # 用户关闭了个性化学习
+        idx = en.class_index(emotion)
+        if idx is None:
+            return False
+        with self._lock:
+            net = self.net
+        if net is None:
+            return False
+        try:
+            lr = LEARN_RATE * max(0.1, min(2.0, float(strength)))
+            net.train_one(text, idx, lr=lr)
+            with self._lock:
+                self._dirty += 1
+                self._dirty_total = getattr(self, "_dirty_total", 0) + 1
+            return True
+        except Exception:
+            return False
+
+    def learn_ignored(self, text, emotion):
+        """用户**看到了**某情绪的推荐，但没选就走了 → 弱化该判断。
+
+        ## 为什么"忽略"也是有用的信号
+
+        弹出「开心」候选，用户看了一眼，然后继续打字、换别的词——
+        这通常意味着判断错了，或者时机不对。
+
+        但我们不能把"忽略"当成强信号：用户可能只是找不到合适的、
+        或者不小心关掉了。所以用**很小的学习率**慢慢修正，而不是
+        一次就否定——错一次不至于把正确的判断带偏。
+
+        好处是：网络会逐渐学会"我在这类句子上判得不准"，
+        长期看减少了打扰。
+        """
+        if not text or not emotion:
+            return False
+        if not self.learning_enabled:
             return False
         idx = en.class_index(emotion)
         if idx is None:
@@ -344,7 +432,8 @@ class EmotionClassifier:
         if net is None:
             return False
         try:
-            net.train_one(text, idx, lr=LEARN_RATE)
+            # 极小步长：只把该类的概率往下压一点点
+            net.train_one(text, en.NONE_INDEX, lr=LEARN_RATE * 0.25)
             with self._lock:
                 self._dirty += 1
                 self._dirty_total = getattr(self, "_dirty_total", 0) + 1
@@ -359,6 +448,40 @@ class EmotionClassifier:
         if n and n % every == 0:
             return self.save_user_model()
         return False
+
+    # ---------- 学习状态（给 UI 展示） ----------
+    def learning_stats(self):
+        """返回个性化学习的统计，供主界面展示"越用越顺手"的证据。"""
+        with self._lock:
+            total = getattr(self, "_dirty_total", 0)
+            net = self.net
+        base = 0
+        try:
+            base = int(getattr(net, "trained_samples", 0) or 0) if net else 0
+        except Exception:
+            pass
+        return {
+            "personal_updates": total,      # 本次会话学了多少次
+            "base_samples": base,           # 随包模型的训练样本量
+            "has_personal_model": os.path.exists(user_model_path()),
+            "model_ready": net is not None,
+        }
+
+    def reset_personal_model(self):
+        """清掉个性化学习结果，回到随包模型。
+
+        用户可能觉得"越学越偏"，需要一个一键还原的出口。
+        """
+        try:
+            p = user_model_path()
+            if os.path.exists(p):
+                os.remove(p)
+        except Exception:
+            pass
+        with self._lock:
+            self._dirty = 0
+            self._dirty_total = 0
+        return self.load()
 
 
 #: 进程级单例（采样线程与 UI 共用同一份权重，学习才能累积）

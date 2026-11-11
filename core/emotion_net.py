@@ -77,8 +77,12 @@ TURN_TAIL_BUCKETS = 64
 INPUT_DIM = (UNIGRAM_BUCKETS + BIGRAM_BUCKETS + EXTRA_FEATURES
              + TURN_TAIL_BUCKETS)
 
-#: 隐层宽度
-HIDDEN = 20
+#: 隐层宽度。
+#:
+#: 20 → 32（炼丹第二轮）：数据量 5500 条时，20 宽的隐层容量不足
+#: （参数/样本比 ≈1.0，明显欠拟合——训练集 99% 但独立语料只有 61%）。
+#: 放大到 32 后参数量约 9000，仍在"小模型"范围内（推理仍 <2ms）。
+HIDDEN = 32
 
 #: 模型文件版本（结构变化时递增，旧模型自动作废）
 MODEL_VERSION = 1

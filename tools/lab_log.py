@@ -2,7 +2,6 @@
 
 格式：日期 | 数据量 | 特征 | 轮数 | 训练集 | 独立语料 | 双层协作 | 结论
 """
-import json
 import os
 import sys
 

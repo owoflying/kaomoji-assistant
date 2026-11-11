@@ -151,7 +151,7 @@ class SettingsPage(QWidget):
         hk_container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         hk_container.setMinimumHeight(36)
         croot.addWidget(hk_container)
-        tip = QLabel("点「录制…」后按修饰键+单键（如 Ctrl+Shift+K）或多键序列（如 k+l）。录完点「完成」；Esc 取消。")
+        tip = QLabel("点「录制」后按组合键（如 Ctrl+Shift+K），也可以连着按几个键做序列（如 k+l）。")
         tip.setObjectName("Caption")
         tip.setWordWrap(True)
         croot.addWidget(tip)
@@ -179,6 +179,31 @@ class SettingsPage(QWidget):
         self._add_row(croot, "每页候选数", self._page_spin())
         self._add_row(croot, "打字时自动弹出", self._auto_toggle())
         self._add_row(croot, "失焦自动隐藏", self._blur_hide_toggle())
+        v.addWidget(card)
+
+        # 情绪推荐
+        v.addWidget(self._section_title("情绪推荐"))
+        card = self._card()
+        croot = QVBoxLayout(card)
+        croot.setContentsMargins(16, 14, 16, 14)
+        croot.setSpacing(12)
+        self._add_row(croot, "按情绪推荐颜文字", self._emotion_toggle())
+        tip = QLabel("打出「好累」「破防了」这类话时，自动推荐对应表情。"
+                     "它会在你选择时学习你的表达习惯，越用越准。")
+        tip.setObjectName("Caption")
+        tip.setWordWrap(True)
+        croot.addWidget(tip)
+        self._add_row(croot, "推荐灵敏度", self._emotion_sensitivity())
+        sens_tip = QLabel("调低更保守（少打扰），调高更容易触发推荐。")
+        sens_tip.setObjectName("Caption")
+        sens_tip.setWordWrap(True)
+        croot.addWidget(sens_tip)
+        self._add_row(croot, "学习我的用词习惯", self._emotion_learn_toggle())
+        self._emotion_stats = QLabel("")
+        self._emotion_stats.setObjectName("Caption")
+        self._emotion_stats.setWordWrap(True)
+        croot.addWidget(self._emotion_stats)
+        self._add_row(croot, "", self._emotion_reset_row())
         v.addWidget(card)
 
         # 系统
@@ -228,8 +253,24 @@ class SettingsPage(QWidget):
         self.auto_check.toggled.connect(lambda *_a: self._on_apply())
         self.blur_hide_check.toggled.connect(lambda *_a: self._on_apply())
         self.autostart_check.toggled.connect(lambda *_a: self._on_apply())
+        # 情绪推荐：灵敏度释放后才保存（拖动中只改标签，避免高频写盘）
+        self.emotion_check.toggled.connect(self._on_emotion_toggled)
+        self.emotion_sens_slider.sliderReleased.connect(
+            lambda *_a: self._on_apply())
+        self.emotion_learn_check.toggled.connect(lambda *_a: self._on_apply())
         # UIA 提权涉及 UAC 提权 + 计划任务，属于敏感操作：先二次确认再落配置。
         self.uia_elevation_check.toggled.connect(self._on_uia_toggled)
+
+    def _on_emotion_toggled(self, checked):
+        """情绪推荐开关：联动灵敏度控件的可用性，并立即保存。"""
+        if getattr(self, "_loading", False):
+            return
+        for w in (getattr(self, "emotion_sens_slider", None),
+                  getattr(self, "emotion_learn_check", None)):
+            if w is not None:
+                w.setEnabled(bool(checked))
+        self._refresh_emotion_stats()
+        self._on_apply()
 
     # ---------- 子控件工厂 ----------
     def _section_title(self, text):
@@ -337,6 +378,92 @@ class SettingsPage(QWidget):
         )
         return self.blur_hide_check
 
+    # ---------- 情绪推荐 ----------
+    def _emotion_toggle(self):
+        self.emotion_check = ToggleSwitch(self._theme)
+        self.emotion_check.setToolTip(
+            "关闭后打字不再按情绪自动推荐，热键唤起等其它功能不受影响")
+        return self.emotion_check
+
+    def _emotion_sensitivity(self):
+        """灵敏度：映射到 conf 阈值。高灵敏度 = 阈值低 = 更容易触发。"""
+        row = QHBoxLayout()
+        self.emotion_sens_slider = QSlider(Qt.Horizontal)
+        # 0..100 表示"灵敏度"，内部换算成阈值 0.65..0.25
+        self.emotion_sens_slider.setRange(0, 100)
+        self.emotion_sens_slider.setTickInterval(10)
+        self.emotion_sens_slider.setToolTip(
+            "往左更保守，往右更容易触发推荐")
+        self.emotion_sens_value = QLabel("")
+        self.emotion_sens_value.setFixedWidth(52)
+        self.emotion_sens_value.setObjectName("BodyText")
+        self.emotion_sens_slider.valueChanged.connect(self._on_sens_changed)
+        row.addWidget(self.emotion_sens_slider, 1)
+        row.addWidget(self.emotion_sens_value)
+        return row
+
+    @staticmethod
+    def _sens_to_label(v):
+        if v < 34:
+            return "保守"
+        if v < 67:
+            return "适中"
+        return "灵敏"
+
+    def _on_sens_changed(self, v):
+        self.emotion_sens_value.setText(self._sens_to_label(v))
+
+    def _emotion_learn_toggle(self):
+        self.emotion_learn_check = ToggleSwitch(self._theme)
+        self.emotion_learn_check.setToolTip(
+            "根据你实际选择的颜文字，逐渐贴合你的说话方式。"
+            "关闭后不再学习，已学到的保持不变")
+        return self.emotion_learn_check
+
+    def _emotion_reset_row(self):
+        from PySide6.QtWidgets import QPushButton
+
+        b = QPushButton("清除学习记录")
+        b.setCursor(Qt.PointingHandCursor)
+        b.setToolTip("把个性化学习结果清空，恢复到出厂模型")
+        b.clicked.connect(self._on_reset_emotion_learning)
+        return b
+
+    def _on_reset_emotion_learning(self):
+        """清除个性化模型。不弹确认框——它是可再生的，重学即可。"""
+        try:
+            from core import emotion_classifier
+            emotion_classifier.shared().reset_personal_model()
+            self._refresh_emotion_stats("已清除学习记录，已恢复到出厂模型")
+        except Exception as e:
+            self._refresh_emotion_stats("清除失败：%r" % (e,))
+
+    def _refresh_emotion_stats(self, note=""):
+        """刷新「学习到多少」的展示。
+
+        让用户看到"越用越顺手"是**有据可查**的，而不是一句宣传。
+        """
+        lbl = getattr(self, "_emotion_stats", None)
+        if lbl is None:
+            return
+        if note:
+            lbl.setText(note)
+            return
+        try:
+            from core import emotion_classifier
+            st = emotion_classifier.shared().learning_stats()
+            if not st["model_ready"]:
+                lbl.setText("情绪模型未加载，当前使用关键词匹配")
+                return
+            parts = ["出厂模型学过 %d 句" % st["base_samples"]]
+            if st["has_personal_model"]:
+                parts.append("已保存你的个性化学习结果")
+            if st["personal_updates"]:
+                parts.append("本次已学习 %d 次" % st["personal_updates"])
+            lbl.setText("　·　".join(parts))
+        except Exception:
+            lbl.setText("")
+
     def _autostart_toggle(self):
         self.autostart_check = ToggleSwitch(self._theme)
         if not autostart.is_supported():
@@ -439,6 +566,17 @@ class SettingsPage(QWidget):
             self.recent_spin.setValue(int(cfg.get("max_recent", 30)))
             self.auto_check.setChecked(bool(cfg.get("auto_popup", True)))
             self.blur_hide_check.setChecked(bool(cfg.get("auto_hide_on_blur", True)))
+            # 情绪推荐
+            _emo_on = bool(cfg.get("emotion_suggest", True))
+            self.emotion_check.setChecked(_emo_on)
+            _sens = int(cfg.get("emotion_sensitivity", 50))
+            self.emotion_sens_slider.setValue(max(0, min(100, _sens)))
+            self.emotion_sens_value.setText(self._sens_to_label(_sens))
+            self.emotion_learn_check.setChecked(
+                bool(cfg.get("emotion_learning", True)))
+            self.emotion_sens_slider.setEnabled(_emo_on)
+            self.emotion_learn_check.setEnabled(_emo_on)
+            self._refresh_emotion_stats()
             self.page_spin.setValue(int(cfg.get("page_size", 3)))
             self.autostart_check.setChecked(autostart.is_enabled())
             # 源码态强制显示为关闭：开关本身已禁用，若还显示"开"会
@@ -673,6 +811,9 @@ class SettingsPage(QWidget):
         new_cfg["max_recent"] = self.recent_spin.value()
         new_cfg["auto_popup"] = self.auto_check.isChecked()
         new_cfg["auto_hide_on_blur"] = self.blur_hide_check.isChecked()
+        new_cfg["emotion_suggest"] = self.emotion_check.isChecked()
+        new_cfg["emotion_sensitivity"] = int(self.emotion_sens_slider.value())
+        new_cfg["emotion_learning"] = self.emotion_learn_check.isChecked()
         new_cfg["page_size"] = self.page_spin.value()
         new_cfg["autostart"] = self.autostart_check.isChecked()
         # 源码态开关是禁用的、恒显示 False。此时**不能**把 False 写回配置，

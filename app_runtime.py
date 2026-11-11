@@ -102,6 +102,9 @@ class AppRuntime:
         self.app = app
         self.config = config          # 权威配置字典：**原地更新**，引用始终不变
         self._uia_warn_shown = False
+        #: 情绪推荐"已展示待确认"：(emotion, source_text)。
+        #: 面板关闭时若它还在，说明用户没采用这次推荐 → 弱负反馈。
+        self._pending_emotion = None
         self._log_viewer = None
         # 上一次真正贴到 QApplication 上的样式串，用于幂等短路（见 _apply_app_theme）
         self._applied_style = None
@@ -248,11 +251,11 @@ class AppRuntime:
         self.hotkey.hotkey_pressed.connect(w.toggle)
         # emotion_detected 现在带两个参数：(emotion, source_text)。
         # source_text 是触发那次弹窗的用户原句，在线学习要拿它当训练样本。
-        self.monitor.emotion_detected.connect(w.show_for_emotion)
+        # 外面包一层：`emotion_suggest` 关闭时不弹（热键唤起等不受影响）。
+        self.monitor.emotion_detected.connect(self._on_emotion_detected)
         self.monitor.trigger_detected.connect(w.show_for_output)
         # 候选条可见时暂停监听、隐藏时恢复（避免把候选条自身当输入）
-        w.isVisibleChanged.connect(self._on_picker_visibility)
-        # 面板因某情绪弹出后立即锁定该情绪，避免同一句话被反复推荐
+        w.isVisibleChanged.connect(self._on_picker_visibility)        # 面板因某情绪弹出后立即锁定该情绪，避免同一句话被反复推荐
         w.emotion_shown.connect(self.monitor.notify_shown)
         w.selected.connect(self.on_selected)
         w.settings_requested.connect(lambda: self.open_unified("settings"))
@@ -294,8 +297,12 @@ class AppRuntime:
         """
         if visible:
             self.monitor.pause()
-        elif not self.unified.isVisible():
-            self.monitor.resume()
+        else:
+            if not self.unified.isVisible():
+                self.monitor.resume()
+            # 面板关掉了但「待确认」还挂着 = 用户没采用这次情绪推荐。
+            # 给一次很弱的负反馈（见 _learn_emotion_ignored）。
+            self._learn_emotion_ignored()
 
     def _build_tray(self):
         icon = make_icon()
@@ -594,6 +601,8 @@ class AppRuntime:
         self.plugins.set_theme_name(effective_theme)
         self.state.max_recent = int(self.config.get("max_recent", 30))
         self.plugins.emit("config_changed", self.config)
+        # 情绪推荐：把「开关 / 灵敏度 / 是否学习」同步给分类器，实时生效
+        self._apply_emotion_config()
 
         if "hotkey" in changed:
             # 录制完新热键必须立刻重注册，否则新组合键要等下次启动才生效。
@@ -782,6 +791,57 @@ class AppRuntime:
         # 用这一次样本对网络做一次 SGD 更新（约 0.3ms），逐渐贴合这个用户的表达习惯。
         self._learn_emotion(text, ctx)
 
+    def _on_emotion_detected(self, emotion, source_text=""):
+        """情绪命中：受 `emotion_suggest` 开关控制，并记录"已展示待确认"。
+
+        记录是为了支持"用户看到了但没选"的弱反馈（见 `_learn_emotion_ignored`）。
+        """
+        if not self._emotion_suggest_enabled():
+            return
+        self._pending_emotion = (emotion, source_text)
+        self.window.show_for_emotion(emotion, source_text)
+
+    def _learn_emotion_ignored(self):
+        """面板被关掉时，如果情绪推荐没被采用，给一次很弱的负反馈。
+
+        只在"弹了、没选、又关掉了"这三件事都成立时触发，
+        且学习率极低（见 `EmotionClassifier.learn_ignored`）——
+        用户可能只是没找到合适的，不该被当成"判错了"重罚。
+        """
+        pending = getattr(self, "_pending_emotion", None)
+        if not pending:
+            return
+        self._pending_emotion = None
+        try:
+            from core import emotion_classifier
+            clf = emotion_classifier.shared()
+            if clf.learning_enabled:
+                clf.learn_ignored(pending[1], pending[0])
+                clf.maybe_autosave(every=20)
+        except Exception:
+            pass
+
+    def _apply_emotion_config(self):
+        """把情绪推荐相关配置同步到分类器与监听器。
+
+        三个键各管一件事：
+          * `emotion_suggest`     —— 关掉后完全不按情绪推荐（热键唤起作用照旧）
+          * `emotion_sensitivity` —— 0~100，换算成置信度阈值
+          * `emotion_learning`    —— 关掉后不再根据用户选择调整模型
+        """
+        try:
+            from core import emotion_classifier
+            clf = emotion_classifier.shared()
+            clf.configure(
+                sensitivity=self.config.get("emotion_sensitivity", 50),
+                learning_enabled=bool(self.config.get("emotion_learning", True)),
+            )
+        except Exception as e:
+            append_log("warn", "emotion", "同步情绪配置失败：%r" % (e,))
+
+    def _emotion_suggest_enabled(self):
+        return bool(self.config.get("emotion_suggest", True))
+
     def _learn_emotion(self, text, ctx):
         """把「用户选了这张颜文字」当作情绪反馈，增量更新网络。
 
@@ -804,6 +864,8 @@ class AppRuntime:
             clf = emotion_classifier.shared()
             if clf.learn_from_choice(sample, emotion):
                 clf.maybe_autosave(every=20)
+                # 用户采用了这次推荐：清掉"待确认"，避免被当成忽略
+                self._pending_emotion = None
         except Exception as e:
             append_log("warn", "emotion", "在线学习失败：%r" % (e,))
 

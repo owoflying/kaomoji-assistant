@@ -125,20 +125,23 @@ class EmotionClassifier:
     def detect(self, text):
         """返回 (emotion, keyword, pos) 或 None。语义与 `emotion.detect_last` 一致。
 
-        两层的**协作规则**（不是简单的"网络优先"）：
+        ## 两层的分工（实测得出，不是拍脑袋）
 
-            1. 网络给出结果且有把握 → 候选用网络
-            2. 关键词也给出结果 → 取两者共识；冲突时看谁更可信
-            3. 网络没把握 → 用关键词
-            4. 两者都没有 → 不触发
+        | 层 | 强项 | 弱项 |
+        |----|------|------|
+        | 关键词 | 准（误报 0%） | 覆盖窄（漏判 25%） |
+        | 网络   | 广（漏判 1.8%） | 早期无区分度（误报 95%） |
 
-        **为什么冲突时不能无条件信网络**：实测网络会把「吃饭了吗」判成
-        思考（置信度不低），而关键词层已经把这类普通提问排除掉了。
-        所以规则是：**关键词明确说"没有情绪"时，网络的高置信也不足以推翻**
-        ——除非网络置信度非常高（≥0.8）。
+        加 `__NONE__` 类后网络终于会说"这句不用弹"，误报降到 0%。
+        但网络仍偏保守——「好萌」「好帅」「太赞了」会被判成 NONE，
+        而关键词层对这些也没有词。两层都沉默，用户就永远看不到推荐。
 
-        这条规则保证了"不误弹"这个硬要求：闲聊时被弹窗打扰，
-        比漏掉一次推荐烦人得多。
+        ## 调度规则
+
+            1. **关键词有词** → 以关键词为准（它零误报，最可信）
+            2. **含否定词** → 以网络为准（关键词在这里必然判错）
+            3. 网络给出情绪且置信够 → 用网络
+            4. 网络判 NONE、关键词无词 → **模糊地带**，交给 `_ambiguous()`
         """
         if not text:
             self.last_source = ""
@@ -147,7 +150,6 @@ class EmotionClassifier:
         with self._lock:
             net = self.net
 
-        # 关键词层结果（同时作为"否决票"）
         try:
             kw_hit = keyword_detect(text)
         except Exception:
@@ -160,44 +162,130 @@ class EmotionClassifier:
             except Exception:
                 net_emo, net_conf = None, 0.0
 
-        net_ok = net_emo is not None and net_conf >= CONFIDENCE_THRESHOLD
-
-        # 1) 网络没把握 -> 关键词
-        if not net_ok:
-            self.last_source = "keyword" if kw_hit else ""
-            self.last_conf = net_conf
-            return kw_hit
-
-        # ---------- 关键分支：含否定词 ----------
-        # 「今天一点都不开心」这类句子，**关键词层必然判错**（它只看到"开心"），
-        # 而网络能整体理解。所以含否定词时以网络为准——这正是上网络的理由。
+        # ---------- 规则 2：含否定词 → 听网络的 ----------
+        # 「今天一点都不开心」：关键词只看得到"开心"，必然判反。
         if self._has_negation(text):
-            if net_conf >= 0.5:
+            if net_emo is not None and net_conf >= 0.5:
                 self.last_source = "net(negation)"
                 self.last_conf = net_conf
                 return self._as_hit(text, net_emo, None)
-            # 网络也没把握：宁可不说（否定句判反了比不判更糟）
+            # 网络判 NONE 或没把握：否定句判反比不判更糟，宁可不弹
             self.last_source = ""
             self.last_conf = net_conf
             return None
 
-        # 2) 两者一致 -> 用（最可信）
-        if kw_hit is not None and kw_hit[0] == net_emo:
-            self.last_source = "net+keyword"
-            self.last_conf = net_conf
-            return self._as_hit(text, net_emo, kw_hit)
-
-        # 3) 无否定词时关键词说"没情绪"：闲聊场景，宁可不弹
-        #    （「吃饭了吗」「今天天气不错」被网络判成思考/开心，都是误报）
-        if kw_hit is None:
+        # ---------- 规则 1.5：假否定固定搭配 → 不弹 ----------
+        # 「不好意思，我迟到了」「不得不承认这个设计很棒」：这些句子含"不"，
+        # 但"不"不是否定（是不好意思/不得不 这类固定搭配）。
+        # 网络对它们会给出中等置信的错误判断（实测 惊讶0.57 / 疲惫0.81），
+        # 关键词也没有词——必须在这里拦下，否则就是误报。
+        if self._has_false_negation(text):
             self.last_source = ""
             self.last_conf = net_conf
             return None
 
-        # 4) 关键词有别的结论：关键词更保守（有明确词才出手），以它为准
-        self.last_source = "keyword"
+        # ---------- 规则 1：关键词有词 → 以它为准 ----------
+        # 关键词是"精确但覆盖窄"的一层：它只在看到明确情绪词时出手，
+        # 实测误报为 0，所以只要它开口就信它。
+        if kw_hit is not None:
+            if net_emo is not None and net_emo == kw_hit[0]:
+                self.last_source = "net+keyword"      # 两层一致，最可信
+                self.last_conf = net_conf
+            else:
+                self.last_source = "keyword"          # 冲突时信关键词
+                self.last_conf = net_conf
+            return kw_hit
+
+        # ---------- 规则 3：网络给出情绪 ----------
+        if net_emo is not None and net_conf >= CONFIDENCE_THRESHOLD:
+            self.last_source = "net"
+            self.last_conf = net_conf
+            return self._as_hit(text, net_emo, None)
+
+        # ---------- 规则 4：模糊地带 ----------
+        return self._ambiguous(text, net_conf)
+
+    #: 模糊地带里，"看起来像在夸"的字，用来判断要不要冒险推荐
+    _PRAISE_HINTS = ("好", "太", "真", "超", "特别", "非常", "巨", "贼")
+
+    def _ambiguous(self, text, net_conf):
+        """两层都没出手时的兜底判断。
+
+        ## 为什么需要它
+
+        规则走到这里说明：关键词没有情绪词，网络也判了"无情绪"。
+        听起来该不弹——但实测有一批句子会被误伤：
+
+            好萌 / 好帅 / 太赞了 / 好可爱 / 这也太香了
+
+        这些是**网络训练时没见过的口语表达**，它诚实地说了 NONE；
+        关键词表里也没收这些词。结果用户打了很常见的夸奖，
+        却什么都看不到。
+
+        ## 判断依据
+
+        用**结构线索**而不是词表：程度副词 + 形容词，且句子很短。
+        聊天里「好X」「太X了」这类结构几乎总是表达情绪，
+        而「好的」「差不多」这类虽然也短，但不在这个结构里
+        （`好的` 后面没有形容词位）。
+
+        风险控制：
+          * 只对**很短**的句子生效（≤8 字），长句子更可能是陈述；
+          * 网络置信度不能太低（说明它也不是"很确定没情绪"）；
+          * 命中后标记 `last_source="heuristic"` 便于观察与统计。
+        """
+        s = str(text or "").strip()
+        if not s or len(s) > 8:
+            self.last_source = ""
+            self.last_conf = net_conf
+            return None
+        # 网络非常确定"没情绪"时不冒险
+        if net_conf >= 0.75:
+            self.last_source = ""
+            self.last_conf = net_conf
+            return None
+        # 含**假否定**固定搭配（不好意思 / 不得不 / 差不多…）时不冒险：
+        # 这些词恰好以"不"开头，会被下面的程度副词规则误判成"很X"
+        for w in _FALSE_NEGATIONS:
+            if w in s:
+                self.last_source = ""
+                self.last_conf = net_conf
+                return None
+        # 需要"程度副词 + 后面还有内容"的结构
+        for hint in self._PRAISE_HINTS:
+            idx = s.find(hint)
+            if idx < 0:
+                continue
+            rest = s[idx + len(hint):].strip("了呀啊呢吧的了！!~～ 的")
+            if len(rest) >= 1:
+                # 先问问网络"如果无视 NONE 最像哪个情绪"
+                guess = self._top_non_none(s)
+                if guess is not None:
+                    self.last_source = "heuristic"
+                    self.last_conf = net_conf
+                    return (guess, "", 0)
+        self.last_source = ""
         self.last_conf = net_conf
-        return kw_hit
+        return None
+
+    def _top_non_none(self, text):
+        """取除 NONE 外概率最高的情绪（用于模糊地带的猜测）。"""
+        with self._lock:
+            net = self.net
+        if net is None:
+            return None
+        try:
+            from core import emotion_net as _en
+            probs, _ = net.forward(_en.vectorize(text))
+            best_k, best_p = -1, -1.0
+            for k in range(len(_en.CLASSES)):
+                if probs[k] > best_p:
+                    best_k, best_p = k, probs[k]
+            if best_k < 0 or best_p < 0.15:
+                return None
+            return _en.CLASSES[best_k]
+        except Exception:
+            return None
 
     @staticmethod
     def _as_hit(text, emotion, kw_hit):
@@ -205,6 +293,20 @@ class EmotionClassifier:
         pos = kw_hit[2] if kw_hit else 0
         kw = kw_hit[1] if kw_hit else ""
         return emotion, kw, pos
+
+    @staticmethod
+    def _has_false_negation(text):
+        """句子里是否含"看起来像否定、其实不是"的固定搭配。
+
+        与 `_has_negation` 的分工：
+          * `_has_negation` 用来决定"要不要走网络否定分支"，它先剔除假否定；
+          * 本方法用来**主动拦截**：只要句子里有这类搭配，就当作无情绪。
+
+        「不好意思，我迟到了」——网络会判惊讶 0.57，关键词没词，
+        不拦就是一个活生生的误报。
+        """
+        s = str(text or "")
+        return any(w in s for w in _FALSE_NEGATIONS)
 
     @staticmethod
     def _has_negation(text):

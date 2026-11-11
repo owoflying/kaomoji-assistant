@@ -42,14 +42,40 @@ import math
 import os
 import random
 
-#: 情绪分类（与 kaomoji.json 的 category 名一致）
+#: 情绪分类（与 kaomoji.json 的 category 名一致）。
+#:
+#: ⚠ 第 8 类 `NONE` 是**"不该弹窗"**，不是一种情绪。
+#:
+#: 早期只有 7 类时，网络被迫把所有句子判成某个情绪——实测闲聊句
+#: 「代码跑通了」判开心 0.92、「收到」判惊讶 0.99，误报率 94.7%。
+#: 加一个显式的"无情绪"类之后，网络才有能力说"这句不用弹"。
 CLASSES = ("开心", "伤心", "生气", "惊讶", "喜欢", "思考", "疲惫")
+
+#: 内部类别表（含"无情绪"，仅用于训练与推理，不对外暴露）
+NET_CLASSES = CLASSES + ("__NONE__",)
+
+#: "无情绪"在 NET_CLASSES 里的下标
+NONE_INDEX = len(CLASSES)
+
+#: 供 UI / 统计使用的类别名（不含内部类）
+EMOTIONS = CLASSES
 
 #: 特征维度组成
 UNIGRAM_BUCKETS = 80      # 单字哈希桶
 BIGRAM_BUCKETS = 128      # 双字哈希桶
 EXTRA_FEATURES = 8        # 手工特征（否定/问号/长度等）
-INPUT_DIM = UNIGRAM_BUCKETS + BIGRAM_BUCKETS + EXTRA_FEATURES   # 216
+#: 转折位置特征：把句子按转折词切成前后两段，分别编码。
+#:
+#: **为什么必须有它**：转折句「虽然很累但是很开心」的正确情绪在后半句，
+#: 但 unigram/bigram 都是**无序频次统计**，网络看到的只是"累"和"开心"
+#: 各出现一次，根本不知道谁在后面。实测转折类准确率长期卡在 0~33%，
+#: 数据加到 1900 条也没用——瓶颈在特征不在数据量。
+#:
+#: 这里显式给出「转折词之后那段」的 unigram 特征，网络就能直接学到
+#: "后半段的情绪词才是答案"。
+TURN_TAIL_BUCKETS = 64
+INPUT_DIM = (UNIGRAM_BUCKETS + BIGRAM_BUCKETS + EXTRA_FEATURES
+             + TURN_TAIL_BUCKETS)
 
 #: 隐层宽度
 HIDDEN = 20
@@ -62,6 +88,15 @@ NEGATION_WORDS = ("不", "没", "别", "无", "非", "未")
 
 #: 转折词：后半句通常主导情绪
 TURN_WORDS = ("但是", "但", "不过", "然而", "可是", "却", "其实")
+
+#: 用于切分"尾段"的转折词。按长度降序，保证「但是」先于「但」匹配。
+_TURN_CUT_WORDS = ("但是", "不过", "然而", "可是", "结果", "然后",
+                   "但", "却", "可")
+
+
+def chars_of(s):
+    """取非空白字符列表。"""
+    return [c for c in str(s or "") if not c.isspace()]
 
 
 def _hash32(s):
@@ -118,6 +153,25 @@ def vectorize(text):
     v[base + 6] = 1.0 if ("！" in s or "!" in s) else 0.0
     # 重复标点（"！！！"更强烈）
     v[base + 7] = 1.0 if ("！！" in s or "!!" in s) else 0.0
+
+    # 4) 转折尾段：转折词之后那部分的 unigram
+    #
+    # 这一步是纯词袋做不到的——它显式区分"转折前"和"转折后"，
+    # 让网络能学到后半句才决定整体情绪。
+    tail_start = -1
+    for tw in _TURN_CUT_WORDS:
+        idx = s.rfind(tw)
+        if idx >= 0:
+            pos_after = idx + len(tw)
+            if pos_after > tail_start:
+                tail_start = pos_after
+    if tail_start >= 0:
+        tail = chars_of(s[tail_start:])
+        if tail:
+            m = float(len(tail))
+            off = UNIGRAM_BUCKETS + BIGRAM_BUCKETS + EXTRA_FEATURES
+            for c in tail:
+                v[off + _bucket("t:" + c, TURN_TAIL_BUCKETS)] += 1.0 / m
     return v
 
 
@@ -138,7 +192,7 @@ class EmotionNet:
     def __init__(self, w1=None, b1=None, w2=None, b2=None, seed=7):
         self.n_in = INPUT_DIM
         self.n_hidden = HIDDEN
-        self.n_out = len(CLASSES)
+        self.n_out = len(NET_CLASSES)
         if w1 is None:
             rnd = random.Random(seed)
             s1 = 1.0 / math.sqrt(self.n_in)
@@ -176,16 +230,23 @@ class EmotionNet:
         return _softmax(logits), hid
 
     def predict(self, text):
-        """返回 (emotion, confidence)；置信度太低时 emotion 为 None。
+        """返回 (emotion, confidence)；emotion 为 None 表示"不该弹窗"。
+
+        两种情况返回 None：
+          * 网络判定为 `__NONE__`（这句没有情绪）——这是加第 8 类之后的主力路径；
+          * 最高概率低于阈值（网络没把握）。
 
         阈值 0.45：宁可不出手，也不要乱弹——自动弹出打扰用户是有代价的。
         """
         probs, _ = self.forward(vectorize(text))
         k = max(range(self.n_out), key=lambda i: probs[i])
         conf = probs[k]
+        if k == NONE_INDEX:
+            # 判成"无情绪"：不再看置信度，直接表示不弹
+            return None, conf
         if conf < 0.45:
             return None, conf
-        return CLASSES[k], conf
+        return NET_CLASSES[k], conf
 
     # ---------- 训练 ----------
     def train_one(self, text, target_index, lr=0.05):
@@ -248,7 +309,7 @@ class EmotionNet:
     def to_dict(self):
         return {
             "version": MODEL_VERSION,
-            "classes": list(CLASSES),
+            "classes": list(NET_CLASSES),
             "n_in": self.n_in,
             "n_hidden": self.n_hidden,
             "trained": getattr(self, "trained_samples", 0),
@@ -268,7 +329,7 @@ class EmotionNet:
                 return None
             if int(d.get("n_hidden", -1)) != HIDDEN:
                 return None
-            if list(d.get("classes") or []) != list(CLASSES):
+            if list(d.get("classes") or []) != list(NET_CLASSES):
                 return None
             net = cls(w1=d["w1"], b1=d["b1"], w2=d["w2"], b2=d["b2"])
             net.trained_samples = int(d.get("trained", 0) or 0)
@@ -297,8 +358,13 @@ class EmotionNet:
 
 
 def class_index(emotion):
-    """情绪名 -> 类别下标；未知返回 None。"""
+    """情绪名 -> 网络输出下标；未知返回 None。
+
+    支持 `"__NONE__"`（训练"无情绪"样本时用）。
+    """
+    if not emotion:
+        return None
     try:
-        return CLASSES.index(emotion)
+        return NET_CLASSES.index(emotion)
     except ValueError:
         return None

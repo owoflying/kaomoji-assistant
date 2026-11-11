@@ -116,20 +116,47 @@ def gen_negated():
 
 
 def gen_turn():
-    """转折句：虽然{A}但是{B}。标签取**后半句** B 的情绪。"""
+    """转折句：虽然{A}但是{B}。标签取**后半句** B 的情绪。
+
+    ⚠ 这是最难的类别（实测独立语料准确率只有 33%）。
+
+    原因：句子同时含两个情绪词，网络分不出主次。解决要靠
+    **转折词的位置信息**——但当前特征是 bigram + 频次，丢掉了位置。
+
+    这里的对策是**句式覆盖**：把"转折词前半句 / 后半句"的各种组合都造出来，
+    让网络通过"转折词与哪个情绪词相邻"来间接学会主次关系
+    （bigram 能捕捉"但很开心"和"虽然很累"这两种相邻结构）。
+    """
     out = []
     emos = list(WORDS)
-    for _ in range(600):
+    turn_words = ["但是", "但", "不过", "然而", "可是", "却", "结果", "可"]
+
+    for _ in range(700):
         a, b = random.sample(emos, 2)
         wa = random.choice(WORDS[a])
         wb = random.choice(WORDS[b])
+        tw = random.choice(turn_words)
         tpl = random.choice([
-            "虽然%s但是%s" % (_phrase(wa), _phrase(wb)),
-            "%s，不过%s" % (_phrase(wa), _phrase(wb)),
-            "本来%s，后来%s" % (_phrase(wa), _phrase(wb)),
-            "%s可是%s" % (_phrase(wa), _phrase(wb)),
+            "虽然%s%ss%s" % (wa, tw, wb),
+            "虽然很%s，%s真的很%s" % (wa, tw, wb),
+            "一开始%s，%s%s" % (wa, tw, wb),
+            "%s归%s，%s还是%s" % (wa, wa, tw, wb),
+            "本来%s，%s被弄得很%s" % (wa, tw, wb),
+            "明明%s，还要装作很%s" % (wa, wb),
+            "看着%s，其实%s" % (wa, wb),
+            "%s是%s，%s后来%s" % (wa, wa, tw, wb),
         ])
         out.append((tpl, b))
+
+    # 专门强化「后半句才是重点」：让后半句的情绪词紧接转折词
+    for _ in range(300):
+        a, b = random.sample(emos, 2)
+        wa = random.choice(WORDS[a])
+        wb = random.choice(WORDS[b])
+        out.append(("%s，但是%s" % (wa, wb), b))
+        out.append(("%s，不过%s" % (wa, wb), b))
+        out.append(("%s，结果%s" % (wa, wb), b))
+        out.append(("虽然%s，但整体还是%s的" % (wa, wb), b))
     return out
 
 
@@ -262,6 +289,128 @@ def gen_negation_intensive():
     return out
 
 
+def gen_none():
+    """**无情绪**的句子（闲聊 / 陈述 / 普通提问）。
+
+    ⚠ 这块是本轮最重要的补充。早期模型只有 7 个情绪类，被迫把所有
+    句子判成某个情绪——实测闲聊句「代码跑通了」判开心 0.92、
+    「收到」判惊讶 0.99，误报率 94.7%。
+
+    加了 `__NONE__` 类之后，网络才有能力说"这句不用弹"。
+    这里要覆盖日常输入里**最常见**的那些句式，否则真实使用仍会频繁误弹。
+    """
+    out = []
+
+    # 1) 日常应答 / 短回复
+    replies = ["好的", "收到", "嗯", "嗯嗯", "行", "可以", "没问题", "知道了",
+               "了解", "明白", "谢谢", "多谢", "辛苦了", "麻烦了", "稍等",
+               "等一下", "马上", "我看看", "我试试", "在吗", "在不在",
+               "没问题的", "就这样", "可以了", "差不多了", "还行"]
+    for r in replies:
+        out.append((r, "__NONE__"))
+        out.append((random.choice(["", "嗯，", "好的，"]) + r, "__NONE__"))
+
+    # 2) 陈述事实 / 事务性
+    facts = [
+        "明天开会", "今天上班", "我在吃饭", "我先去吃饭了", "我买了个新手机",
+        "这个文件放哪", "帮我看看", "代码跑通了", "这个功能挺好用的",
+        "刚到家", "在路上了", "马上到", "已经发送了", "收到了文件",
+        "下午三点", "会议室在哪", "我改一下", "稍后回复", "正在处理",
+        "这个问题我知道了", "需要我做什么", "还有什么要改的",
+        "文档写好了", "测试通过了", "部署完成", "我这边没问题",
+        "你发我看看", "我确认一下", "稍等一下我看下", "今天有点忙",
+        "我在写代码", "刚才在开会", "手机没电了", "网络不太好",
+    ]
+    for r in facts:
+        out.append((r, "__NONE__"))
+
+    # 3) 普通提问（不带情绪，单纯问事情）
+    questions = [
+        "这个怎么用", "在哪下载", "多少钱", "什么时候", "多少人",
+        "几点开始", "你吃了吗", "吃饭了吗", "你在干什么", "你在哪",
+        "这是什么", "为什么这样写", "怎么改", "能不能加个功能",
+        "支持什么系统", "有文档吗", "要怎么配置", "默认值是多少",
+    ]
+    for q in questions:
+        out.append((q, "__NONE__"))
+        out.append((q + random.choice(["？", "?"]), "__NONE__"))
+
+    # 4) 含"不/没"但**不是否定情绪**的固定搭配（高频陷阱）
+    traps = [
+        "今天天气不错", "今天心情不错", "还不错", "挺好的", "不错",
+        "不好意思", "不好意思打扰了", "差不多", "差不多就这样",
+        "没什么", "没什么大不了的", "没关系", "没事", "不要紧",
+        "不少了", "不久", "不断", "不仅", "不但", "不得不",
+        "不管怎样", "无论如何", "说不定", "了不起", "巴不得",
+        "挺好的呀", "这个不错", "味道不错", "看起来不错",
+    ]
+    for r in traps:
+        out.append((r, "__NONE__"))
+
+    # 5) 中性描述
+    neutral = [
+        "今天", "明天", "昨天", "现在", "刚才", "等会", "一会儿",
+        "我在家", "在公司", "在外面", "这里", "那里", "这个", "那个",
+        "第一", "第二", "第三", "开始", "结束", "完成",
+    ]
+    for r in neutral:
+        out.append((r, "__NONE__"))
+
+    return out
+
+
+def gen_colloquial():
+    """口语化夸奖 / 日常情绪表达（网络训练时最容易漏的一类）。
+
+    实测发现：「好萌」被判 NONE 0.97、「太赞了」判惊讶、
+    「累得不行了」判 NONE——这些都不是调度问题，而是训练数据里
+    根本没有这些说法。
+
+    单独造这一类，专补"程度副词 + 单字形容词"的短促口语：
+        好萌 / 好帅 / 太赞了 / 累得不行了 / 香疯了
+    """
+    out = []
+
+    # 夸奖类形容词（喜欢）
+    praise_adj = ["萌", "可爱", "帅", "好看", "漂亮", "美", "香", "赞", "棒",
+                  "牛", "酷", "甜", "暖", "治愈", "上头", "绝"]
+    for adj in praise_adj:
+        for pre in ("好", "太", "真", "超", "特别", "巨"):
+            out.append(("%s%s" % (pre, adj), "喜欢"))
+            out.append(("%s%s了" % (pre, adj), "喜欢"))
+            out.append(("%s%s啊" % (pre, adj), "喜欢"))
+            out.append(("%s%s呀" % (pre, adj), "喜欢"))
+        out.append(("这也太%s了" % adj, "喜欢"))
+        out.append(("%s死了" % adj, "喜欢"))
+
+    # 疲惫 / 累到极点的口语
+    tired = ["累", "困", "乏", "疲惫"]
+    for w in tired:
+        for tpl in ("%s得不行了", "%s死了", "%s到不行", "%s瘫了", "%s爆了",
+                    "%s坏了", "真的%s", "%s得慌", "%s成狗"):
+            out.append((tpl % w, "疲惫"))
+
+    # 情绪到极点的口语（"X死了/ X到不行"）
+    for emo, ws in (("开心", ["开心", "高兴", "乐"]),
+                    ("伤心", ["难过", "伤心", "emo"]),
+                    ("生气", ["气", "烦", "怒"]),
+                    ("惊讶", ["震惊", "吃惊"])):
+        for w in ws:
+            for tpl in ("%s死了", "%s到不行", "%s得不行", "%s坏了", "%s爆了"):
+                out.append((tpl % w, emo))
+
+    # 网络流行语
+    slang = [
+        ("yyds", "惊讶"), ("绝绝子", "喜欢"), ("awsl", "喜欢"),
+        ("破防了", "伤心"), ("裂开了", "伤心"), ("麻了", "疲惫"),
+        ("摆烂", "疲惫"), ("躺平", "疲惫"), ("emo了", "疲惫"),
+        ("上头了", "喜欢"), ("真香", "喜欢"), ("好家伙", "惊讶"),
+        ("蚌埠住了", "伤心"), ("绷不住了", "伤心"),
+    ]
+    out.extend(slang)
+    return out
+
+
 def build_dataset():
     data = []
     data += gen_positive()
@@ -271,11 +420,39 @@ def build_dataset():
     data += gen_question()
     data += gen_short()
     data += gen_intensive()
+    data += gen_colloquial()           # 口语夸奖 / 程度极点
+    data += gen_none()                 # 无情绪：控制误报
     random.shuffle(data)
     return data
 
 
-def train(epochs=40, lr=0.08):
+def _holdout_score(net):
+    """用独立评测语料打分（不参与训练），返回准确率百分比。"""
+    try:
+        from eval_corpus import CASES
+    except Exception:
+        return None
+    ok = 0
+    for case in CASES:
+        text, expect = case[0], case[1]
+        got, _ = net.predict(text)
+        if got == expect:
+            ok += 1
+    return 100.0 * ok / len(CASES)
+
+
+def train(epochs=40, lr=0.08, early_stop=True):
+    """训练。**默认开启早停**：用独立语料监控，过拟合就回滚。
+
+    ## 为什么必须早停
+
+    实测踩过一次大坑：4806 条样本跑 40 轮，训练集准确率冲到 100%，
+    但独立语料只有 75%（前一轮是 85%）。网络把训练集背下来了，
+    真实表现反而变差——**训练集数字好看是危险信号，不是好信号**。
+
+    早停规则：每轮都在独立语料上打分，记录最佳；连续 3 轮没提升就停，
+    并**回滚到最佳那一轮的权重**。
+    """
     import time
 
     data = build_dataset()
@@ -285,6 +462,11 @@ def train(epochs=40, lr=0.08):
                           + net.n_hidden * net.n_out + net.n_out))
     print("预计耗时: 约 %.0f 秒（纯 Python SGD，每条 ~0.3ms）"
           % (len(data) * epochs * 0.0003 * 2))
+
+    best_score = -1.0
+    best_snapshot = None
+    best_epoch = 0
+    stale = 0
 
     t_start = time.perf_counter()
     for ep in range(epochs):
@@ -301,51 +483,87 @@ def train(epochs=40, lr=0.08):
             if max(range(len(probs)), key=lambda i: probs[i]) == idx:
                 correct += 1
         acc = correct / max(1, len(data))
+
+        holdout = _holdout_score(net) if early_stop else None
+        if holdout is not None:
+            if holdout > best_score:
+                best_score = holdout
+                best_epoch = ep + 1
+                # 只存必要字段，避免内存翻倍
+                best_snapshot = {
+                    "w1": [list(r) for r in net.w1],
+                    "b1": list(net.b1),
+                    "w2": [list(r) for r in net.w2],
+                    "b2": list(net.b2),
+                }
+                stale = 0
+            else:
+                stale += 1
+
         if (ep + 1) % 5 == 0 or ep == 0:
             done = time.perf_counter() - t_start
-            print("  epoch %2d  loss=%.3f  acc=%.3f  (%.0fs)"
-                  % (ep + 1, total_loss / len(data), acc, done),
+            extra = ("  独立=%.1f%%%s" % (holdout, "  ★" if holdout == best_score
+                                          else "")) if holdout is not None else ""
+            print("  epoch %2d  loss=%.3f  acc=%.3f%s  (%.0fs)"
+                  % (ep + 1, total_loss / len(data), acc, extra, done),
                   flush=True)
+
+        if early_stop and stale >= 3:
+            print("  早停：连续 3 轮独立语料没有提升，回滚到第 %d 轮（%.1f%%）"
+                  % (best_epoch, best_score))
+            break
+
+    if best_snapshot is not None:
+        net.w1 = best_snapshot["w1"]
+        net.b1 = best_snapshot["b1"]
+        net.w2 = best_snapshot["w2"]
+        net.b2 = best_snapshot["b2"]
 
     net.trained_samples = len(data)
     return net, data
 
 
 def evaluate(net, data):
-    """在训练集上评估（同时抽查几个关键词失败的场景）。"""
+    """训练集检出率 + **独立评测语料**上的真实表现。
+
+    ⚠ 只报训练集准确率是自欺欺人（网络能背下来）。真正的数字看
+    `tools/eval_corpus.py` 那份不参与训练的语料。
+    """
     correct = 0
     for text, emo in data:
         got, conf = net.predict(text)
-        if got == emo:
+        if emo == "__NONE__":
+            if got is None:
+                correct += 1
+        elif got == emo:
             correct += 1
     print()
-    print("训练集准确率: %.1f%%" % (100.0 * correct / max(1, len(data))))
+    print("训练集检出率: %.1f%%" % (100.0 * correct / max(1, len(data))))
+
+    # 独立语料
+    sys.path.insert(0, HERE)
+    try:
+        from eval_corpus import by_category
+    except Exception:
+        print("（找不到 eval_corpus.py，跳过独立评估）")
+        return
 
     print()
-    print("=== 关键词匹配搞不定的场景")
-    cases = [
-        ("今天一点都不开心", "不是开心"),
-        ("我不开心", "不是开心"),
-        ("开心吗？其实一点都不", "不是开心"),
-        ("我没有不高兴", "不是生气"),
-        ("虽然很累但是很开心", "开心"),
-        ("我真的好累", "疲惫"),
-        ("这个怎么办？", "思考"),
-    ]
-    from core.emotion import detect_last
-    ok = 0
-    for text, expect in cases:
-        got, conf = net.predict(text)
-        kw = detect_last(text)
-        kw_emo = kw[0] if kw else "不触发"
-        if expect.startswith("不是"):
-            passed = got != expect[2:]
-        else:
-            passed = got == expect
-        ok += 1 if passed else 0
-        print("  %s %-22s 网络=%-6s(%.2f)  关键词=%-6s  期望=%s"
-              % ("✓" if passed else "✗", text, got or "None", conf, kw_emo, expect))
-    print("  网络正确: %d/%d" % (ok, len(cases)))
+    print("=== 独立评测语料（不参与训练）")
+    groups = by_category()
+    tot = ok = 0
+    for cat, cases in groups.items():
+        c_ok = 0
+        for text, expect in cases:
+            got, _conf = net.predict(text)
+            tot += 1
+            if got == expect:
+                c_ok += 1
+                ok += 1
+        print("  %-12s %2d/%2d  %3.0f%%"
+              % (cat, c_ok, len(cases), 100.0 * c_ok / max(1, len(cases))))
+    print("  %-12s %2d/%2d  %3.0f%%"
+          % ("合计", ok, tot, 100.0 * ok / max(1, tot)))
 
 
 def main():

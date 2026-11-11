@@ -71,9 +71,44 @@ def test_vectorize_bigram_distinguishes_context():
 def test_forward_returns_probabilities():
     net = en.EmotionNet()
     probs, hid = net.forward(en.vectorize("测试"))
-    assert len(probs) == len(en.CLASSES)
+    # 输出维度 = 情绪类 + 1 个内部 "无情绪" 类
+    assert len(probs) == len(en.NET_CLASSES)
+    assert len(probs) == len(en.CLASSES) + 1
     assert abs(sum(probs) - 1.0) < 1e-6, "softmax 输出应归一化"
     assert len(hid) == en.HIDDEN
+
+
+def test_none_class_suppresses_output():
+    """网络判成"无情绪"时必须返回 None（不加第8类时它被迫瞎猜）。"""
+    net = en.EmotionNet()
+    # 手工把 NONE 类权重拉高，模拟训练后的行为
+    net.w2[en.NONE_INDEX] = [50.0] * net.n_hidden
+    net.b2[en.NONE_INDEX] = 50.0
+    got, conf = net.predict("今天天气不错")
+    assert got is None
+    assert conf > 0.9
+
+
+def test_turn_tail_feature_distinguishes_order():
+    """转折尾段特征：必须能区分"转折词之后"的内容。
+
+    这是转折句长期卡在 0~33% 的根因——纯词袋丢掉顺序后，
+    网络不知道"累"和"开心"谁在后面。
+    """
+    off = (en.UNIGRAM_BUCKETS + en.BIGRAM_BUCKETS + en.EXTRA_FEATURES)
+
+    # 同样两个情绪词，顺序不同 → 尾段特征不同
+    v1 = en.vectorize("虽然很累但是很开心")
+    v2 = en.vectorize("虽然很开心但是很累")
+    tail1 = v1[off:]
+    tail2 = v2[off:]
+    assert any(tail1), "含转折词时尾段特征应有内容"
+    assert any(tail2)
+    assert tail1 != tail2, "转折前后顺序不同，尾段特征必须不同"
+
+    # 无转折词时不激活
+    v3 = en.vectorize("我很开心")
+    assert not any(v3[off:]), "无转折词时不该有尾段特征"
 
 
 def test_train_reduces_loss():

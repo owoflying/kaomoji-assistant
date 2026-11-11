@@ -27,6 +27,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # 应用名（PyInstaller 的 --name，也是 onedir 产物目录名与发布包内顶层目录名）
 _APP_NAME = "KaomojiAssistant"
 DATA = os.path.join(HERE, "data", "kaomoji.json")
+#: 情绪识别小网络的权重。训练脚本 tools/train_emotion_model.py 产出。
+#: ⚠ 必须随包分发，否则打包后情绪识别只能退回关键词匹配。
+DATA_MODEL = os.path.join(HERE, "data", "emotion_model.json")
 FONT = os.path.join(HERE, "ui", "fonts", "FluentSystemIcons-Regular.ttf")
 # 应用图标：与系统托盘同款（白底圆角 + 颜文字），构建时自动生成 .ico
 ICO = os.path.join(HERE, "app.ico")
@@ -41,6 +44,8 @@ ARGS = [
     "--clean",
     # 只读资源 data/kaomoji.json：运行时用 resource_path 还原到 data/ 子目录
     "--add-data", "%s%sdata" % (DATA, os.pathsep),
+    # 情绪识别网络权重（同目录，落到 data/ 下）
+    "--add-data", "%s%sdata" % (DATA_MODEL, os.pathsep),
     # 内置图标字体（Fluent System Icons，MIT 许可）：随包分发，Win10 也能显示
     # 目标路径需与 core.runtime.resource_path("ui","fonts",...) 完全对应。
     # 注意：--add-data 的目标必须是“目录”，文件名由源自动带入；

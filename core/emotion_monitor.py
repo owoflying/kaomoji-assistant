@@ -28,7 +28,7 @@ from collections import deque
 
 from PySide6.QtCore import QObject, Signal
 
-from core.emotion import detect_last
+from core import emotion_classifier
 from core import win_utils
 
 try:
@@ -38,7 +38,7 @@ except Exception:  # pragma: no cover - 非 Windows 或 COM 不可用
 
 
 class EmotionMonitor(QObject):
-    emotion_detected = Signal(str)
+    emotion_detected = Signal(str, str)   # (emotion, source_text)
     trigger_detected = Signal(str, str, bool)  # (output, trigger_word, delete_trigger)
     diagnostic = Signal(str)        # 开发者模式诊断：防重触发/命中原因（仅 DevPage 订阅）
 
@@ -303,7 +303,10 @@ class EmotionMonitor(QObject):
                 with self._lock:
                     self._trigger_locked = None
 
-        hit = detect_last(tail)
+        # 情绪判定：网络优先、关键词兜底（见 core/emotion_classifier.py）。
+        # 网络能整体理解句子，例如「今天一点都不开心」→ 伤心；
+        # 纯关键词只会看到"开心"两个字，判反。
+        hit = emotion_classifier.shared().detect(tail)
         if hit is None:
             # 扫描窗口里已经没有任何情绪词 -> 解锁，下次命中可以重新弹
             with self._lock:
@@ -319,6 +322,7 @@ class EmotionMonitor(QObject):
                 return          # 这个情绪刚弹过且还挂在尾部，不重复打扰
             self._locked = emotion
             self._buffer = ""
-        # 直接 emit：跨线程时 Qt 自动排队到主线程，已实测可正确投递
+        # 直接 emit：跨线程时 Qt 自动排队到主线程，已实测可正确投递。
+        # 一并带上触发原句（tail）：在线学习要拿它当训练样本。
         self.last_emotion = emotion
-        self.emotion_detected.emit(emotion)
+        self.emotion_detected.emit(emotion, tail)

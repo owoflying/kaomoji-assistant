@@ -246,6 +246,8 @@ class AppRuntime:
     def _wire_components(self):
         w = self.window
         self.hotkey.hotkey_pressed.connect(w.toggle)
+        # emotion_detected 现在带两个参数：(emotion, source_text)。
+        # source_text 是触发那次弹窗的用户原句，在线学习要拿它当训练样本。
         self.monitor.emotion_detected.connect(w.show_for_emotion)
         self.monitor.trigger_detected.connect(w.show_for_output)
         # 候选条可见时暂停监听、隐藏时恢复（避免把候选条自身当输入）
@@ -259,7 +261,8 @@ class AppRuntime:
         self.hotkey.hotkey_pressed.connect(
             lambda: self.bus.log("事件", "热键", "热键触发"))
         self.monitor.emotion_detected.connect(
-            lambda e: self.bus.log("情绪", "监听", "命中情绪：%s" % e))
+            lambda e, src="": self.bus.log(
+                "情绪", "监听", "命中情绪：%s（原句：%s）" % (e, src)))
         self.monitor.trigger_detected.connect(
             lambda out, tw, dt: self.bus.log(
                 "触发", "监听",
@@ -525,6 +528,8 @@ class AppRuntime:
         q.connect(self.state.flush)
         q.connect(self.user_kao.flush)
         q.connect(self.triggers.flush)
+        # 情绪网络的在线学习结果：退出前落盘（否则这次会话学到的权重全丢）
+        q.connect(self._flush_emotion_model)
         # 插件 shutdown 事件：主程序退出前通知（emit 内部已逐个隔离异常）
         q.connect(lambda: self.plugins.emit("shutdown"))
         # 先关掉插件可能残留的弹窗，再走各自的 flush：避免退出时弹窗回调打到已销毁对象
@@ -771,6 +776,44 @@ class AppRuntime:
         # 确保统计逻辑的任何意外都不会阻断注入（曾导致「剪贴板模式失效」）
         try:
             self.state.record_usage(text)
+        except Exception:
+            pass
+        # 在线学习：用户选了某情绪下的颜文字 = 给了一次"情绪判断正确"的反馈。
+        # 用这一次样本对网络做一次 SGD 更新（约 0.3ms），逐渐贴合这个用户的表达习惯。
+        self._learn_emotion(text, ctx)
+
+    def _learn_emotion(self, text, ctx):
+        """把「用户选了这张颜文字」当作情绪反馈，增量更新网络。
+
+        **什么算有效反馈**：候选条是因为某个情绪弹出的（`ctx["emotion"]`），
+        用户从中选了一张——说明那一刻他确实想表达这个情绪。这是最强的信号。
+
+        其它来源（手动唤起、搜索页、库页）不带情绪上下文，不能当作情绪标签，
+        否则会把噪声教给网络。
+
+        学完每 20 次落盘一次；应用退出时再 flush 一次。
+        """
+        try:
+            emotion = (ctx or {}).get("emotion")
+            if not emotion:
+                return
+            sample = (ctx or {}).get("source_text") or ""
+            if not sample:
+                return
+            from core import emotion_classifier
+            clf = emotion_classifier.shared()
+            if clf.learn_from_choice(sample, emotion):
+                clf.maybe_autosave(every=20)
+        except Exception as e:
+            append_log("warn", "emotion", "在线学习失败：%r" % (e,))
+
+    def _flush_emotion_model(self):
+        """退出前把增量学到的权重落盘。"""
+        try:
+            from core import emotion_classifier
+            clf = emotion_classifier.shared()
+            if clf.save_user_model():
+                append_log("info", "emotion", "已保存情绪模型的个性化学习结果")
         except Exception:
             pass
 

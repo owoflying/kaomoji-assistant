@@ -191,6 +191,7 @@ class PickerWindow(QWidget):
         self.active = 0                # 当前高亮的候选在本页内的下标
         self.page_size = max(1, int(config.get("page_size", 3)))
         self._emotion = None
+        self._source_text = ""         # 触发本次弹窗的用户原句（在线学习用）
         self._trigger_word = ""        # 当前候选若来自触发词，记下触发词待上屏时清理
         self._delete_trigger = False   # 该触发词是否开启「应用后删除」
         self._chips = []
@@ -481,6 +482,10 @@ class PickerWindow(QWidget):
         self._pending_ctx = {
             "trigger_word": self._trigger_word,
             "delete_trigger": self._delete_trigger,
+            # 情绪上下文：供在线学习用（用户从"开心"候选里选了一张
+            # = 确认那句话说出口时是开心的）。
+            "emotion": self._emotion or "",
+            "source_text": self._source_text or "",
         }
         # 清空，避免影响下一次（情绪 / 手动）选择
         self._trigger_word = ""
@@ -692,13 +697,20 @@ class PickerWindow(QWidget):
         if resolve_theme_name(self.config.get("theme", "light")) != getattr(self, "_applied_theme", None):
             self._apply_config_visuals()
 
-    def _present(self, items, *, emotion, caret, trigger_word="", delete_trigger=False):
-        """所有显示路径的公共后半段：收尾上次淡出 → 写状态 → 定位 → 淡入。"""
+    def _present(self, items, *, emotion, caret, trigger_word="",
+                 delete_trigger=False, source_text=""):
+        """所有显示路径的公共后半段：收尾上次淡出 → 写状态 → 定位 → 淡入。
+
+        :param source_text: 触发这次弹窗的原始文本（现在是用户输入的那句话）。
+            在线学习需要它作为「样本输入」——用户从"开心"候选里选了一张，
+            就把那句话当作"开心"的训练样本。
+        """
         self._finish_hide_now()
         self._emotion = emotion
         self._caret = caret
         self._trigger_word = trigger_word
         self._delete_trigger = delete_trigger
+        self._source_text = source_text or ""
         self.set_candidates(items)
         self._saved_foreground = win_utils.get_foreground_hwnd()
         self._prepare_show()
@@ -714,12 +726,15 @@ class PickerWindow(QWidget):
             return
         self._present(self._manual_items(), emotion=None, caret=False)
 
-    def show_for_emotion(self, emotion):
+    def show_for_emotion(self, emotion, source_text=""):
         """按情绪推荐候选。
 
         ⚠ **不再 `random.shuffle`**。随机顺序意味着同一个情绪每次弹出的候选
         排列都不同，用户永远无法靠位置记住"我常用的那个在第几个"。
         改为按使用习惯排序（`UserState.rank()`）：最常用的稳定在首位。
+
+        :param source_text: 触发该情绪的用户原句。在线学习需要它——
+            用户从这个情绪的候选里选了一张，就把这句话当训练样本。
         """
         items = self.data.get_items(emotion)
         if self.user_kao is not None:
@@ -729,7 +744,7 @@ class PickerWindow(QWidget):
         if not items:
             return
         items = self.state.rank(items)
-        self._present(items, emotion=emotion, caret=True)
+        self._present(items, emotion=emotion, caret=True, source_text=source_text)
         self.emotion_shown.emit(emotion)
 
     def show_for_output(self, text, trigger_word="", delete_after=False):

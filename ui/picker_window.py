@@ -25,7 +25,6 @@
   之所以不再重写 Qt 的 ``hide()``：那是公共 API，一旦被 Qt 内部或第三方调用，
   “隐藏”就悄悄变成了“先淡出 130ms 再隐藏”，排查起来极其痛苦。
 """
-import random
 import time
 
 from PySide6.QtWidgets import (
@@ -439,18 +438,24 @@ class PickerWindow(QWidget):
 
     # ---------- 数据 ----------
     def _manual_items(self):
-        """手动唤起：最近用过的排前面，其次「我的颜文字」，其余按原顺序跟上（去重）。"""
+        """手动唤起：按「频率 + 新近度 + 收藏」评分排序。
+
+        ⚠ 不再单纯按「最近使用」排。实测用户真实数据：
+        用过 4 次的 (｡･ω･｡) 曾排在第 5 位，只用过 2 次的却排第 1——
+        每次唤起都要往下翻。改用 `UserState.rank()` 后，最常用稳定在首位，
+        顺序也固定（不再随使用顺序漂移），用户能形成肌肉记忆。
+        """
         seen = set()
-        out = []
-        src = list(self.state.recent)
-        if self.user_kao is not None:
-            src = src + self.user_kao.get_all()
-        src = src + list(self.data.get_items())
-        for k in src:
-            if k not in seen:
-                seen.add(k)
-                out.append(k)
-        return out
+        pool = []
+        for src in (list(self.state.recent),
+                    (self.user_kao.get_all() if self.user_kao is not None else []),
+                    list(self.data.get_items())):
+            for k in src:
+                k = str(k)
+                if k not in seen:
+                    seen.add(k)
+                    pool.append(k)
+        return self.state.rank(pool)
 
     def set_candidates(self, items, keep_page=False):
         self.items = list(items)
@@ -710,6 +715,12 @@ class PickerWindow(QWidget):
         self._present(self._manual_items(), emotion=None, caret=False)
 
     def show_for_emotion(self, emotion):
+        """按情绪推荐候选。
+
+        ⚠ **不再 `random.shuffle`**。随机顺序意味着同一个情绪每次弹出的候选
+        排列都不同，用户永远无法靠位置记住"我常用的那个在第几个"。
+        改为按使用习惯排序（`UserState.rank()`）：最常用的稳定在首位。
+        """
         items = self.data.get_items(emotion)
         if self.user_kao is not None:
             items = items + self.user_kao.items_for_emotion(emotion)
@@ -717,7 +728,7 @@ class PickerWindow(QWidget):
         items = [x for x in items if not (x in seen or seen.add(x))]
         if not items:
             return
-        random.shuffle(items)
+        items = self.state.rank(items)
         self._present(items, emotion=emotion, caret=True)
         self.emotion_shown.emit(emotion)
 

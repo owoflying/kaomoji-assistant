@@ -84,6 +84,14 @@ _FALSE_NEGATIONS = (
 _TURN_WORDS = ("但是", "不过", "然而", "可是", "结果", "然后",
                "归", "但", "却")
 
+#: 「假转折」：含"但/不过"字样，但**不是在转折**。
+#:
+#:   不但快而且稳    → "不但…而且"是递进，不是转折
+#:   不过如此        → 整体是感叹，没有前后对比
+#:
+#: 实测「不但快而且稳」被当成转折句后判成生气（误报）。
+_FALSE_TURNS = ("不但", "不仅", "不过如此", "不过分", "不过瘾")
+
 #: 用于识别"否认情绪"的否定词
 _DENY_NEGATIONS = ("没有", "没", "不", "才不", "并不")
 
@@ -100,6 +108,43 @@ _EMOTION_WORDS_FOR_DENY = (
 #: 两者前半截长得一样，区别在于"不开心"已经是个固定的负面表达。
 _NEGATED_IS_AN_EMOTION = (
     "不开心", "不高兴", "不舒服", "不痛快", "不爽", "不满意",
+)
+
+#: 「都…不…」这类**程度补语**，里面的"不"不是否定。
+#:
+#: 「整个人都不太好了」= 状态很差（伤心）；
+#: 「眼睛都睁不开了」= 非常困（疲惫）。
+#: 当成否定句处理会让网络走错分支——实测分别被判成思考 0.98 / 0.66。
+_DEGREE_BU_STRUCTURES = (
+    "都不太", "都睁不开", "都站不住", "都说不出", "都不想动",
+    "都睡不着", "都吃不下了", "都笑不出来", "都快不行了",
+)
+
+#: 削弱语气词：只是弱化说法，不构成否定分支。
+#:
+#: 「不太确定」「不太清楚」——用户在表达不确定，不是在否定某个情绪。
+_SOFTENING_NEGATIONS = (
+    "不太确定", "不太清楚", "不太懂", "不太好说", "不太方便",
+    "好像不", "感觉不",
+)
+
+#: 否定字。用于判断"命中的关键词本身是否含否定字"。
+#:
+#: 含否定字但整体是情绪词的例子：
+#:     不可能吧   → 惊讶
+#:     累得不行   → 疲惫
+#:     笑不活了   → 开心
+NEGATION_WORD_CHARS = ("不", "没", "别", "无", "非", "未")
+
+#: 「否定 + 动作/结果」的组合：否定词修饰的是**动作**，不是情绪。
+#:
+#: 「为什么我的代码跑不起来」——用户在问原因（思考），不是在否定情绪。
+#: 以前这类句子会走否定分支，被网络判成 NONE 而漏掉。
+_ACTION_NEGATIONS = (
+    "跑不起来", "不起来", "用不了", "打不开", "连不上", "装不上",
+    "找不到", "看不到", "听不到", "弄不好", "搞不定", "对不上",
+    "行不通", "来不及", "记不住", "抽不开", "走不开", "睡不好",
+    "吃不下", "放不下", "管不了", "做不完", "写不出",
 )
 
 
@@ -259,6 +304,29 @@ class EmotionClassifier:
             except Exception:
                 net_emo, net_conf = None, 0.0
 
+        # ---------- 规则 1.6：转折句（**必须先于否定判断**） ----------
+        # 转折句的正确情绪在**转折词之后**。关键词层只会看整句里最靠右的
+        # 情绪词，遇到"本来挺高兴的，结果被气到了"会判成开心（错）。
+        #
+        # ⚠ 顺序很关键：转折词「不过」里含"不"，若先走否定分支就会误判。
+        # 实测「过程很痛苦，不过成就感很强」因此被判成伤心。
+        #
+        # 处理分两步：
+        #   1. 先看**尾段**里有没有情绪词（含隐式情绪词，见 IMPLICIT_KEYWORDS）
+        #      —— 有就直接用，这是最可靠的信号；
+        #   2. 尾段没有情绪线索时，才看网络（要求非常确定，实测它这类并不稳）。
+        if self._has_turn(text):
+            tail_emo = self._turn_tail_emotion(text)
+            if tail_emo is not None:
+                self.last_source = "turn-tail"
+                self.last_conf = 1.0
+                return self._as_hit(text, tail_emo, None)
+            if net_emo is not None and net_conf >= 0.90 \
+                    and (kw_hit is None or kw_hit[0] != net_emo):
+                self.last_source = "net(turn)"
+                self.last_conf = net_conf
+                return self._as_hit(text, net_emo, None)
+
         # ---------- 规则 2.5：否认情绪 → 不弹 ----------
         # 「我没生气」「我不难过」：句子里有否定词，也有情绪词，但整体是
         # **在否认那个情绪**，不是在表达别的情绪。用户说这句时不想配表情。
@@ -270,9 +338,36 @@ class EmotionClassifier:
             self.last_conf = net_conf
             return None
 
+        # ---------- 规则 1.4：关键词命中的词本身含否定字 ----------
+        # 「不可能吧」(惊讶)、「累得不行」(疲惫)、「笑不活了」(开心)——
+        # 这些词条本身带否定字，但**整体是一个情绪词**。
+        # 若不在这里拦下，会掉进下面的否定分支被网络接管而漏判。
+        if kw_hit is not None and any(w in str(kw_hit[1] or "")
+                                      for w in NEGATION_WORD_CHARS):
+            self.last_source = "keyword"
+            self.last_conf = net_conf
+            return kw_hit
+
+        # ---------- 规则 1.45：否定**紧贴**情绪词 → 不弹 ----------
+        # 「不讨厌这个设计」：否定词紧贴在情绪词前面，是在说"我不讨厌"，
+        # 而不是在表达别的情绪。关键词只看到"讨厌"会判生气。
+        #
+        # ⚠ 这条规则**只处理 1 个字**的紧贴（"不讨厌"），不能放宽到 2~3 个字：
+        # 实测放宽后「我没有不高兴」「一点也不觉得累」这类句子被误伤，
+        # negation 类准确率从 83% 掉到 50%。
+        if kw_hit is not None and self._directly_negates(text, kw_hit[1]):
+            self.last_source = ""
+            self.last_conf = net_conf
+            return None
+
         # ---------- 规则 2：含否定词 → 听网络的 ----------
         # 「今天一点都不开心」：关键词只看得到"开心"，必然判反。
-        if self._has_negation(text):
+        #
+        # ⚠ 但**不是所有含"不"的句子都该走这里**：
+        #   「为什么我的代码跑不起来」——"不"修饰的是动作（跑不起来），
+        #   不是否定情绪；而且关键词已经命中"为什么"（思考），很可靠。
+        # 判据：否定词后面跟的是**动作/结果**而不是情绪词时，不算否定句。
+        if self._has_negation(text) and not self._negates_action(text):
             if net_emo is not None and net_conf >= max(0.5, self.threshold):
                 self.last_source = "net(negation)"
                 self.last_conf = net_conf
@@ -292,18 +387,18 @@ class EmotionClassifier:
             self.last_conf = net_conf
             return None
 
-        # ---------- 规则 1.6：转折句（仅在网络非常确定时采信） ----------
-        # 「本来挺高兴的，结果被气到了」：关键词看到"高兴"就判开心，
-        # 但它不懂**转折结构**——真正的情绪在"结果"后面。
+        # ---------- 规则 1.7：隐式情绪表达 ----------
+        # 「这个设计真戳我」「事情办成了」——字面没有情绪字，但意思很明确。
+        # 这类表达网络经常判错（实测"戳我"被判思考 0.57）。
         #
-        # ⚠ 实测网络的转折判断只有 2/12 正确（尾段特征提取是对的，
-        # 但模型没学够）。无条件信它会让 turn 类从 50% 掉到 33%。
-        # 折中：只在网络**很有把握**时才采信，否则仍走关键词。
-        if self._has_turn(text) and net_emo is not None \
-                and net_conf >= 0.90 and (kw_hit is None or kw_hit[0] != net_emo):
-            self.last_source = "net(turn)"
-            self.last_conf = net_conf
-            return self._as_hit(text, net_emo, None)
+        # ⚠ 只在关键词层**完全没命中**时才用，且要求词足够具体
+        # （见 IMPLICIT_KEYWORDS 的收词原则），避免把普通陈述当情绪。
+        if kw_hit is None:
+            implicit = self._implicit_emotion(text)
+            if implicit is not None:
+                self.last_source = "implicit"
+                self.last_conf = 1.0
+                return self._as_hit(text, implicit, None)
 
         # ---------- 规则 1：关键词有词 → 以它为准 ----------
         # 关键词是"精确但覆盖窄"的一层：它只在看到明确情绪词时出手，
@@ -451,6 +546,133 @@ class EmotionClassifier:
         return False
 
     @staticmethod
+    def _directly_negates(text, keyword):
+        """否定词是否**紧贴**在情绪词前面（"不讨厌"/"没生气"）。
+
+        ⚠ **只看紧邻的 1 个字**。放宽到 2~3 字会误伤：
+        「我没有不高兴」「一点也不觉得累」这类句子里否定词离情绪词
+        仍有间隔，它们要么是双重否定、要么在表达相反情绪，
+        都不能简单判成"否认"。实测放宽后 negation 类从 83% 掉到 50%。
+
+        同时要排除「不开心」这种**已经是一个情绪词**的组合
+        （见 `_NEGATED_IS_AN_EMOTION`）——那是在表达负面情绪，不是否认。
+        """
+        s = str(text or "")
+        kw = str(keyword or "")
+        if not s or not kw:
+            return False
+        pos = s.rfind(kw)
+        if pos <= 0:
+            return False
+        prev = s[pos - 1]
+        if prev not in NEGATION_WORD_CHARS:
+            return False
+        # 「不开心」「不高兴」整体是情绪词，不是否认
+        combo = prev + kw
+        for neg_emo in _NEGATED_IS_AN_EMOTION:
+            if combo.startswith(neg_emo) or neg_emo.startswith(combo):
+                return False
+        return True
+
+    @staticmethod
+    def _negates_action(text):
+        """否定词修饰的是**动作/结果**，而不是情绪。
+
+        例：
+            为什么我的代码跑不起来   → "不起来"修饰"跑"，不是否定情绪
+            这功能用不了              → 修饰"用"
+            我不开心                  → 否定的是情绪，返回 False
+
+        判据：否定词后面紧跟动词/结果补语，且整句里有明确的动作词。
+        """
+        s = str(text or "")
+        if not s:
+            return False
+        # 动作被否定的常见组合
+        for act in _ACTION_NEGATIONS:
+            if act in s:
+                return True
+        return False
+
+    @staticmethod
+    def _implicit_emotion(text):
+        """整句里有没有**隐式**情绪表达（"戳我"/"办成了"/"白费了"…）。
+
+        与 `_turn_tail_emotion` 共用 `IMPLICIT_KEYWORDS` 词典，
+        区别是这里扫**整句**，用于普通句（非转折句）。
+        """
+        try:
+            from core.emotion import IMPLICIT_KEYWORDS
+        except Exception:
+            return None
+        s = str(text or "")
+        if not s:
+            return None
+        best = None   # (pos, emotion)
+        for emo, words in IMPLICIT_KEYWORDS.items():
+            for w in words:
+                pos = s.rfind(w)
+                if pos >= 0 and (best is None or pos > best[0]):
+                    best = (pos, emo)
+        return best[1] if best else None
+
+    @staticmethod
+    def _turn_tail_emotion(text):
+        """取转折词**之后**那段的情绪；没有线索返回 None。
+
+        这是解决转折句的核心。实测转折类长期是最大短板（33%~58%），
+        原因是关键词只看"整句最靠右的情绪词"，而转折句的正确情绪
+        在前半句（"本来挺高兴的，结果被气到了"里的"高兴"更靠右）。
+
+        尾段里既查**显式**情绪词（开心/难过…），也查**隐式**表达
+        （值得/办成了/成就感…）——后者在转折句里特别常见：
+            「虽然辛苦但很值得」尾段是"很值得"，一个字面情绪词都没有。
+        """
+        s = str(text or "")
+        if not s:
+            return None
+
+        # 先剔除"假转折"固定搭配：「不但…而且」「不但不…反而」里的"但"
+        # 不是转折，而是"不仅"的意思。实测「不但快而且稳」因此被判成生气。
+        for w in _FALSE_TURNS:
+            s = s.replace(w, "")
+
+        # 找最靠右的转折词，切出尾段
+        cut = -1
+        for tw in _TURN_WORDS:
+            idx = s.rfind(tw)
+            if idx >= 0:
+                end = idx + len(tw)
+                if end > cut:
+                    cut = end
+        if cut < 0 or cut >= len(s):
+            return None
+        tail = s[cut:].strip()
+        if not tail:
+            return None
+
+        try:
+            from core.emotion import EMOTION_KEYWORDS, IMPLICIT_KEYWORDS
+        except Exception:
+            return None
+
+        # 1) 尾段里的显式情绪词：取最靠右的
+        best = None   # (pos, priority, emotion)
+        for prio, table in ((2, EMOTION_KEYWORDS), (1, IMPLICIT_KEYWORDS)):
+            for emo, words in table.items():
+                for w in words:
+                    pos = tail.rfind(w)
+                    if pos < 0:
+                        continue
+                    # 位置优先；同位置时**显式**词优先于隐式词
+                    key = (pos, prio)
+                    if best is None or key > best[0]:
+                        best = (key, emo)
+        if best is not None:
+            return best[1]
+        return None
+
+    @staticmethod
     def _has_turn(text):
         """句子里是否有转折词。
 
@@ -461,6 +683,9 @@ class EmotionClassifier:
         不知道后面还有个"结果"。
         """
         s = str(text or "")
+        # 「不但…而且」是递进不是转折，先剔除
+        for w in _FALSE_TURNS:
+            s = s.replace(w, "")
         return any(w in s for w in _TURN_WORDS)
 
     @staticmethod
@@ -481,19 +706,32 @@ class EmotionClassifier:
     def _has_negation(text):
         """句子里是否有**真正表示否定**的词。
 
-        ⚠ 不能简单地"含'不'就算否定"：「不错」「不好意思」「差不多」里
-        的"不"并不是否定情绪。实测「今天天气不错」会因此被误判。
+        ⚠ 不能简单地"含'不'就算否定"。踩过三次坑：
 
-        做法：先去掉这些固定搭配，再检查剩余文本里是否还有否定词。
+        1. **固定搭配**：「不错」「不好意思」「差不多」里的"不"不是否定；
+        2. **程度补语**：「整个人都不太好了」「眼睛都睁不开了」是
+           "都…不…"结构，描述状态到了极点，**不是在否定**；
+        3. **削弱语气**：「不太确定」「不太清楚」是在弱化，不是否定情绪。
+
+        这些句子走网络否定分支会得到离谱的结果（实测「眼睛都睁不开了」
+        被判思考 0.66、「整个人都不太好了」被判思考 0.98，本该是疲惫/伤心）。
         """
+        s = str(text or "")
+        # 1) 去掉"不错"类固定搭配（它们整体表示肯定）
+        for w in _FALSE_NEGATIONS:
+            s = s.replace(w, "")
+        # 2) 去掉"都…不…"程度补语里的"不"
+        #    「整个人都不太好了」「眼睛都睁不开了」——这里的"不"是
+        #    "到了极点"的意思，不是在否定。
+        for w in _DEGREE_BU_STRUCTURES:
+            s = s.replace(w, "")
+        # 3) 去掉削弱语气（不是否定情绪）
+        for w in _SOFTENING_NEGATIONS:
+            s = s.replace(w, "")
         try:
             from core.emotion_net import NEGATION_WORDS
         except Exception:
             return False
-        s = str(text or "")
-        # 去掉"不错"类固定搭配（它们整体表示肯定）
-        for w in _FALSE_NEGATIONS:
-            s = s.replace(w, "")
         return any(w in s for w in NEGATION_WORDS)
 
     # ---------- 在线学习 ----------

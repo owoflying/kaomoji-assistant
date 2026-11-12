@@ -298,6 +298,149 @@ def test_question_phrases_are_covered():
         assert hit[0] == "思考"
 
 
+# ---------------------------------------------------------------- 转折尾段
+def test_turn_tail_extracts_emotion(clf):
+    """转折句的情绪要取**转折词之后**那段。
+
+    「本来挺高兴的，结果被气到了」——关键词会看到更靠右的"高兴"判成开心，
+    但人知道重点是"被气到了"。
+    """
+    assert clf._turn_tail_emotion("虽然辛苦但很值得") == "开心"
+    assert clf._turn_tail_emotion("气归气，事情还是办成了") == "开心"
+    assert clf._turn_tail_emotion("过程很痛苦，不过成就感很强") == "开心"
+
+
+def test_turn_tail_handles_implicit_emotion(clf):
+    """尾段常常**没有情绪字**，要靠隐式语义词典。
+
+    "很值得"/"办成了"/"成就感很强"——这些字面上都不是情绪词，
+    纯字符特征学不到，靠 `IMPLICIT_KEYWORDS` 补。
+    """
+    from core.emotion import IMPLICIT_KEYWORDS
+
+    assert IMPLICIT_KEYWORDS, "隐式词典不能为空"
+    assert "值得" in IMPLICIT_KEYWORDS["开心"]
+    assert "办成了" in IMPLICIT_KEYWORDS["开心"]
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("虽然很累但是很开心", "开心"),
+    ("虽然辛苦但很值得", "开心"),
+    ("气归气，事情还是办成了", "开心"),
+    ("过程很痛苦，不过成就感很强", "开心"),
+])
+def test_turn_sentences_are_correct(clf, text, expected):
+    r = clf.detect(text)
+    assert r is not None, "「%s」不该漏" % text
+    assert r[0] == expected
+
+
+def test_turn_rule_precedes_negation(clf):
+    """转折判断必须早于否定判断。
+
+    「不过」里含"不"，若先走否定分支就会误判——
+    实测「过程很痛苦，不过成就感很强」因此被判成伤心。
+    """
+    assert clf._has_negation("过程很痛苦，不过成就感很强") is True, \
+        "这句确实含否定词，所以顺序才重要"
+    r = clf.detect("过程很痛苦，不过成就感很强")
+    assert r is not None and r[0] == "开心"
+
+
+def test_false_turn_words_are_excluded(clf):
+    """「不但…而且」是递进，不是转折。"""
+    assert clf._has_turn("不但快而且稳") is False
+    assert clf.detect("不但快而且稳") is None
+
+
+# ---------------------------------------------------------------- 动作否定
+def test_action_negation_is_not_emotion_negation(clf):
+    """否定词修饰**动作**时不算否定情绪。
+
+    「为什么我的代码跑不起来」——用户在问原因（思考），
+    不是在否定某个情绪。以前会走否定分支被判 NONE 漏掉。
+    """
+    assert clf._negates_action("为什么我的代码跑不起来") is True
+    r = clf.detect("为什么我的代码跑不起来")
+    assert r is not None and r[0] == "思考"
+
+
+def test_emotion_negation_is_still_negation(clf):
+    """否定情绪词仍要走否定分支（不能被动作否定规则误伤）。"""
+    assert clf._negates_action("今天一点都不开心") is False
+    r = clf.detect("今天一点都不开心")
+    assert r is not None and r[0] == "伤心"
+
+
+# ---------------------------------------------------------------- 隐式表达
+def test_implicit_emotion_in_plain_sentence(clf):
+    """普通句里的隐式表达也要能识别。"""
+    assert clf._implicit_emotion("这个设计真戳我") == "喜欢"
+    r = clf.detect("这个设计真戳我")
+    assert r is not None and r[0] == "喜欢"
+
+
+def test_no_duplicate_keyword_dicts():
+    """`EMOTION_KEYWORDS` 里不能有重复键。
+
+    Python 的 dict 字面量遇到重复键会**静默保留后者**，
+    前一份内容直接消失，且没有任何报错。实测踩过一次：
+    加"爽翻"时新写了一个 `"开心": [...]` 块，把原来那份覆盖掉了。
+    pyflakes 能查出来，这个测试再钉一道。
+    """
+    import ast
+    import inspect
+
+    from core import emotion
+
+    src = inspect.getsource(emotion)
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        if not isinstance(node.value, ast.Dict):
+            continue
+        keys = []
+        for k in node.value.keys:
+            if isinstance(k, ast.Constant) and isinstance(k.value, str):
+                keys.append(k.value)
+        dupes = {k for k in keys if keys.count(k) > 1}
+        assert not dupes, "字典里有重复键：%s" % dupes
+
+
+def test_degree_bu_is_not_negation(clf):
+    """「都…不…」程度补语里的"不"不是否定。
+
+    「整个人都不太好了」= 状态很差（伤心），
+    「眼睛都睁不开了」= 非常困（疲惫）。
+    当成否定句会让网络走错分支（实测分别判思考 0.98 / 0.66）。
+    """
+    assert clf._has_negation("整个人都不太好了") is False
+    assert clf._has_negation("眼睛都睁不开了") is False
+    assert clf._has_negation("今天一点都不开心") is True
+
+
+def test_keyword_with_negation_char_is_trusted(clf):
+    """含否定字的**完整情绪词**要直接采信，不能被否定分支接管。
+
+    「不可能吧」= 惊讶、「累得不行」= 疲惫、「笑不活了」= 开心——
+    这些词条本身带"不"，但整体是一个情绪词。若走否定分支，
+    网络会判 NONE 导致漏判（实测这两句都漏了）。
+    """
+    from core.emotion import detect_last
+
+    for text, expected in (("这不可能吧", "惊讶"),
+                           ("累得不行了", "疲惫"),
+                           ("笑不活了", "开心")):
+        kw = detect_last(text)
+        assert kw is not None, "「%s」关键词应命中" % text
+        # 命中的词确实含否定字（这是本规则的前提）
+        assert any(c in kw[1] for c in ("不", "没")), kw[1]
+        r = clf.detect(text)
+        assert r is not None, "「%s」不该漏" % text
+        assert r[0] == expected, "「%s」应为 %s" % (text, expected)
+
+
 def test_classifier_falls_back_without_net(monkeypatch, tmp_path):
     """模型加载失败时，关键词层必须顶上（不能让功能整个失效）。"""
     from core import emotion_classifier as ec

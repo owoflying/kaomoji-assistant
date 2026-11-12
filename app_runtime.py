@@ -423,7 +423,11 @@ class AppRuntime:
         if not updater.should_check_now(self.config):
             return
 
-        self.updater = updater.AutoUpdater(self.config, self)
+        # ⚠ 不能把 self（AppRuntime）当 parent 传进去：AppRuntime 是普通
+        # Python 类，不是 QObject，QObject.__init__ 会直接抛 TypeError。
+        # 这个错误只在打包后的 exe 里暴露（源码态那条路径恰好没走到），
+        # 一度导致程序启动即崩。见 tests/test_runtime_wiring.py。
+        self.updater = updater.AutoUpdater(self.config)
         self.updater.update_available.connect(self._on_update_available)
         self.updater.up_to_date.connect(
             lambda v: append_log("info", "update", "已是最新版本 %s" % v))

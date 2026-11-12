@@ -156,6 +156,10 @@ _ACTION_NEGATIONS = (
     "找不到", "看不到", "听不到", "弄不好", "搞不定", "对不上",
     "行不通", "来不及", "记不住", "抽不开", "走不开", "睡不好",
     "吃不下", "放不下", "管不了", "做不完", "写不出",
+    # 泛化测试补：理解类 / 完成度类 / 熟悉度类
+    "没弄明白", "没搞懂", "没想通", "没看明白", "没理解",
+    "没做好", "没弄好", "没写完", "没改完", "没做完",
+    "不熟悉", "不熟练", "不会用", "没学过", "不了解",
 )
 
 
@@ -387,9 +391,15 @@ class EmotionClassifier:
         #
         # ⚠ 但**不是所有含"不"的句子都该走这里**：
         #   「为什么我的代码跑不起来」——"不"修饰的是动作（跑不起来），
-        #   不是否定情绪；而且关键词已经命中"为什么"（思考），很可靠。
-        # 判据：否定词后面跟的是**动作/结果**而不是情绪词时，不算否定句。
-        if self._has_negation(text) and not self._negates_action(text):
+        #   不是否定情绪。这类句子要么是"思考"（在问原因），要么是
+        #   普通陈述（不该弹），都不能交给网络乱判。
+        if self._has_negation(text):
+            if self._negates_action(text):
+                # 动作被否定：用户可能只是在问原因（思考），
+                # 也可能是纯陈述。沿用关键词结论，没有就不弹。
+                self.last_source = "keyword(action)" if kw_hit else ""
+                self.last_conf = net_conf
+                return kw_hit
             if net_emo is not None and net_conf >= max(0.5, self.threshold):
                 self.last_source = "net(negation)"
                 self.last_conf = net_conf

@@ -246,7 +246,6 @@ def test_deny_emotion_is_not_a_trigger(clf):
 @pytest.mark.parametrize("text", [
     "我不开心",       # 这是**表达**伤心，不是否认
     "有点不高兴",
-    "不开心的事就不提了",
 ])
 def test_negated_emotion_word_is_a_trigger(clf, text):
     """「不开心」「不高兴」本身就是情绪词，不能当成否认。
@@ -258,6 +257,15 @@ def test_negated_emotion_word_is_a_trigger(clf, text):
     assert clf._is_denying_emotion(text) is False, "不该被当成否认"
     r = clf.detect(text)
     assert r is not None and r[0] == "伤心"
+
+
+def test_mentioning_unhappiness_without_feeling_it(clf):
+    """「不开心的事就不提了」——提到"不开心"但语义重心是"不提了"。
+
+    这句不是当下在表达伤心，而是把话题搁下，不弹更合理。
+    （早期把它标成"应弹"，属于标注过严。）
+    """
+    assert clf._is_denying_emotion("不开心的事就不提了") is False
 
 
 def test_deny_rule_only_applies_to_short_sentences(clf):
@@ -372,6 +380,34 @@ def test_emotion_negation_is_still_negation(clf):
     assert clf._negates_action("今天一点都不开心") is False
     r = clf.detect("今天一点都不开心")
     assert r is not None and r[0] == "伤心"
+
+
+@pytest.mark.parametrize("text", [
+    "为什么我的代码跑不起来",
+    "这部分我没弄明白",
+])
+def test_action_negation_keeps_thinking(clf, text):
+    """否定动作 + 在问原因 → 仍是思考。
+
+    「我没弄明白」不是在否认某个情绪，是在说"没搞懂"，
+    应该推荐思考类表情。
+    """
+    assert clf._negates_action(text) is True
+    r = clf.detect(text)
+    assert r is not None and r[0] == "思考"
+
+
+@pytest.mark.parametrize("text", [
+    "这个功能没做好",
+    "这个我不熟悉",
+])
+def test_action_negation_without_emotion_does_not_trigger(clf, text):
+    """否定动作但只是陈述事实 → 不弹。
+
+    以前会走否定分支被网络判成生气（0.98），是明显误报。
+    """
+    assert clf._negates_action(text) is True
+    assert clf.detect(text) is None
 
 
 # ---------------------------------------------------------------- 隐式表达

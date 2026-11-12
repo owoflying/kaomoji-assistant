@@ -193,6 +193,12 @@ class SettingsPage(QWidget):
         tip.setObjectName("Caption")
         tip.setWordWrap(True)
         croot.addWidget(tip)
+        self._add_row(croot, "用 AI 判断情绪", self._emotion_ai_toggle())
+        ai_tip = QLabel("开：能听懂「今天一点都不开心」这类否定句，也会随你使用变准。"
+                        "关：只用关键词表匹配，规则简单可预期，不读写任何模型文件。")
+        ai_tip.setObjectName("Caption")
+        ai_tip.setWordWrap(True)
+        croot.addWidget(ai_tip)
         self._add_row(croot, "推荐灵敏度", self._emotion_sensitivity())
         sens_tip = QLabel("调低更保守（少打扰），调高更容易触发推荐。")
         sens_tip.setObjectName("Caption")
@@ -255,22 +261,49 @@ class SettingsPage(QWidget):
         self.autostart_check.toggled.connect(lambda *_a: self._on_apply())
         # 情绪推荐：灵敏度释放后才保存（拖动中只改标签，避免高频写盘）
         self.emotion_check.toggled.connect(self._on_emotion_toggled)
+        self.emotion_ai_check.toggled.connect(self._on_emotion_ai_toggled)
         self.emotion_sens_slider.sliderReleased.connect(
             lambda *_a: self._on_apply())
         self.emotion_learn_check.toggled.connect(lambda *_a: self._on_apply())
         # UIA 提权涉及 UAC 提权 + 计划任务，属于敏感操作：先二次确认再落配置。
         self.uia_elevation_check.toggled.connect(self._on_uia_toggled)
 
-    def _on_emotion_toggled(self, checked):
-        """情绪推荐开关：联动灵敏度控件的可用性，并立即保存。"""
+    def _on_emotion_ai_toggled(self, checked):
+        """AI 开关：关掉后「灵敏度」「学习」都失去意义，一并禁用。
+
+        ⚠ 顺序很重要：必须先 `_on_apply()` 把配置同步给分类器
+        （`clf.ai_enabled` 才会更新），再刷新统计文案——否则统计行
+        读到的还是旧状态，显示"出厂模型学过 N 句"而实际已在纯算法模式。
+        """
         if getattr(self, "_loading", False):
             return
-        for w in (getattr(self, "emotion_sens_slider", None),
-                  getattr(self, "emotion_learn_check", None)):
-            if w is not None:
-                w.setEnabled(bool(checked))
-        self._refresh_emotion_stats()
+        self._sync_emotion_controls()
         self._on_apply()
+        self._refresh_emotion_stats()
+
+    def _sync_emotion_controls(self):
+        """按「总开关 + AI 开关」两级状态决定各控件是否可用。
+
+        规则：
+          * 情绪推荐总开关关 → 下面全部灰掉
+          * AI 关 → 灵敏度/学习灰掉（纯算法模式没有这两个概念）
+        """
+        suggest = self.emotion_check.isChecked()
+        ai = self.emotion_ai_check.isChecked()
+        self.emotion_ai_check.setEnabled(suggest)
+        for w in (self.emotion_sens_slider, self.emotion_learn_check):
+            w.setEnabled(suggest and ai)
+
+    def _on_emotion_toggled(self, checked):
+        """情绪推荐开关：联动下方控件的可用性，并立即保存。
+
+        顺序同 `_on_emotion_ai_toggled`：先应用配置再刷新文案。
+        """
+        if getattr(self, "_loading", False):
+            return
+        self._sync_emotion_controls()
+        self._on_apply()
+        self._refresh_emotion_stats()
 
     # ---------- 子控件工厂 ----------
     def _section_title(self, text):
@@ -385,6 +418,12 @@ class SettingsPage(QWidget):
             "关闭后打字不再按情绪自动推荐，热键唤起等其它功能不受影响")
         return self.emotion_check
 
+    def _emotion_ai_toggle(self):
+        self.emotion_ai_check = ToggleSwitch(self._theme)
+        self.emotion_ai_check.setToolTip(
+            "关闭后完全使用关键词规则判断，不加载也不写入任何模型文件")
+        return self.emotion_ai_check
+
     def _emotion_sensitivity(self):
         """灵敏度：映射到 conf 阈值。高灵敏度 = 阈值低 = 更容易触发。"""
         row = QHBoxLayout()
@@ -442,6 +481,10 @@ class SettingsPage(QWidget):
         """刷新「学习到多少」的展示。
 
         让用户看到"越用越顺手"是**有据可查**的，而不是一句宣传。
+
+        ⚠ 判断是否纯算法时**以控件状态为准**，不读 `clf.ai_enabled`：
+        `_on_apply()` 走的是信号，分类器可能还没同步到新值，
+        读它会显示成旧状态的文案。
         """
         lbl = getattr(self, "_emotion_stats", None)
         if lbl is None:
@@ -450,6 +493,11 @@ class SettingsPage(QWidget):
             lbl.setText(note)
             return
         try:
+            # 纯算法模式：优先看开关本身
+            if hasattr(self, "emotion_ai_check") \
+                    and not self.emotion_ai_check.isChecked():
+                lbl.setText("当前使用纯算法（关键词匹配），不加载模型、不学习")
+                return
             from core import emotion_classifier
             st = emotion_classifier.shared().learning_stats()
             if not st["model_ready"]:
@@ -569,13 +617,13 @@ class SettingsPage(QWidget):
             # 情绪推荐
             _emo_on = bool(cfg.get("emotion_suggest", True))
             self.emotion_check.setChecked(_emo_on)
+            self.emotion_ai_check.setChecked(bool(cfg.get("emotion_use_ai", True)))
             _sens = int(cfg.get("emotion_sensitivity", 50))
             self.emotion_sens_slider.setValue(max(0, min(100, _sens)))
             self.emotion_sens_value.setText(self._sens_to_label(_sens))
             self.emotion_learn_check.setChecked(
                 bool(cfg.get("emotion_learning", True)))
-            self.emotion_sens_slider.setEnabled(_emo_on)
-            self.emotion_learn_check.setEnabled(_emo_on)
+            self._sync_emotion_controls()
             self._refresh_emotion_stats()
             self.page_spin.setValue(int(cfg.get("page_size", 3)))
             self.autostart_check.setChecked(autostart.is_enabled())
@@ -812,6 +860,7 @@ class SettingsPage(QWidget):
         new_cfg["auto_popup"] = self.auto_check.isChecked()
         new_cfg["auto_hide_on_blur"] = self.blur_hide_check.isChecked()
         new_cfg["emotion_suggest"] = self.emotion_check.isChecked()
+        new_cfg["emotion_use_ai"] = self.emotion_ai_check.isChecked()
         new_cfg["emotion_sensitivity"] = int(self.emotion_sens_slider.value())
         new_cfg["emotion_learning"] = self.emotion_learn_check.isChecked()
         new_cfg["page_size"] = self.page_spin.value()

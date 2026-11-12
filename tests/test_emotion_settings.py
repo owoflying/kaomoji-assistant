@@ -168,3 +168,85 @@ def test_ignored_with_unknown_emotion(clf):
 
 def test_ignored_with_empty_text(clf):
     assert clf.learn_ignored("", "开心") is False
+
+
+# ======================================================================
+# AI 开关（纯算法模式）
+# ======================================================================
+def test_ai_enabled_by_default(clf):
+    assert clf.ai_enabled is True
+    assert clf.net is not None
+
+
+def test_disable_ai_unloads_model(clf):
+    """关掉 AI 必须把模型从内存卸掉，而不是只挂个标记。"""
+    assert clf.net is not None
+    clf.configure(ai_enabled=False)
+    assert clf.ai_enabled is False
+    assert clf.net is None, "关闭 AI 后不该再持有模型"
+
+
+def test_pure_algorithm_uses_keywords_only(clf):
+    """纯算法模式下判定结果必须与关键词层完全一致。"""
+    from core.emotion import detect_last
+
+    clf.configure(ai_enabled=False)
+    for text in ("我很开心", "好难过啊", "气死我了", "吃饭了吗", "今天天气不错"):
+        r = clf.detect(text)
+        kw = detect_last(text)
+        assert (r[0] if r else None) == (kw[0] if kw else None)
+
+
+def test_pure_algorithm_cannot_understand_negation(clf):
+    """这是关闭 AI 的**代价**，测试钉住它，避免有人误以为两种模式等价。
+
+    「今天一点都不开心」在纯算法下会被判成开心（关键词只看到"开心"），
+    而 AI 模式能正确判成伤心。
+    """
+    clf.configure(ai_enabled=True)
+    ai = clf.detect("今天一点都不开心")
+
+    clf.configure(ai_enabled=False)
+    pure = clf.detect("今天一点都不开心")
+
+    assert ai is not None and ai[0] == "伤心", "AI 模式应理解否定"
+    assert pure is not None and pure[0] == "开心", "纯算法必然判反"
+
+
+def test_disable_ai_blocks_learning(clf):
+    clf.configure(ai_enabled=False)
+    assert clf.learn_from_choice("测试句", "开心") is False
+    assert clf.learn_ignored("测试句", "开心") is False
+
+
+def test_disable_ai_blocks_model_save(clf):
+    """关掉 AI 后不该写任何模型文件。"""
+    from core import emotion_classifier as ec
+
+    clf.configure(ai_enabled=False)
+    assert clf.save_user_model() is False
+    assert not os.path.exists(ec.user_model_path())
+
+
+def test_reenable_ai_reloads_model(clf):
+    clf.configure(ai_enabled=False)
+    assert clf.net is None
+    clf.configure(ai_enabled=True)
+    assert clf.net is not None, "重新打开 AI 应把模型读回来"
+    assert clf.learn_from_choice("重新学习", "开心") is True
+
+
+def test_ai_switch_is_idempotent(clf):
+    """反复开关不应出问题。"""
+    for _ in range(3):
+        clf.configure(ai_enabled=False)
+        assert clf.net is None
+        clf.configure(ai_enabled=True)
+        assert clf.net is not None
+
+
+def test_pure_algorithm_marks_source(clf):
+    """纯算法模式的判定来源要可辨认，便于排查。"""
+    clf.configure(ai_enabled=False)
+    clf.detect("我很开心")
+    assert "纯算法" in clf.last_source

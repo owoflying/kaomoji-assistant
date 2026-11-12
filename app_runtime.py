@@ -835,6 +835,7 @@ class AppRuntime:
             clf.configure(
                 sensitivity=self.config.get("emotion_sensitivity", 50),
                 learning_enabled=bool(self.config.get("emotion_learning", True)),
+                ai_enabled=bool(self.config.get("emotion_use_ai", True)),
             )
         except Exception as e:
             append_log("warn", "emotion", "同步情绪配置失败：%r" % (e,))

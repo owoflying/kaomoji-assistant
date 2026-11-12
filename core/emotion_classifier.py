@@ -113,15 +113,33 @@ class EmotionClassifier:
         self.threshold = CONFIDENCE_THRESHOLD
         #: 是否启用个性化学习（配置项 emotion_learning）
         self.learning_enabled = True
+        #: 是否使用 AI（神经网络）。
+        #:
+        #: 关掉后**完全走纯算法**（关键词匹配）：不加载模型、不推理、不学习。
+        #: 这不是"把权重调低"，而是彻底不碰网络——想用纯规则的用户可以放心，
+        #: 也不会有任何模型文件被读写。
+        self.ai_enabled = True
         if load_model:
             self.load()
 
     def configure(self, sensitivity=None, learning_enabled=None,
-                  suggest_enabled=None):
-        """应用用户配置：灵敏度 / 是否学习 / 是否启用情绪推荐。
+                  suggest_enabled=None, ai_enabled=None):
+        """应用用户配置：灵敏度 / 是否学习 / 是否启用情绪推荐 / 是否用 AI。
 
         由 AppRuntime.apply_settings 调用，保证设置页改动实时生效。
         """
+        if ai_enabled is not None:
+            new_ai = bool(ai_enabled)
+            if new_ai != self.ai_enabled:
+                self.ai_enabled = new_ai
+                if new_ai:
+                    # 重新打开 AI：把模型读回来
+                    self.load()
+                else:
+                    # 关闭 AI：把模型从内存卸掉，确保不再有任何推理路径
+                    with self._lock:
+                        self.net = None
+                    self.last_source = ""
         if sensitivity is not None:
             self.threshold = threshold_for_sensitivity(sensitivity)
         if learning_enabled is not None:
@@ -187,6 +205,19 @@ class EmotionClassifier:
         if not text:
             self.last_source = ""
             return None
+
+        # ---------- 纯算法模式 ----------
+        # 用户关闭 AI 后，这里直接返回关键词层结论：不推理、不学习、
+        # 也不做任何"模糊地带"的猜测。行为完全可预测——这正是选这个
+        # 开关的人想要的。
+        if not self.ai_enabled:
+            try:
+                hit = keyword_detect(text)
+            except Exception:
+                hit = None
+            self.last_source = "keyword(纯算法)" if hit else ""
+            self.last_conf = 0.0
+            return hit
 
         with self._lock:
             net = self.net
@@ -386,8 +417,8 @@ class EmotionClassifier:
         """
         if not text or not emotion:
             return False
-        if not self.learning_enabled:
-            return False          # 用户关闭了个性化学习
+        if not self.learning_enabled or not self.ai_enabled:
+            return False          # 关了个性化学习，或干脆没在用 AI
         idx = en.class_index(emotion)
         if idx is None:
             return False
@@ -422,7 +453,7 @@ class EmotionClassifier:
         """
         if not text or not emotion:
             return False
-        if not self.learning_enabled:
+        if not self.learning_enabled or not self.ai_enabled:
             return False
         idx = en.class_index(emotion)
         if idx is None:

@@ -77,6 +77,31 @@ _FALSE_NEGATIONS = (
     "没过多久", "没准", "开玩笑", "没关系",
 )
 
+#: 转折词：出现时后半句通常主导整体情绪。
+#:
+#: 与 `emotion_net._TURN_CUT_WORDS` 是同一组词，但语义不同：
+#: 那边用于**切分特征**，这里用于**选择信谁**。
+_TURN_WORDS = ("但是", "不过", "然而", "可是", "结果", "然后",
+               "归", "但", "却")
+
+#: 用于识别"否认情绪"的否定词
+_DENY_NEGATIONS = ("没有", "没", "不", "才不", "并不")
+
+#: 跟在否定词后面、表示"在否认这个情绪"的词
+_EMOTION_WORDS_FOR_DENY = (
+    "生气", "难过", "伤心", "开心", "高兴", "喜欢", "失望", "委屈",
+    "累", "困", "紧张", "害怕", "担心", "着急", "介意",
+)
+
+#: 「不 + X」本身就是一个**情绪词**的组合，不能当成否认。
+#:
+#: 「我不开心」= 在表达伤心（要弹）；
+#: 「我没生气」= 在否认生气（不弹）。
+#: 两者前半截长得一样，区别在于"不开心"已经是个固定的负面表达。
+_NEGATED_IS_AN_EMOTION = (
+    "不开心", "不高兴", "不舒服", "不痛快", "不爽", "不满意",
+)
+
 
 def model_path():
     """模型文件路径（跟随运行时路径规则：源码态/打包态各自定位）。"""
@@ -234,6 +259,17 @@ class EmotionClassifier:
             except Exception:
                 net_emo, net_conf = None, 0.0
 
+        # ---------- 规则 2.5：否认情绪 → 不弹 ----------
+        # 「我没生气」「我不难过」：句子里有否定词，也有情绪词，但整体是
+        # **在否认那个情绪**，不是在表达别的情绪。用户说这句时不想配表情。
+        #
+        # 必须放在否定分支之前：否则会走进"听网络的"，而网络对这类句子
+        # 容易判成"开心"（因为"没生气"≈平静），实测就是一个误报。
+        if self._is_denying_emotion(text):
+            self.last_source = ""
+            self.last_conf = net_conf
+            return None
+
         # ---------- 规则 2：含否定词 → 听网络的 ----------
         # 「今天一点都不开心」：关键词只看得到"开心"，必然判反。
         if self._has_negation(text):
@@ -255,6 +291,19 @@ class EmotionClassifier:
             self.last_source = ""
             self.last_conf = net_conf
             return None
+
+        # ---------- 规则 1.6：转折句（仅在网络非常确定时采信） ----------
+        # 「本来挺高兴的，结果被气到了」：关键词看到"高兴"就判开心，
+        # 但它不懂**转折结构**——真正的情绪在"结果"后面。
+        #
+        # ⚠ 实测网络的转折判断只有 2/12 正确（尾段特征提取是对的，
+        # 但模型没学够）。无条件信它会让 turn 类从 50% 掉到 33%。
+        # 折中：只在网络**很有把握**时才采信，否则仍走关键词。
+        if self._has_turn(text) and net_emo is not None \
+                and net_conf >= 0.90 and (kw_hit is None or kw_hit[0] != net_emo):
+            self.last_source = "net(turn)"
+            self.last_conf = net_conf
+            return self._as_hit(text, net_emo, None)
 
         # ---------- 规则 1：关键词有词 → 以它为准 ----------
         # 关键词是"精确但覆盖窄"的一层：它只在看到明确情绪词时出手，
@@ -365,6 +414,54 @@ class EmotionClassifier:
         pos = kw_hit[2] if kw_hit else 0
         kw = kw_hit[1] if kw_hit else ""
         return emotion, kw, pos
+
+    @staticmethod
+    def _is_denying_emotion(text):
+        """是否在**否认某个情绪**（"我没生气"/"我不难过"/"没有不高兴"）。
+
+        与"否定句"的区别：
+          * 「今天一点都不开心」→ 在陈述**相反**的情绪（伤心），该弹；
+          * 「我没生气」→ 只是**否认**生气，没有表达别的情绪，不该弹。
+
+        判据：否定词紧跟情绪词，且整句很短（否认句通常就几个字）。
+        长句里出现"不生气"更可能是叙事（"他让我不生气了"），交给网络。
+        """
+        s = str(text or "").strip()
+        if not s or len(s) > 10:
+            return False
+        # 「不开心」「不高兴」这类**本身就是情绪词**，不是否认
+        for neg_emo in _NEGATED_IS_AN_EMOTION:
+            if neg_emo in s:
+                return False
+        # 去掉开头的自称，避免"我"干扰
+        core = s
+        for p in ("我", "他", "她", "我们", "你", "其实", "真的"):
+            if core.startswith(p):
+                core = core[len(p):]
+        for neg in _DENY_NEGATIONS:
+            if not core.startswith(neg):
+                continue
+            rest = core[len(neg):].strip()
+            if not rest:
+                continue
+            # 否定词后面紧跟情绪词 -> 是在否认这个情绪
+            for emo_words in _EMOTION_WORDS_FOR_DENY:
+                if rest.startswith(emo_words):
+                    return True
+        return False
+
+    @staticmethod
+    def _has_turn(text):
+        """句子里是否有转折词。
+
+        转折词之后的部分通常才决定整体情绪：
+            本来挺高兴的，结果被气到了  →  生气（不是开心）
+
+        这是关键词层**结构性的盲区**：它只能看到"高兴"这个字，
+        不知道后面还有个"结果"。
+        """
+        s = str(text or "")
+        return any(w in s for w in _TURN_WORDS)
 
     @staticmethod
     def _has_false_negation(text):

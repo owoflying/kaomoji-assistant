@@ -234,6 +234,70 @@ def test_false_negation_words_are_excluded(clf):
     assert clf._has_negation("我不开心") is True
 
 
+# ---------------------------------------------------------------- 否认情绪
+def test_deny_emotion_is_not_a_trigger(clf):
+    """「我没生气」是在否认情绪，不该弹。"""
+    assert clf._is_denying_emotion("我没生气") is True
+    assert clf.detect("我没生气") is None
+
+
+@pytest.mark.parametrize("text", [
+    "我不开心",       # 这是**表达**伤心，不是否认
+    "有点不高兴",
+    "不开心的事就不提了",
+])
+def test_negated_emotion_word_is_a_trigger(clf, text):
+    """「不开心」「不高兴」本身就是情绪词，不能当成否认。
+
+    这是 `_is_denying_emotion` 最容易出错的地方：
+    「我不开心」和「我没生气」前半截长得一样，区别在于
+    "不开心"已经是个固定表达。实测曾把它们一起拦掉，造成漏判。
+    """
+    assert clf._is_denying_emotion(text) is False, "不该被当成否认"
+    r = clf.detect(text)
+    assert r is not None and r[0] == "伤心"
+
+
+def test_deny_rule_only_applies_to_short_sentences(clf):
+    """长句里出现"不生气"更可能是叙事，交给网络判断。"""
+    assert clf._is_denying_emotion("他说了半天才让我不生气了" * 2) is False
+
+
+# ---------------------------------------------------------------- 转折
+def test_turn_word_detection(clf):
+    assert clf._has_turn("虽然很累但是很开心") is True
+    assert clf._has_turn("本来挺高兴的，结果被气到了") is True
+    assert clf._has_turn("我很开心") is False
+
+
+def test_turn_rule_does_not_break_plain_turn():
+    """转折句的采信规则不能把简单的转折句弄坏。
+
+    实测网络的转折判断多数时候不可靠（2/12），所以只在它非常确定时
+    才采信；其余情况仍走关键词。这条测试保证常见转折句仍然可用。
+    """
+    from core import emotion_classifier as ec
+
+    clf = ec.EmotionClassifier()
+    r = clf.detect("虽然很累但是很开心")
+    assert r is not None and r[0] == "开心"
+
+
+# ---------------------------------------------------------------- 关键词补充
+def test_question_phrases_are_covered():
+    """"怎么回事 / 哪里出了问题"这类具体困惑要能命中。
+
+    实测「这到底是怎么回事」曾两层都沉默（网络判 NONE、关键词没词）。
+    """
+    from core.emotion import detect_last
+
+    for text in ("这个到底怎么回事呢", "这到底是怎么回事",
+                 "哪里出了问题呢", "这个逻辑我没看懂"):
+        hit = detect_last(text)
+        assert hit is not None, "「%s」应命中思考" % text
+        assert hit[0] == "思考"
+
+
 def test_classifier_falls_back_without_net(monkeypatch, tmp_path):
     """模型加载失败时，关键词层必须顶上（不能让功能整个失效）。"""
     from core import emotion_classifier as ec

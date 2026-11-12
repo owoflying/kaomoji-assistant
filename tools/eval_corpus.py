@@ -94,7 +94,9 @@ CASES = [
     ("吃饭了吗", None, "chitchat"),
     ("你在干什么", None, "chitchat"),
     ("今天天气不错", None, "chitchat"),
-    ("今天心情不错", None, "chitchat"),
+    # 「今天心情不错」原本标成 None（不弹），但它明确在说心情好，
+    # 弹一次开心表情是合理的——标注错了，改标"开心"。
+    ("今天心情不错", "开心", "basic"),
     ("好的", None, "chitchat"),
     ("我买了个新手机", None, "chitchat"),
     ("明天开会", None, "chitchat"),

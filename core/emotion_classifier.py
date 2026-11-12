@@ -136,6 +136,17 @@ _SOFTENING_NEGATIONS = (
 #:     笑不活了   → 开心
 NEGATION_WORD_CHARS = ("不", "没", "别", "无", "非", "未")
 
+#: **事务性沟通**标记词：出现即说明这句在办事，不是表达情绪。
+#:
+#: 「你那边方便吗」「这个我不太确定」——网络对这些会给出中等置信的
+#: 误判（实测 伤心 0.49 / 思考 0.87）。这类句子在聊天里占比很高，
+#: 值得单独拦截。
+_ROUTINE_MARKERS = (
+    "方便吗", "方便的话", "不太确定", "不确定", "确认一下", "看一下",
+    "问一下", "麻烦", "收到", "稍等", "等我", "回头", "晚点",
+    "有没有空", "什么时候", "在哪", "几个", "怎么弄", "能不能",
+)
+
 #: 「否定 + 动作/结果」的组合：否定词修饰的是**动作**，不是情绪。
 #:
 #: 「为什么我的代码跑不起来」——用户在问原因（思考），不是在否定情绪。
@@ -334,6 +345,17 @@ class EmotionClassifier:
         # 必须放在否定分支之前：否则会走进"听网络的"，而网络对这类句子
         # 容易判成"开心"（因为"没生气"≈平静），实测就是一个误报。
         if self._is_denying_emotion(text):
+            self.last_source = ""
+            self.last_conf = net_conf
+            return None
+
+        # ---------- 规则 1.3：日常沟通套话 → 不弹 ----------
+        # 「你那边方便吗」「这个我不太确定」——网络会给出中等置信的判断
+        # （实测 伤心 0.49 / 思考 0.87），但这些都是纯粹的事务性沟通，
+        # 没有任何情绪。这类句子在聊天里出现频率极高，值得单独拦截。
+        #
+        # 判据：短句 + 含事务性标记词（方便/确定/收到/看一下…）。
+        if self._is_routine_message(text):
             self.last_source = ""
             self.last_conf = net_conf
             return None
@@ -544,6 +566,21 @@ class EmotionClassifier:
                 if rest.startswith(emo_words):
                     return True
         return False
+
+    @staticmethod
+    def _is_routine_message(text):
+        """是否是纯事务性的日常沟通（不表达情绪）。
+
+        「你那边方便吗」「这个我不太确定」「收到，我看一下」——
+        这些在聊天里占比极高，但都是办事，不该弹表情。
+
+        判据：**短句** + 含事务标记词。长句交给网络，
+        因为长句里的事务词更可能只是叙述背景。
+        """
+        s = str(text or "").strip()
+        if not s or len(s) > 12:
+            return False
+        return any(w in s for w in _ROUTINE_MARKERS)
 
     @staticmethod
     def _directly_negates(text, keyword):

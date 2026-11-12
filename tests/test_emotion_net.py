@@ -216,13 +216,15 @@ def test_negation_and_turn(clf, text, expected):
     "吃饭了吗",
     "你在干什么",
     "今天天气不错",
-    "今天心情不错",
 ])
 def test_chitchat_does_not_trigger(clf, text):
     """闲聊不该弹窗。
 
     "不错"里的"不"不是否定（固定搭配），不能当作否定句处理，
     否则会走网络的否定分支乱判。
+
+    ⚠ 「今天心情不错」**不在**这个列表里：它是在说心情好，
+    弹一次开心表情是合理的（早期把期望值写成"不弹"，属于标错了）。
     """
     assert clf.detect(text) is None, "「%s」是闲聊，不该触发" % text
 
@@ -439,6 +441,48 @@ def test_keyword_with_negation_char_is_trusted(clf):
         r = clf.detect(text)
         assert r is not None, "「%s」不该漏" % text
         assert r[0] == expected, "「%s」应为 %s" % (text, expected)
+
+
+# ---------------------------------------------------------------- 模糊匹配
+def test_fuzzy_match_allows_inserted_filler():
+    """关键词中间插入虚词时仍要匹配得上。
+
+    中文习惯在词里插字：「对胃口」→「对我胃口」。
+    实测「这配色真对我胃口」因为中间多了个"我"而整句零命中。
+    """
+    from core.emotion import _find_keyword
+
+    assert _find_keyword("这配色真对我胃口", "对胃口") >= 0
+    assert _find_keyword("我真的开心", "开心") >= 0
+
+
+def test_fuzzy_match_does_not_cross_sentence():
+    """模糊匹配不能跨半句话乱配。"""
+    from core.emotion import _find_keyword
+
+    # "开心"的"开"和"心"隔着很远的字，不该匹配
+    assert _find_keyword("开发了一个新项目，心里没底", "开心") < 0
+
+
+def test_filler_chars_exclude_degree_adverbs():
+    """虚词表不能收程度副词。
+
+    实测收进"真"后，「这样真的好吗？」被当成"真的吗"→误判惊讶。
+    这类误报比多命中几个词条更伤。
+    """
+    from core.emotion import _FILLER_CHARS
+
+    for ch in ("真", "很", "太", "最"):
+        assert ch not in _FILLER_CHARS, "%r 不该允许跳过" % ch
+
+
+def test_weak_signal_still_works_with_fuzzy():
+    """模糊匹配不能破坏弱信号（疑问）的判定。"""
+    from core.emotion import detect_last
+
+    hit = detect_last("这样真的好吗？")
+    assert hit is not None
+    assert hit[0] == "思考", "疑问句仍应判思考，不能变成惊讶"
 
 
 def test_classifier_falls_back_without_net(monkeypatch, tmp_path):

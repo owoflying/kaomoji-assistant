@@ -402,6 +402,15 @@ class AboutPage(QWidget):
         """由 AppRuntime 注入"立即安装"回调。"""
         self._install_cb = fn
 
+    def set_install_package_callback(self, fn):
+        """注入"安装指定的更新包"回调（手动检查更新时用）。
+
+        与 `set_install_callback` 的区别：
+          * 那个是"装我已经下载好的包"（自动更新流程）；
+          * 这个是"装这个路径的包"（用户在关于页手动下载的）。
+        """
+        self._install_package_cb = fn
+
     def _on_check_update(self):
         self._rel_status.setText("正在获取最新发行版信息…")
         self._rel_notes.setVisible(False)
@@ -465,13 +474,46 @@ class AboutPage(QWidget):
         self._rel_status.setText("下载完成，正在校验文件完整性…")
 
     def _on_dl_finished(self, path):
+        """下载完成。
+
+        ## 两种模式
+
+        * **能自动更新**（打包态）：下载完直接进入安装流程，
+          用户点一下就从旧版升到新版，不需要自己去解压替换。
+        * **不能自动更新**（源码态等）：只保存文件并提示打开文件夹。
+
+        这解决了"用户没开自动更新就装不上"的问题——
+        手动检查更新也能一键安装，不依赖后台自动更新开关。
+        """
         self._set_busy(False)
+
         if self._dl_sha256:
             self._rel_progress.setText("✓ 校验通过")
-            self._rel_status.setText("已下载并校验通过：%s" % path)
         else:
             self._rel_progress.setText("下载完成")
-            self._rel_status.setText("已保存到：%s" % path)
+
+        # 尝试交给自动安装器
+        installed = False
+        try:
+            from core import updater_install
+            if updater_install.can_self_update():
+                layout = updater_install.detect_layout(
+                    path, updater_install.exe_name())
+                if layout.get("ok"):
+                    cb = getattr(self, "_install_package_cb", None)
+                    if callable(cb):
+                        installed = bool(cb(path))
+        except Exception:
+            installed = False
+
+        if installed:
+            self._rel_status.setText(
+                "新版本已下载并校验通过，正在准备安装……")
+            self._rel_open.setVisible(False)
+            return
+
+        # 走不通就走原来的"保存文件"路径
+        self._rel_status.setText("已下载并校验通过：%s" % path)
         self._rel_open.setVisible(True)
 
     def _on_dl_error(self, msg):

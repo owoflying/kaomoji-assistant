@@ -219,6 +219,11 @@ class SettingsPage(QWidget):
         croot.setContentsMargins(16, 14, 16, 14)
         croot.setSpacing(12)
         self._add_row(croot, "开机自动启动", self._autostart_toggle())
+        self._add_row(croot, "自动检查更新", self._auto_update_toggle())
+        self._auto_update_status = QLabel("")
+        self._auto_update_status.setObjectName("Caption")
+        self._auto_update_status.setWordWrap(True)
+        croot.addWidget(self._auto_update_status)
         v.addWidget(card)
 
         # 高级（**正式功能**：UIA 提权已毕业，不再受 use_test_features 门控。
@@ -259,6 +264,7 @@ class SettingsPage(QWidget):
         self.auto_check.toggled.connect(lambda *_a: self._on_apply())
         self.blur_hide_check.toggled.connect(lambda *_a: self._on_apply())
         self.autostart_check.toggled.connect(lambda *_a: self._on_apply())
+        self.auto_update_check.toggled.connect(self._on_auto_update_toggled)
         # 情绪推荐：灵敏度释放后才保存（拖动中只改标签，避免高频写盘）
         self.emotion_check.toggled.connect(self._on_emotion_toggled)
         self.emotion_ai_check.toggled.connect(self._on_emotion_ai_toggled)
@@ -410,6 +416,53 @@ class SettingsPage(QWidget):
             "候选条在窗口失焦或焦点离开输入框时自动收起；关闭则常驻直到手动关闭"
         )
         return self.blur_hide_check
+
+    # ---------- 自动更新 ----------
+    def _auto_update_toggle(self):
+        self.auto_update_check = ToggleSwitch(self._theme)
+        self.auto_update_check.setToolTip(
+            "开启后：后台自动检查并下载新版本，关闭程序时自动安装。\n"
+            "关闭后：不会主动检查，但你仍可在「关于」页手动检查并一键更新。")
+        return self.auto_update_check
+
+    def _refresh_auto_update_status(self):
+        """显示自动更新当前是否可用、上次检查时间。"""
+        lbl = getattr(self, "_auto_update_status", None)
+        if lbl is None:
+            return
+        try:
+            from core import updater
+
+            if not updater.is_supported():
+                lbl.setText("当前不可用：%s" % updater.unsupported_reason())
+                if hasattr(self, "auto_update_check"):
+                    self.auto_update_check.setEnabled(False)
+                return
+
+            if hasattr(self, "auto_update_check"):
+                self.auto_update_check.setEnabled(True)
+
+            if not self.auto_update_check.isChecked():
+                lbl.setText("已关闭。仍可在「关于」页手动检查更新，"
+                            "下载后可直接安装。")
+                return
+
+            last = updater.last_check_time()
+            if not last:
+                lbl.setText("启动 30 秒后开始检查，每 24 小时最多一次。")
+            else:
+                import time as _t
+                ago = max(0, int((_t.time() - last) / 3600))
+                lbl.setText("上次检查：%d 小时前。每 24 小时最多检查一次。"
+                            % ago)
+        except Exception:
+            lbl.setText("")
+
+    def _on_auto_update_toggled(self, checked):
+        if getattr(self, "_loading", False):
+            return
+        self._refresh_auto_update_status()
+        self._on_apply()
 
     # ---------- 情绪推荐 ----------
     def _emotion_toggle(self):
@@ -627,6 +680,8 @@ class SettingsPage(QWidget):
             self._refresh_emotion_stats()
             self.page_spin.setValue(int(cfg.get("page_size", 3)))
             self.autostart_check.setChecked(autostart.is_enabled())
+            self.auto_update_check.setChecked(bool(cfg.get("auto_update", True)))
+            self._refresh_auto_update_status()
             # 源码态强制显示为关闭：开关本身已禁用，若还显示"开"会
             # 让用户以为功能生效了（实际配置值可能是打包态遗留的 true）。
             from core import elevate as _elevate
@@ -865,6 +920,7 @@ class SettingsPage(QWidget):
         new_cfg["emotion_learning"] = self.emotion_learn_check.isChecked()
         new_cfg["page_size"] = self.page_spin.value()
         new_cfg["autostart"] = self.autostart_check.isChecked()
+        new_cfg["auto_update"] = self.auto_update_check.isChecked()
         # 源码态开关是禁用的、恒显示 False。此时**不能**把 False 写回配置，
         # 否则用户在打包态开过 UIA 提权、临时用源码跑一次改个主题，
         # 就会把那个 true 抹掉（下次打包运行还得重新开）。

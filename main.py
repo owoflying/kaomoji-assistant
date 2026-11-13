@@ -42,6 +42,15 @@ def main():
         write_diag()
         return
 
+    # 更新功能自检：验证**打包态**下自动更新是否真的可用。
+    #
+    # 为什么需要它：`updater.is_supported()` 在源码态返回 False，
+    # 相关分支根本不会执行——曾经因此漏掉一个"一打包就崩"的 bug。
+    # 这个模式把关键状态写成文本文件，方便在真实 exe 上确认。
+    if "--selftest-update" in sys.argv:
+        _selftest_update(app)
+        return
+
     # 本次是否由「UAC 提权申请」启动的新实例。
     # 看过这个参数就标记下来，避免新进程再次弹 UAC（防无限弹窗循环）。
     from core import elevate
@@ -55,6 +64,87 @@ def main():
     # 运行期组件通过 app 反向持有，避免被垃圾回收提前收走
     app.runtime = AppRuntime(app, load_config())
     sys.exit(app.exec())
+
+
+def _selftest_update(app):
+    """把自动更新的关键状态写到 exe 同目录的 update_selftest.txt。
+
+    覆盖源码态测不到的几条：is_supported、设置页开关是否可用、
+    关于页安装回调是否注入、updater 是否被创建。
+    """
+    import os
+    import sys as _sys
+    import traceback
+
+    lines = []
+
+    def w(s=""):
+        lines.append(str(s))
+
+    w("frozen = %r" % getattr(_sys, "frozen", False))
+    try:
+        from core import updater
+        w()
+        w("[updater]")
+        w("  is_supported      = %r" % updater.is_supported())
+        w("  unsupported_reason= %r" % (updater.unsupported_reason() or ""))
+        w("  should_check_now  = %r"
+          % updater.should_check_now({}))
+
+        from core.config_store import load_config
+        from app_runtime import AppRuntime
+
+        cfg = load_config()
+        cfg["plugins_enabled"] = {}
+        rt = AppRuntime(app, cfg)
+        app.processEvents()
+
+        sp = rt.unified.settings_page
+        ab = rt.unified.about_page
+        w()
+        w("[settings]")
+        w("  has_toggle      = %r" % hasattr(sp, "auto_update_check"))
+        w("  toggle_enabled  = %r"
+          % (sp.auto_update_check.isEnabled()
+             if hasattr(sp, "auto_update_check") else "n/a"))
+        w("  toggle_checked  = %r"
+          % (sp.auto_update_check.isChecked()
+             if hasattr(sp, "auto_update_check") else "n/a"))
+        w("  status_text     = %r"
+          % (getattr(sp, "_auto_update_status", None).text()
+             if hasattr(sp, "_auto_update_status") else ""))
+
+        w()
+        w("[about-page]")
+        w("  install_cb        = %r"
+          % callable(getattr(ab, "_install_cb", None)))
+        w("  install_package_cb= %r"
+          % callable(getattr(ab, "_install_package_cb", None)))
+
+        w()
+        w("[runtime]")
+        up = getattr(rt, "updater", None)
+        w("  updater_created   = %r" % (up is not None))
+        w("  updater_type      = %s" % (type(up).__name__ if up else "None"))
+        w("  pending_package   = %r"
+          % (up.has_pending_package() if up else "n/a"))
+    except Exception:
+        w()
+        w("[ERROR]")
+        w(traceback.format_exc())
+
+    # 写到 exe 同目录（onedir 下是 dist/KaomojiAssistant/）
+    try:
+        base = os.path.dirname(_sys.executable) if getattr(
+            _sys, "frozen", False) else os.getcwd()
+    except Exception:
+        base = os.getcwd()
+    out = os.path.join(base, "update_selftest.txt")
+    try:
+        with open(out, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

@@ -105,6 +105,8 @@ class AppRuntime:
         #: 情绪推荐"已展示待确认"：(emotion, source_text)。
         #: 面板关闭时若它还在，说明用户没采用这次推荐 → 弱负反馈。
         self._pending_emotion = None
+        #: 自动更新的延迟检查定时器（可被"关闭自动更新"取消）
+        self._auto_update_timer = None
         self._log_viewer = None
         # 上一次真正贴到 QApplication 上的样式串，用于幂等短路（见 _apply_app_theme）
         self._applied_style = None
@@ -408,6 +410,13 @@ class AppRuntime:
                     setter(self.install_update_now)
                 except Exception:
                     pass
+            # 「手动检查更新 → 下载完直接安装」也接到本运行时
+            setter2 = getattr(page, "set_install_package_callback", None)
+            if callable(setter2):
+                try:
+                    setter2(self.install_update_from_package)
+                except Exception:
+                    pass
 
         if not updater.is_supported():
             msg = updater.unsupported_reason()
@@ -437,8 +446,12 @@ class AppRuntime:
         self.updater.ready_to_install.connect(self._on_update_ready)
         self.updater.installing.connect(self._on_installing)
 
-        QTimer.singleShot(
-            int(updater.STARTUP_DELAY_SEC * 1000), self._check_update_quietly)
+        # 用可取消的 QTimer 而不是 singleShot：用户可能在延迟期间
+        # 就去设置里关掉了自动更新，那时要能真的取消
+        self._auto_update_timer = QTimer(self.app)
+        self._auto_update_timer.setSingleShot(True)
+        self._auto_update_timer.timeout.connect(self._check_update_quietly)
+        self._auto_update_timer.start(int(updater.STARTUP_DELAY_SEC * 1000))
 
     def _check_update_quietly(self):
         if getattr(self, "updater", None) is None:
@@ -605,6 +618,9 @@ class AppRuntime:
         self.plugins.set_theme_name(effective_theme)
         self.state.max_recent = int(self.config.get("max_recent", 30))
         self.plugins.emit("config_changed", self.config)
+        # 自动更新开关变化：开→立即排一次检查；关→取消已排的检查
+        if "auto_update" in changed:
+            self._on_auto_update_switched()
         # 情绪推荐：把「开关 / 灵敏度 / 是否学习」同步给分类器，实时生效
         self._apply_emotion_config()
 
@@ -824,6 +840,82 @@ class AppRuntime:
                 clf.maybe_autosave(every=20)
         except Exception:
             pass
+
+    def install_update_from_package(self, package_path, version=""):
+        """安装**指定路径**的更新包（关于页手动下载后用）。
+
+        ## 为什么需要它
+
+        自动更新开关关掉后，用户仍可能在「关于」页手动检查更新。
+        以前那条路径只把 zip 保存下来、提示用户自己去解压替换——
+        对普通用户来说等于"没更新成功"。
+
+        现在手动下载完也走同一套安装器：解压 → 启动替换脚本 → 重启。
+
+        :return: 是否成功启动了安装流程
+        """
+        try:
+            from core import updater_install
+
+            if not updater_install.can_self_update():
+                append_log("warn", "update",
+                           "当前形态无法自动安装：%s"
+                           % updater_install.install_dir())
+                return False
+
+            staging, _exe = updater_install.prepare(package_path, append_log)
+            try:
+                updater_install.write_pending(version or "")
+                updater_install.launch_installer(staging, append_log)
+            except Exception:
+                # 启动失败：清掉暂存目录和标记，不能留下半成品
+                import shutil
+                shutil.rmtree(staging, ignore_errors=True)
+                updater_install.clear_pending()
+                raise
+
+            append_log("info", "update",
+                       "已启动安装程序，即将退出并替换为新版本")
+            QTimer.singleShot(200, self.app.quit)
+            return True
+        except Exception as e:
+            append_log("error", "update", "安装失败：%r" % (e,))
+            return False
+
+    def _on_auto_update_switched(self):
+        """用户在设置里切换「自动检查更新」后的即时反应。
+
+        * 打开：不必等到下次启动，**立刻**排一次检查（30 秒后）。
+        * 关闭：把已排的检查取消，避免用户关了还偷偷检查。
+        """
+        from core import updater
+
+        enabled = bool(self.config.get("auto_update", True))
+        if not enabled:
+            t = getattr(self, "_auto_update_timer", None)
+            if t is not None:
+                try:
+                    t.stop()
+                except Exception:
+                    pass
+            append_log("info", "update", "已关闭自动检查更新")
+            return
+
+        if getattr(self, "updater", None) is None:
+            if not updater.is_supported():
+                return
+            self.updater = updater.AutoUpdater(self.config)
+            self.updater.update_available.connect(self._on_update_available)
+            self.updater.up_to_date.connect(
+                lambda v: append_log("info", "update", "已是最新版本 %s" % v))
+            self.updater.error.connect(
+                lambda m: append_log("warn", "update", m))
+            self.updater.progress.connect(self._on_update_progress)
+            self.updater.ready_to_install.connect(self._on_update_ready)
+            self.updater.installing.connect(self._on_installing)
+
+        append_log("info", "update", "已开启自动检查更新，稍后开始检查")
+        QTimer.singleShot(3000, self._check_update_quietly)
 
     def _apply_emotion_config(self):
         """把情绪推荐相关配置同步到分类器与监听器。

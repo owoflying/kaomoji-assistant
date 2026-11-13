@@ -197,9 +197,23 @@ class AutoUpdater(QObject):
         layout = updater_install.detect_layout(
             self.package_path, updater_install.exe_name())
         if not layout.get("ok"):
-            self.error.emit("更新包结构异常：%s" % layout.get("reason", ""))
+            self._fail("更新包结构异常：%s" % layout.get("reason", ""))
+            # 坏包要删掉：留着不仅占空间，下次还可能被误用
+            self._cleanup_bad_package()
             return
         self.ready_to_install.emit(self.new_version, self.package_path)
+
+    def _cleanup_bad_package(self):
+        """删除下载下来但校验失败的包，并清空路径。"""
+        p = self.package_path
+        self.package_path = ""
+        if not p:
+            return
+        try:
+            if os.path.isfile(p):
+                os.remove(p)
+        except Exception:
+            pass
 
     # ---------- 安装 ----------
     def install_now(self, log=None):
@@ -218,23 +232,73 @@ class AutoUpdater(QObject):
         return self._prepare_and_launch(log, relaunch_note=True)
 
     def _prepare_and_launch(self, log=None, relaunch_note=False):
+        """解压 → 启动安装脚本。**任何一步失败都要完整回退。**
+
+        ## 回退要回退什么
+
+        这个方法会改动两处外部状态，失败时都必须还原：
+
+          1. **暂存目录**：`prepare()` 解压出来的临时文件。
+             不清理会一直堆在 %TEMP%，时间长了很占空间。
+          2. **pending 标记**：`write_pending()` 写的"正在更新到 X"。
+             留着它，下次启动会误判为"上次更新失败"，
+             而且 `check_pending_result` 会反复提示。
+
+        早期版本只清了 pending、没清暂存目录，而且 `launch_installer`
+        失败时连 pending 都可能没清干净（异常路径不完整）。
+        现在用 `finally` 统一兜底。
+        """
         if not self.package_path or not os.path.isfile(self.package_path):
+            self._fail("更新包不存在或已被删除", log)
             return False
+
+        staging = None
+        launched = False
         try:
             updater_install.write_pending(self.new_version)
             staging, _exe = updater_install.prepare(self.package_path, log)
             updater_install.launch_installer(staging, log)
+            launched = True
         except Exception as e:
-            if log is not None:
+            self._fail("安装失败：%s" % e, log, exc=e)
+            return False
+        finally:
+            if not launched:
+                # 没成功启动安装脚本 → 完整回退
+                if staging:
+                    try:
+                        import shutil
+                        shutil.rmtree(staging, ignore_errors=True)
+                    except Exception:
+                        pass
                 try:
-                    log("error", "update", "安装失败：%r" % (e,))
+                    updater_install.clear_pending()
                 except Exception:
                     pass
-            updater_install.clear_pending()
-            self.error.emit("安装失败：%s" % e)
-            return False
+                if log is not None:
+                    try:
+                        log("info", "update", "已回退：清理暂存文件与更新标记")
+                    except Exception:
+                        pass
+            else:
+                # 启动成功：标记留给下次启动判断结果
+                pass
+
         self.installing.emit(self.new_version)
         return True
+
+    def _fail(self, message, log=None, exc=None):
+        """统一失败处理：记日志 + 发信号。"""
+        if log is not None:
+            try:
+                log("error", "update",
+                    message if exc is None else "%s（%r）" % (message, exc))
+            except Exception:
+                pass
+        try:
+            self.error.emit(message)
+        except Exception:
+            pass
 
     def has_pending_package(self):
         """是否已有下载好待安装的包。"""

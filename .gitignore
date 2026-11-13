@@ -46,3 +46,6 @@ plugins/*.zip
 .vscode/
 *.swp
 .DS_Store
+
+# 打包态自检产物
+update_selftest.txt

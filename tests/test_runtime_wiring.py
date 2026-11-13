@@ -166,3 +166,83 @@ def test_app_runtime_is_not_qobject():
     assert not issubclass(AppRuntime, QObject), (
         "如果 AppRuntime 将来继承了 QObject，"
         "可以改回传 parent（但要同步更新本测试）")
+
+
+# ---------------------------------------------------------------- 自动更新开关
+def test_auto_update_switch_off_cancels_pending_check(runtime, monkeypatch):
+    """关掉自动更新时，已排的延迟检查要真的取消。"""
+    monkeypatch.setattr(updater_mod, "is_supported", lambda: True)
+    monkeypatch.setattr(updater_mod, "should_check_now", lambda cfg: True)
+
+    rt = runtime
+    rt._schedule_auto_update()
+    timer = rt._auto_update_timer
+    if timer is None:
+        pytest.skip("当前形态没有排定时器")
+
+    rt.config["auto_update"] = False
+    rt._on_auto_update_switched()
+    assert not timer.isActive(), "关闭后定时器应停止"
+
+
+def test_auto_update_switch_on_creates_updater(runtime, monkeypatch):
+    """打开自动更新应立刻创建 updater（不必等重启）。"""
+    monkeypatch.setattr(updater_mod, "is_supported", lambda: True)
+
+    rt = runtime
+    rt.updater = None
+    rt.config["auto_update"] = True
+    rt._on_auto_update_switched()
+    assert getattr(rt, "updater", None) is not None, \
+        "打开后应创建 AutoUpdater"
+
+
+def test_settings_has_auto_update_toggle(runtime):
+    """设置页必须有「自动检查更新」开关。
+
+    之前 `auto_update` 配置项一直存在但**没有 UI**，
+    用户根本没法关掉自动更新。
+    """
+    sp = runtime.unified.settings_page
+    assert hasattr(sp, "auto_update_check"), "缺少自动更新开关"
+    assert hasattr(sp, "_auto_update_status"), "缺少状态说明"
+
+
+def test_about_page_can_install_downloaded_package(runtime):
+    """关于页要有"安装指定包"的回调（手动检查更新后一键装）。"""
+    ab = runtime.unified.about_page
+    assert callable(getattr(ab, "_install_package_cb", None)), \
+        "缺少安装包回调，手动下载后无法自动安装"
+
+
+# ---------------------------------------------------------------- 更新回退
+def test_install_failure_clears_pending(tmp_path, monkeypatch):
+    """安装失败时必须清掉 pending 标记，不能留下"半更新"状态。"""
+    from core import updater as up_mod
+    from core import updater_install
+
+    # 用坏包让 prepare 抛错
+    bad = tmp_path / "bad.zip"
+    bad.write_bytes(b"not a zip")
+
+    u = up_mod.AutoUpdater({"auto_update": True})
+    u.package_path = str(bad)
+    u.new_version = "9.9"
+
+    assert u._prepare_and_launch(None) is False
+    assert updater_install.read_pending() == "", "失败后 pending 应被清空"
+
+
+def test_bad_package_is_deleted(tmp_path):
+    """结构异常（校验不过）的包要删掉，不能留着占空间或被误用。"""
+    from core import updater as up_mod
+
+    bad = tmp_path / "broken.zip"
+    bad.write_bytes(b"not a zip either")
+
+    u = up_mod.AutoUpdater({"auto_update": True})
+    u.new_version = "9.9"
+    u._on_downloaded(str(bad))
+
+    assert not bad.exists(), "坏包应被删除"
+    assert u.package_path == "", "package_path 应清空"

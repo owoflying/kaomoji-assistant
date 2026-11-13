@@ -49,3 +49,6 @@ plugins/*.zip
 
 # 打包态自检产物
 update_selftest.txt
+
+# 调试残留
+%LOG%

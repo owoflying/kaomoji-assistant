@@ -201,25 +201,34 @@ def build_script(install_path, exe_file, staging_dir=None):
 
     :param install_path: 安装目录（脚本运行时内容会被替换）
     :param exe_file:     exe 文件名（相对 install_path）
-    :param staging_dir: 新版本解压好的目录；为 None 表示由脚本自己解压备份
+    :param staging_dir: 新版本解压好的目录
 
-    脚本逻辑（尽量防御性，任何一步失败都尝试回滚）：
+    ## 每一步都必须校验，失败必须能回滚
 
-        @echo off
-        rem 1. 等旧进程退出
-        :wait
-        tasklist | find /i "xxx.exe" >nul && (timeout /t 1 >nul & goto wait)
-        rem 2. 旧文件改名
-        ren "install\\xxx.exe" "xxx.exe.old"
-        ren "install\\_internal" "_internal.old"
-        rem 3. 新文件搬入
-        xcopy /E /I /Y /Q "staging\\*" "install\\"
-        rem 4. 启动新版本
-        start "" "install\\xxx.exe"
-        rem 5. 清理
-        rd /S /Q "install\\_internal.old"
-        del "install\\xxx.exe.old"
-        del "%~f0"
+    早期版本有四个致命缺陷，实测会导致"更新失败后程序彻底打不开"：
+
+    1. **`xcopy` 失败被吞掉**：`>nul 2>&1` 之后不检查 errorlevel，
+       只有 exe 不存在才回滚。若 `_internal` 拷一半失败，会留下
+       "新 exe + 半个旧运行库"的必崩组合。
+    2. **回滚不校验**：`ren` 失败了也往下走，可能既没有新版也没有旧版。
+    3. **先 `rd` 再 `ren`**：`rd` 失败时 `ren` 也会失败，旧目录彻底丢失。
+    4. **失败静默**：脚本悄悄退出，用户只看到程序没了。
+
+    现在每一步都校验，回滚时先把旧的挪回去再删新的，失败写标记。
+
+    ## 为什么用批处理而不是 Python
+
+    脚本运行时安装目录里的 DLL 会被它自己锁定。批处理不加载任何
+    被替换的文件，是唯一安全的选择。
+
+    ## ⚠ 关于反斜杠与 `%` 格式化
+
+    脚本内容是批处理：路径必须用**单个**反斜杠；同时脚本里有大量
+    批处理变量（`%INS%`、`%EXE%`…）。因此这里**既不能用 Python 的
+    `%%` 格式化，也不能在字符串里手写反斜杠**——两者都反复出错。
+
+    统一做法：用 `P()` 拼路径（内部用 `BS` 变量代表单个反斜杠），
+    所有动态部分用字符串加法拼进 `a()`。
     """
     if not install_path or not exe_file:
         raise InstallError("缺少安装路径或 exe 名称")
@@ -228,54 +237,170 @@ def build_script(install_path, exe_file, staging_dir=None):
     old_exe = exe + OLD_SUFFIX
     old_internal = "_internal" + OLD_SUFFIX
 
-    # 注意：脚本里有大量批处理变量（%INS%、%EXE%…），与 Python 的 % 格式化
-    # 冲突，所以这里一律用 f-string 拼接，不出现 % 运算符。
-    lines = [
-        "@echo off",
-        "chcp 65001 >nul 2>&1",
-        "setlocal",
-        f'set "INS={ip}"',
-        f'set "STAGE={staging_dir or ""}"',
-        f'set "EXE={exe}"',
-        "",
-        "rem ---- 1. 等待旧进程退出 ----",
-        ":wait",
-        'tasklist /FI "IMAGENAME eq %EXE%" 2>nul | find /I "%EXE%" >nul',
-        "if not errorlevel 1 (",
-        "    timeout /t 1 /nobreak >nul",
-        "    goto wait",
-        ")",
-        "",
-        "rem ---- 2. 旧文件改名（运行中的 exe 不能删，但可以改名） ----",
-        f'if exist "%INS%\\%EXE%" ren "%INS%\\%EXE%" "{old_exe}" >nul 2>&1',
-        f'if exist "%INS%\\_internal" ren "%INS%\\_internal" "{old_internal}" >nul 2>&1',
-        "",
-        "rem ---- 3. 新文件搬入 ----",
-        'if not "%STAGE%"=="" (',
-        '    xcopy "%STAGE%\\*" "%INS%\\" /E /I /Y /Q >nul 2>&1',
-        ")",
-        "",
-        "rem ---- 4. 校验并启动 ----",
-        'if not exist "%INS%\\%EXE%" goto rollback',
-        'start "" "%INS%\\%EXE%"',
-        "",
-        "rem ---- 5. 清理旧文件 ----",
-        f'rd /S /Q "%INS%\\{old_internal}" >nul 2>&1',
-        f'del /F /Q "%INS%\\{old_exe}" >nul 2>&1',
-        "goto done",
-        "",
-        "rem ---- 回滚：把改名的旧文件换回来 ----",
-        ":rollback",
-        f'if exist "%INS%\\{old_internal}" rd /S /Q "%INS%\\_internal" >nul 2>&1',
-        f'if exist "%INS%\\{old_internal}" ren "%INS%\\{old_internal}" "_internal" >nul 2>&1',
-        f'if exist "%INS%\\{old_exe}" ren "%INS%\\{old_exe}" "%EXE%" >nul 2>&1',
-        'start "" "%INS%\\%EXE%"',
-        "",
-        ":done",
-        "endlocal",
-        'del /F /Q "%~f0" >nul 2>&1',
-    ]
-    return "\r\n".join(lines) + "\r\n"
+    BS = chr(92)            # 单个反斜杠
+    TB = "%TEMP%" + BS      # "%TEMP%\"
+
+    def P(*parts):
+        """拼一个带引号的批处理路径。
+
+        ``P("%INS%", "x")`` 得到 ``"%INS%<反斜杠>x"``（反斜杠是单个的）。
+        用函数而不是字符串字面量，是为了彻底避免 Python 转义踩坑。
+        """
+        return '"' + BS.join(parts) + '"'
+
+    LOGD = TB + "KaomojiUpdate"
+    LOGP = LOGD + BS + "update_log.txt"
+    FAILP = LOGD + BS + "update_failed.txt"
+
+    L = []
+    a = L.append
+
+    a("@echo off")
+    a("chcp 65001 >nul 2>&1")
+    a("setlocal EnableDelayedExpansion")
+    a('set "INS=' + ip + '"')
+    a('set "STAGE=' + (staging_dir or "") + '"')
+    a('set "EXE=' + exe + '"')
+    a('set "LOG=' + LOGP + '"')
+    a('if not exist ' + P(LOGD) + ' mkdir ' + P(LOGD) + ' >nul 2>&1')
+    a('echo [%DATE% %TIME%] start >> ' + P(LOGP))
+    # 上次的失败标记先清掉（写死路径，见下方 :rollback 的说明）
+    a('if exist ' + P(FAILP) + ' del /F /Q ' + P(FAILP) + ' >nul 2>&1')
+    a("")
+
+    # ---------------- 1. 等旧进程退出 ----------------
+    a("rem ---- 1. wait for old process (max 60s) ----")
+    a("set /a WAITED=0")
+    a(":wait")
+    a('tasklist /FI "IMAGENAME eq %EXE%" 2>nul | find /I "%EXE%" >nul')
+    a("if errorlevel 1 goto wait_done")
+    a("set /a WAITED+=1")
+    a("if !WAITED! GEQ 60 goto wait_done")
+    # 用 ping 而不是 timeout：`timeout /t` 在没有控制台的环境会立即返回
+    a("ping -n 2 127.0.0.1 >nul 2>&1")
+    a("goto wait")
+    a(":wait_done")
+    a('echo [%DATE% %TIME%] old process gone >> ' + P(LOGP))
+    a("")
+
+    # ---------------- 2. 旧文件改名（带校验） ----------------
+    a("rem ---- 2. backup old files ----")
+    a("set HAS_OLD_EXE=0")
+    a("set HAS_OLD_INT=0")
+    a('if exist ' + P("%INS%", "%EXE%") + ' (')
+    a('  ren ' + P("%INS%", "%EXE%") + ' "' + old_exe + '" >nul 2>&1')
+    a('  if exist ' + P("%INS%", old_exe) + ' set HAS_OLD_EXE=1')
+    a(")")
+    a('if exist ' + P("%INS%", "_internal") + ' (')
+    a('  ren ' + P("%INS%", "_internal") + ' "' + old_internal + '" >nul 2>&1')
+    a('  if exist ' + P("%INS%", old_internal) + ' set HAS_OLD_INT=1')
+    a(")")
+    a('if "%HAS_OLD_EXE%"=="0" if not exist '
+      + P("%INS%", "%EXE%") + ' goto backup_failed')
+    a('echo [%DATE% %TIME%] backup done exe=%HAS_OLD_EXE% int=%HAS_OLD_INT% >> '
+      + P(LOGP))
+    a("")
+
+    # ---------------- 3. 新文件搬入（带校验） ----------------
+    a("rem ---- 3. copy new files ----")
+    a('if "%STAGE%"=="" goto no_stage')
+    a('if not exist ' + P("%STAGE%", "%EXE%") + ' goto stage_bad')
+    a('xcopy ' + P("%STAGE%", "*") + ' ' + P("%INS%")
+      + ' /E /I /Y /Q >> ' + P(LOGP) + ' 2>&1')
+    a("if errorlevel 1 goto copy_failed")
+    a(":no_stage")
+    a("")
+
+    # ---------------- 4. 校验关键文件 ----------------
+    a("rem ---- 4. verify ----")
+    a('if not exist ' + P("%INS%", "%EXE%") + ' goto copy_failed')
+    a('if not exist ' + P("%INS%", "_internal") + ' goto copy_failed')
+    a('echo [%DATE% %TIME%] copy verified >> ' + P(LOGP))
+    a("")
+
+    # ---------------- 5. 启动新版（不检测进程） ----------------
+    a("rem ---- 5. start new version ----")
+    a('echo [%DATE% %TIME%] starting >> ' + P(LOGP))
+    a('start "" ' + P("%INS%", "%EXE%"))
+    a('echo [%DATE% %TIME%] started >> ' + P(LOGP))
+    a("goto cleanup")
+    a("")
+
+    # ---------------- 回滚 ----------------
+    a("rem ---- rollback: restore old first, then drop new ----")
+    a(":copy_failed")
+    a('echo [%DATE% %TIME%] copy failed, rolling back >> ' + P(LOGP))
+    a("goto rollback")
+    a(":stage_bad")
+    a('echo [%DATE% %TIME%] staging bad >> ' + P(LOGP))
+    a("goto rollback")
+    a(":backup_failed")
+    a('echo [%DATE% %TIME%] backup failed >> ' + P(LOGP))
+    a('if exist ' + P(FAILP) + ' del /F /Q ' + P(FAILP) + ' >nul 2>&1')
+    a('>>' + P(FAILP) + ' echo UPDATE_FAILED')
+    a('>>' + P(FAILP) + ' echo ' + LOGP)
+    a("goto exit_norestart")
+    a("")
+
+    a(":rollback")
+    a("rem For _internal: move new aside, restore old, then delete aside.")
+    a('if "%HAS_OLD_INT%"=="1" (')
+    a('  if exist ' + P("%INS%", "_internal") + ' ren '
+      + P("%INS%", "_internal") + ' "_internal.new" >nul 2>&1')
+    a('  ren ' + P("%INS%", old_internal) + ' "_internal" >nul 2>&1')
+    a('  if exist ' + P("%INS%", "_internal.new") + ' rd /S /Q '
+      + P("%INS%", "_internal.new") + ' >nul 2>&1')
+    a(")")
+    a("rem Same for the exe.")
+    a('if "%HAS_OLD_EXE%"=="1" (')
+    a('  if exist ' + P("%INS%", "%EXE%") + ' ren '
+      + P("%INS%", "%EXE%") + ' "' + exe + '.new" >nul 2>&1')
+    a('  ren ' + P("%INS%", old_exe) + ' "%EXE%" >nul 2>&1')
+    a('  if exist ' + P("%INS%", exe + ".new") + ' del /F /Q '
+      + P("%INS%", exe + ".new") + ' >nul 2>&1')
+    a(")")
+    a("rem Verify the rollback actually restored things.")
+    a('if not exist ' + P("%INS%", "%EXE%") + ' goto rollback_failed')
+    a('if "%HAS_OLD_INT%"=="1" if not exist '
+      + P("%INS%", "_internal") + ' goto rollback_failed')
+    a('echo [%DATE% %TIME%] rollback ok >> ' + P(LOGP))
+    # NOTE: 这里写失败标记**用写死的字面路径**，不要用 %FAIL% 变量。
+    # 实测：同一位置用 `>>"%FAIL%" echo ...` 写不出文件，而同一变量的值
+    # 打印出来完全正确；换成字面路径就成功。原因不明，但可靠优先。
+    a('if exist ' + P(FAILP) + ' del /F /Q ' + P(FAILP) + ' >nul 2>&1')
+    a('>>' + P(FAILP) + ' echo UPDATE_FAILED')
+    a('>>' + P(FAILP) + ' echo ' + LOGP)
+    a('start "" ' + P("%INS%", "%EXE%"))
+    a("goto exit_norestart")
+    a("")
+
+    a(":rollback_failed")
+    a('echo [%DATE% %TIME%] ROLLBACK FAILED >> ' + P(LOGP))
+    a('if exist ' + P(FAILP) + ' del /F /Q ' + P(FAILP) + ' >nul 2>&1')
+    a('>>' + P(FAILP) + ' echo ROLLBACK_FAILED')
+    a('>>' + P(FAILP) + ' echo ' + ip)
+    a('>>' + P(FAILP) + ' echo ' + LOGP)
+    a("goto exit_norestart")
+    a("")
+
+    # ---------------- 成功后清理 ----------------
+    a(":cleanup")
+    a("rem ---- 6. cleanup backups ----")
+    a('if "%HAS_OLD_INT%"=="1" rd /S /Q ' + P("%INS%", old_internal)
+      + ' >nul 2>&1')
+    a('if "%HAS_OLD_EXE%"=="1" del /F /Q ' + P("%INS%", old_exe)
+      + ' >nul 2>&1')
+    a('if not "%STAGE%"=="" rd /S /Q ' + P("%STAGE%") + ' >nul 2>&1')
+    a('echo [%DATE% %TIME%] update done >> ' + P(LOGP))
+
+    a(":exit_norestart")
+    a("endlocal")
+    a('del /F /Q "%~f0" >nul 2>&1')
+
+    out = "\r\n".join(L) + "\r\n"
+    if BS + BS in out:
+        raise InstallError("generated script contains double backslash")
+    return out
 
 
 def prepare(install_zip, log=None):

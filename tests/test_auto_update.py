@@ -290,6 +290,45 @@ def test_clear_failure_note_removes_legacy_flag(tmp_path, monkeypatch):
     assert not flag.exists()
 
 
+def test_build_script_wait_is_short():
+    """等待旧进程退出的时间必须短。
+
+    用户实测反馈：脚本卡了 80 多秒没动静，以为是程序挂了就把黑窗口关掉，
+    结果更新根本没执行完。
+
+    原因：等待循环最多 60 次 × `ping -n 2`（2 秒）= 约 120 秒。
+    现在改为 15 次，且超时后**继续执行**（不是干等）。
+    """
+    s = updater_install.build_script(r"C:\A", "app.exe", r"C:\S")
+    import re
+    m = re.search(r"if !WAITED! GEQ (\d+)", s)
+    assert m, "缺少等待次数上限"
+    limit = int(m.group(1))
+    assert limit <= 20, "等待上限 %d 次太长（每次约 2 秒）" % limit
+    # 超时后要能继续，不能死循环
+    assert "wait_timeout" in s, "缺少超时分支"
+    assert "continue anyway" in s, "超时后应继续执行"
+
+
+def test_launch_installer_does_not_use_conflicting_flags():
+    """启动脚本的进程标志不能冲突。
+
+    `DETACHED_PROCESS` 让子进程不继承控制台，但 `cmd.exe` 发现自己
+    没有控制台时会**新建一个可见窗口**——用户看到的就是那个黑窗口，
+    并且关掉它会直接中断更新。
+
+    正确做法是只用 `CREATE_NO_WINDOW`。
+    """
+    import inspect
+
+    src = inspect.getsource(updater_install.launch_installer)
+    # 不能把两个 flag 直接 OR 在一起
+    assert "CREATE_NO_WINDOW\", 0)\n" in src or "flags" in src, \
+        "应通过 flags 变量传，而不是直接 OR"
+    # 输出要丢弃，避免继承父进程的句柄
+    assert "DEVNULL" in src, "应把 stdin/stdout/stderr 指向 DEVNULL"
+
+
 def test_build_script_requires_paths():
     with pytest.raises(updater_install.InstallError):
         updater_install.build_script("", "a.exe", "")

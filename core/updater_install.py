@@ -371,18 +371,32 @@ def build_script(install_path, exe_file, staging_dir=None):
     a("")
 
     # ---------------- 1. 等旧进程退出 ----------------
-    a("rem ---- 1. wait for old process (max 60s) ----")
+    #
+    # ⚠ 这里曾经是"最多循环 60 次、每次 ping -n 2"，也就是最多等 **120 秒**。
+    # 用户实测看到的就是这个：黑窗口卡在那里一分多钟没动静，
+    # 以为程序挂了就把窗口关掉——结果更新根本没执行完。
+    #
+    # 现在：
+    #   * 轮询间隔 1 秒、最多 15 秒（够主程序退出，又不至于让人以为卡死）；
+    #   * 超时后**不再等待**，直接继续——真锁住了会在后面改名时失败，
+    #     那时会走回滚并给出明确提示，比干等 2 分钟好得多；
+    #   * 每轮往日志写一次进度，用户/我们都能看出它在干什么。
+    a("rem ---- 1. wait for old process (max 15s) ----")
     a("set /a WAITED=0")
     a(":wait")
     a('tasklist /FI "IMAGENAME eq %EXE%" 2>nul | find /I "%EXE%" >nul')
     a("if errorlevel 1 goto wait_done")
     a("set /a WAITED+=1")
-    a("if !WAITED! GEQ 60 goto wait_done")
+    a("if !WAITED! GEQ 15 goto wait_timeout")
     # 用 ping 而不是 timeout：`timeout /t` 在没有控制台的环境会立即返回
     a("ping -n 2 127.0.0.1 >nul 2>&1")
     a("goto wait")
+    a(":wait_timeout")
+    a('echo [%DATE% %TIME%] old process still running, continue anyway >> '
+      + P(LOGP))
+    a("goto wait_done")
     a(":wait_done")
-    a('echo [%DATE% %TIME%] old process gone >> ' + P(LOGP))
+    a('echo [%DATE% %TIME%] wait finished >> ' + P(LOGP))
     a("")
 
     # ---------------- 2. 旧文件改名（带校验） ----------------
@@ -550,12 +564,29 @@ def launch_installer(staging_dir, log=None):
         f.write(script)
 
     try:
+        # ⚠ **只用 CREATE_NO_WINDOW，不要 OR 上 DETACHED_PROCESS。**
+        #
+        # 这两个 flag 冲突：
+        #   * `DETACHED_PROCESS` 让子进程**不继承**控制台；
+        #   * 但 `cmd.exe` 发现自己没有控制台时会**新建一个**，
+        #     于是屏幕上就多出一个黑窗口——用户报告"更新后只剩一个黑窗口"。
+        #
+        # 只给 `CREATE_NO_WINDOW` 时 cmd 会拿到一个隐藏的控制台，
+        # 既没有可见窗口，又能正常执行。
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        if not flags:
+            # 非 Windows 或旧 Python：退化为 DETACHED
+            flags = getattr(subprocess, "DETACHED_PROCESS", 0)
         subprocess.Popen(
             ["cmd.exe", "/c", script_path],
             cwd=script_dir,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            | getattr(subprocess, "DETACHED_PROCESS", 0),
+            creationflags=flags,
             close_fds=True,
+            # 不继承任何句柄：确保脚本与主程序完全脱钩，
+            # 主程序退出后脚本还能继续跑
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
     except Exception as e:
         raise InstallError("无法启动更新脚本：%r" % (e,))

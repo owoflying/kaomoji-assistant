@@ -174,6 +174,122 @@ def test_build_script_rollback_restores_names():
     assert "_internal.old" in rollback
 
 
+def test_build_script_checks_every_step():
+    """脚本每一步都要校验，不能"搬完不管结果"。
+
+    早期版本 `xcopy ... >nul 2>&1` 之后不检查 errorlevel，
+    只有 exe 不存在才回滚。若 `_internal` 拷一半失败，
+    会留下"新 exe + 半个旧运行库"的必崩组合。
+    """
+    s = updater_install.build_script(r"C:\A", "app.exe", r"C:\S")
+    # 复制后必须检查 errorlevel
+    assert "if errorlevel" in s
+    # 必须校验关键文件存在
+    assert 'if not exist "%INS%\\%EXE%"' in s
+    assert 'if not exist "%INS%\\_internal"' in s
+    # 必须有回滚与回滚失败两个分支
+    assert ":rollback" in s
+    assert ":rollback_failed" in s
+
+
+def test_build_script_rollback_order_is_safe():
+    """回滚必须"先把旧的改回来，再删新的"。
+
+    反过来一旦删新的失败，旧目录还在 .old 里，程序彻底打不开。
+
+    正确顺序是三步（不是两步）：
+        1. 把新的 `_internal` **重命名**为 `_internal.new`
+           （腾开位置，但不能立刻删——删失败就卡住了）
+        2. 把 `_internal.old` 改回 `_internal`
+        3. 才删除 `_internal.new`
+
+    只断言"恢复在删除之前"是不够的（重命名也算提到 new），
+    要断言三者的先后关系。
+    """
+    s = updater_install.build_script(r"C:\A", "app.exe", r"C:\S")
+    rb = s.split(":rollback")[1].split(":rollback_failed")[0]
+
+    rename_new = rb.find('ren "%INS%\\_internal" "_internal.new"')
+    restore_old = rb.find('ren "%INS%\\_internal.old" "_internal"')
+    delete_new = rb.find('rd /S /Q "%INS%\\_internal.new"')
+
+    assert rename_new >= 0, "缺少把新目录移开的步骤"
+    assert restore_old >= 0, "缺少恢复旧目录的步骤"
+    assert delete_new >= 0, "缺少清理新目录的步骤"
+
+    # 顺序：移开新的 -> 恢复旧的 -> 删掉移开的
+    assert rename_new < restore_old < delete_new, \
+        "顺序应为「移开新的 → 恢复旧的 → 清理」"
+
+
+def test_build_script_logs_result():
+    """脚本要往日志里写明确的结果标记，供 Python 侧判断成败。
+
+    早期方案是让脚本写单独的 `update_failed.txt`，但实测在长脚本里
+    那一句写不出文件（同处日志却能写）。改成"脚本只写日志、
+    Python 解析日志"后少了一类失败模式。
+    """
+    s = updater_install.build_script(r"C:\A", "app.exe", r"C:\S")
+    assert "update_log.txt" in s, "脚本要写日志"
+    # 三种结果标记都要有，且是 ASCII（中文在 chcp 65001 下不稳定）
+    assert "update done" in s, "成功标记"
+    assert "rollback ok" in s, "回滚成功标记"
+    assert "ROLLBACK FAILED" in s, "回滚失败标记"
+
+
+def test_build_script_no_process_detection_after_start():
+    """`start` 之后**不能**再查进程判断成功与否。
+
+    实测踩坑：`timeout /t` 在没有控制台的环境立即返回，
+    刚 start 就查必然查不到 → 正常更新被误判失败并回滚，
+    用户看到"更新完成但版本没变"。
+
+    现在改为"文件替换成功即成功"，由下次启动比对版本号兜底。
+    """
+    s = updater_install.build_script(r"C:\A", "app.exe", r"C:\S")
+    after_start = s.split('start ""')[1] if 'start ""' in s else ""
+    # start 之后不应该再有 tasklist 检查
+    tail = after_start.split("goto cleanup")[0]
+    assert "tasklist" not in tail, "start 之后不该再查进程"
+
+
+def test_failure_detected_from_log(tmp_path, monkeypatch):
+    """从日志尾部判断更新结果：回滚成功 → 提示失败；成功 → 不提示。"""
+    log = tmp_path / "update_log.txt"
+    monkeypatch.setattr(updater_install, "log_path", lambda: str(log))
+
+    # 1) 没有日志 → 不提示
+    assert updater_install.read_failure_note() == ""
+
+    # 2) 回滚成功 → 提示"已恢复为原版本"
+    log.write_text(
+        "[x] old process gone\n[x] copy failed, rolling back\n"
+        "[x] rollback ok\n", encoding="utf-8")
+    got = updater_install.read_failure_note()
+    assert "自动恢复" in got or "恢复" in got, got
+    assert str(log) in got, "应附上日志路径"
+
+    # 3) 回滚也失败 → 提示更严重
+    log.write_text("[x] ROLLBACK FAILED\n", encoding="utf-8")
+    got2 = updater_install.read_failure_note()
+    assert ".old" in got2, "回滚失败要告诉用户手工怎么处理"
+
+    # 4) 更新成功 → 不提示
+    log.write_text("[x] copy verified\n[x] update done\n", encoding="utf-8")
+    assert updater_install.read_failure_note() == "", "成功不该报失败"
+
+
+def test_clear_failure_note_removes_legacy_flag(tmp_path, monkeypatch):
+    """清除时要顺手删掉历史版本残留的标记文件。"""
+    flag = tmp_path / "update_failed.txt"
+    flag.write_text("UPDATE_FAILED", encoding="utf-8")
+    monkeypatch.setattr(updater_install, "failure_note_path",
+                        lambda: str(flag))
+
+    updater_install.clear_failure_note()
+    assert not flag.exists()
+
+
 def test_build_script_requires_paths():
     with pytest.raises(updater_install.InstallError):
         updater_install.build_script("", "a.exe", "")

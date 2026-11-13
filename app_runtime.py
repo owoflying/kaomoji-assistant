@@ -518,14 +518,46 @@ class AppRuntime:
             append_log("warn", "update", "退出时安装更新失败：%r" % (e,))
 
     def _report_pending_update_result(self):
-        """上次更新若未成功，提示一次（不重复安装，避免死循环）。"""
+        """上次更新若未成功，提示一次（不重复安装，避免死循环）。
+
+        两个信息来源：
+          * `check_pending_result()` 比对**实际版本号**；
+          * 脚本写的 `update_failed.txt`（回滚成功/失败都会写，
+            内容是给人看的中文说明）。
+        """
         from core import updater_install
         from core.version import get_build_version
+
+        # 先处理脚本留下的失败说明（比版本号比对更直接）
+        note = ""
+        try:
+            note = updater_install.read_failure_note()
+        except Exception:
+            note = ""
 
         try:
             state, ver = updater_install.check_pending_result(get_build_version())
         except Exception:
-            return
+            state, ver = "none", ""
+
+        if note:
+            append_log("warn", "update", "更新失败：%s" % note)
+            try:
+                if self.tray is not None:
+                    self.tray.showMessage(
+                        "更新未完成", note, QSystemTrayIcon.Warning, 8000)
+            except Exception:
+                pass
+            # 让用户在关于页也能看到
+            try:
+                page = getattr(self.unified, "about_page", None)
+                fn = getattr(page, "set_update_failed_note", None)
+                if callable(fn):
+                    fn(note)
+            except Exception:
+                pass
+            updater_install.clear_failure_note()
+
         if state == "ok":
             append_log("info", "update", "已成功更新到 %s" % ver)
             try:
@@ -536,8 +568,18 @@ class AppRuntime:
             except Exception:
                 pass
         elif state == "failed":
-            append_log("warn", "update",
-                       "上次更新到 %s 未成功（可能被取消或文件被占用）" % ver)
+            if not note:
+                append_log("warn", "update",
+                           "上次更新到 %s 未成功（可能被取消或文件被占用）" % ver)
+                try:
+                    if self.tray is not None:
+                        self.tray.showMessage(
+                            "更新未完成",
+                            "上次更新到 %s 没有成功，当前仍是原版本。"
+                            % ver,
+                            QSystemTrayIcon.Warning, 8000)
+                except Exception:
+                    pass
             updater_install.clear_pending()
 
     def _install_quit_hooks(self):

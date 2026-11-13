@@ -402,6 +402,16 @@ class AboutPage(QWidget):
         """由 AppRuntime 注入"立即安装"回调。"""
         self._install_cb = fn
 
+    def set_update_failed_note(self, note):
+        """显示"上次更新失败"的说明（由 AppRuntime 在启动时注入）。
+
+        用户最怕的是"点了更新、程序没了、也不知道为什么"。
+        这条提示告诉他们：没更新成功，但原版本已经恢复，可以正常用。
+        """
+        self._auto_status.setVisible(True)
+        self._auto_status.setText("上次更新未完成：%s" % note)
+        self._auto_install.setVisible(False)
+
     def set_install_package_callback(self, fn):
         """注入"安装指定的更新包"回调（手动检查更新时用）。
 

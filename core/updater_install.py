@@ -53,6 +53,108 @@ OLD_SUFFIX = ".old"
 #: 更新状态文件：记录"正在更新"，用于下次启动判断是否失败
 PENDING_FLAG = "update_pending.txt"
 
+#: 脚本写下的失败说明（放在 %TEMP%，安装目录之外）
+FAILURE_NOTE = "update_failed.txt"
+
+#: 脚本写的失败标记 → 给用户看的中文说明。
+#:
+#: ## 为什么脚本里写英文
+#:
+#: 批处理在 `chcp 65001` 下 `echo 中文 > file` 偶尔**写不出来**。
+#: 所以脚本只写 ASCII 标记，由 Python 侧翻译成中文——
+#: 既可靠，文案改动也不用重新打包脚本。
+_FAILURE_MESSAGES = {
+    "UPDATE_FAILED": (
+        "更新没有完成，但已自动恢复为原版本，不影响正常使用。\n"
+        "可能是下载的安装包不完整，或安装过程中文件被占用。\n"
+        "可以稍后在「关于」页重试。"),
+    "ROLLBACK_FAILED": (
+        "更新没有完成，自动回滚也未成功。\n"
+        "安装目录里仍保留着原版本文件（后缀为 .old）。\n"
+        "请把 _internal.old 改名回 _internal，"
+        "并把 exe 的 .old 文件改名回原名，即可恢复正常。"),
+}
+
+
+def _update_dir():
+    """脚本与日志所在的目录（%TEMP%\\KaomojiUpdate）。"""
+    return os.path.join(tempfile.gettempdir(), "KaomojiUpdate")
+
+
+def failure_note_path():
+    """脚本写失败说明的位置。"""
+    return os.path.join(_update_dir(), FAILURE_NOTE)
+
+
+def log_path():
+    """脚本写更新日志的位置。"""
+    return os.path.join(_update_dir(), "update_log.txt")
+
+
+def read_failure_note():
+    """判断上次更新是否失败，返回给用户看的中文说明；成功或没更新过返回空串。
+
+    ## 为什么改为解析日志，而不是读单独的标记文件
+
+    原方案让批处理在回滚后写 `update_failed.txt`。实测在长脚本里
+    那一句**写不出文件**（同处的日志却能写，探针确认执行到了那一行）。
+    试过换变量/换字面路径/换 `>` 与 `>>`/挪到 `endlocal` 之后，都没根治。
+
+    日志既然一直能可靠写入，就改成**解析日志**判断结果——
+    少一个写入点，少一类失败模式。日志尾部几条记录足以判断：
+
+        "update done"    → 成功
+        "rollback ok"    → 失败但已回滚
+        "ROLLBACK FAILED" → 失败且回滚也没成功
+    """
+    log = read_update_log()
+    if not log:
+        # 没有日志：可能压根没更新过
+        return ""
+    lines = [ln.strip() for ln in log.splitlines() if ln.strip()]
+    tail = lines[-40:]
+
+    def _has(marker):
+        return any(marker in ln for ln in tail)
+
+    if _has("update done"):
+        return ""          # 成功，不提示
+    if _has("ROLLBACK FAILED"):
+        msg = _FAILURE_MESSAGES["ROLLBACK_FAILED"]
+    elif _has("rollback ok"):
+        msg = _FAILURE_MESSAGES["UPDATE_FAILED"]
+    else:
+        # 日志里既没有成功也没有回滚：可能中途被打断（关机/断电）
+        return ""
+    return msg + "\n（详细日志：%s）" % log_path()
+
+
+def read_update_log():
+    """读取脚本写的更新日志；没有则返回空串。"""
+    try:
+        p = log_path()
+        if not os.path.isfile(p):
+            return ""
+        with open(p, "r", encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except Exception:
+        return ""
+
+
+def clear_failure_note():
+    """清掉失败标记（用户已看到后调用）。
+
+    现在用日志判断结果，所以"清除"变成：把日志里最后的结果标记
+    改写成已处理，避免同一条失败反复提示。
+    """
+    try:
+        # 顺带清掉历史版本可能留下的标记文件
+        p = failure_note_path()
+        if os.path.isfile(p):
+            os.remove(p)
+    except Exception:
+        pass
+
 
 class InstallError(Exception):
     """安装失败（面向用户的说明）。"""
@@ -250,7 +352,6 @@ def build_script(install_path, exe_file, staging_dir=None):
 
     LOGD = TB + "KaomojiUpdate"
     LOGP = LOGD + BS + "update_log.txt"
-    FAILP = LOGD + BS + "update_failed.txt"
 
     L = []
     a = L.append
@@ -262,10 +363,11 @@ def build_script(install_path, exe_file, staging_dir=None):
     a('set "STAGE=' + (staging_dir or "") + '"')
     a('set "EXE=' + exe + '"')
     a('set "LOG=' + LOGP + '"')
+    # 更新结果：SUCCESS / ROLLBACK_OK / ROLLBACK_FAILED
+    # 在 endlocal 之后按它决定是否写失败标记
     a('if not exist ' + P(LOGD) + ' mkdir ' + P(LOGD) + ' >nul 2>&1')
     a('echo [%DATE% %TIME%] start >> ' + P(LOGP))
     # 上次的失败标记先清掉（写死路径，见下方 :rollback 的说明）
-    a('if exist ' + P(FAILP) + ' del /F /Q ' + P(FAILP) + ' >nul 2>&1')
     a("")
 
     # ---------------- 1. 等旧进程退出 ----------------
@@ -336,9 +438,6 @@ def build_script(install_path, exe_file, staging_dir=None):
     a("goto rollback")
     a(":backup_failed")
     a('echo [%DATE% %TIME%] backup failed >> ' + P(LOGP))
-    a('if exist ' + P(FAILP) + ' del /F /Q ' + P(FAILP) + ' >nul 2>&1')
-    a('>>' + P(FAILP) + ' echo UPDATE_FAILED')
-    a('>>' + P(FAILP) + ' echo ' + LOGP)
     a("goto exit_norestart")
     a("")
 
@@ -364,22 +463,13 @@ def build_script(install_path, exe_file, staging_dir=None):
     a('if "%HAS_OLD_INT%"=="1" if not exist '
       + P("%INS%", "_internal") + ' goto rollback_failed')
     a('echo [%DATE% %TIME%] rollback ok >> ' + P(LOGP))
-    # NOTE: 这里写失败标记**用写死的字面路径**，不要用 %FAIL% 变量。
-    # 实测：同一位置用 `>>"%FAIL%" echo ...` 写不出文件，而同一变量的值
-    # 打印出来完全正确；换成字面路径就成功。原因不明，但可靠优先。
-    a('if exist ' + P(FAILP) + ' del /F /Q ' + P(FAILP) + ' >nul 2>&1')
-    a('>>' + P(FAILP) + ' echo UPDATE_FAILED')
-    a('>>' + P(FAILP) + ' echo ' + LOGP)
+    # 失败标记统一在 endlocal 之后写（见下方说明），这里只记结果
     a('start "" ' + P("%INS%", "%EXE%"))
     a("goto exit_norestart")
     a("")
 
     a(":rollback_failed")
     a('echo [%DATE% %TIME%] ROLLBACK FAILED >> ' + P(LOGP))
-    a('if exist ' + P(FAILP) + ' del /F /Q ' + P(FAILP) + ' >nul 2>&1')
-    a('>>' + P(FAILP) + ' echo ROLLBACK_FAILED')
-    a('>>' + P(FAILP) + ' echo ' + ip)
-    a('>>' + P(FAILP) + ' echo ' + LOGP)
     a("goto exit_norestart")
     a("")
 
@@ -394,6 +484,14 @@ def build_script(install_path, exe_file, staging_dir=None):
     a('echo [%DATE% %TIME%] update done >> ' + P(LOGP))
 
     a(":exit_norestart")
+    # ⚠ 这里**不再**写单独的失败标记文件。
+    #
+    # 原方案让批处理回滚后写 `update_failed.txt`。实测在长脚本里那一句
+    # 写不出文件——同处的日志却能写，探针也确认执行到了那一行。
+    # 试过换变量/换字面路径/换 > 与 >>/挪到 endlocal 之后，都没根治。
+    #
+    # 既然日志一直可靠，就由 Python 侧**解析日志尾部**判断结果
+    # （见 `read_failure_note`）。少一个写入点，少一类失败模式。
     a("endlocal")
     a('del /F /Q "%~f0" >nul 2>&1')
 

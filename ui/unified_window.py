@@ -43,6 +43,7 @@ from ui.pages import (
     SearchPage, SettingsPage, AboutPage,
 )
 from ui.unified_nav import NavController
+from ui.theme_fade import ThemeFader
 
 
 def _ui_font(size, weight=QFont.Weight.Normal):
@@ -265,6 +266,10 @@ class UnifiedSettingsWindow(FramelessShell):
         body.addWidget(self.content, 1)
 
         root.addLayout(body)
+
+        # 主题切换的淡入淡出过渡（挂在 central 上，覆盖整个界面内容）。
+        # 不挂在 self 上：窗口自身有圆角/阴影的自绘逻辑，加 effect 会打乱它。
+        self._theme_fader = ThemeFader(self, central)
 
         self._build_pages()
         self._wire_page_signals()
@@ -687,7 +692,31 @@ class UnifiedSettingsWindow(FramelessShell):
             self._refresh_content_sheet()
 
     def apply_config(self, config):
-        """外部配置变更后刷新窗口主题与内部页。"""
+        """外部配置变更后刷新窗口主题与内部页。
+
+        主题**真的变了**时，用一次淡入淡出把突变藏起来（见
+        `ui/theme_fade.py`）：淡出 → 换主题 → 淡入。
+
+        其它配置项变化（比如不透明度）不涉及配色跳变，直接应用。
+
+        ⚠ 如果调用方（`AppRuntime._apply_theme_with_fade`）已经把
+        换肤动作包在自己的淡出里，会设置 `_in_theme_fade` 标记，
+        这里就不要再套一层动画（否则会淡出两次、肉眼可见地闪）。
+        """
+        old_theme = getattr(self.theme, "name", None)
+        new_theme = resolve_theme_name(config.get("theme", "light"))
+        _do = lambda: self._apply_config_now(config)      # noqa: E731
+        if getattr(self, "_in_theme_fade", False):
+            _do()
+            return
+        if old_theme is not None and old_theme != new_theme:
+            # 只有深浅色真的换了才做动画
+            self._theme_fader.run(_do)
+        else:
+            _do()
+
+    def _apply_config_now(self, config):
+        """真正执行配置应用（不含过渡动画）。"""
         self.config = config
         self.theme = Theme(resolve_theme_name(config.get("theme", "light")))
         self._acrylic_on = _has_dwm

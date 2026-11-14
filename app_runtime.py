@@ -701,7 +701,19 @@ class AppRuntime:
             append_log("info" if ok else "warn", "autostart", msg)
 
         effective_theme = resolve_theme_name(self.config.get("theme", "light"))
+        theme_changed = "theme" in changed
         # 幂等：样式串没变就不重贴（详见 _apply_app_theme 注释）
+        #
+        # ⚠ 深色↔浅色切换时，这一整套工作（本函数后续的 app 级 QSS 重贴
+        # ≈1 秒 + 主窗口重铺）必须**藏进主窗口的淡出过渡里**，否则用户
+        # 会看到界面亮着卡住一两秒。做法：
+        #   * 告诉主窗口「先淡出，再执行这个回调」；
+        #   * 回调里做完所有换肤动作，主窗口随后自己淡入。
+        # 没换主题（改不透明度等）时不做动画，直接应用。
+        if theme_changed:
+            self._apply_theme_with_fade(effective_theme)
+            return
+
         self._apply_app_theme(effective_theme)
         set_app_theme(self.config.get("theme", "light"))
         if "theme" in changed:
@@ -746,6 +758,52 @@ class AppRuntime:
             # 关掉时也要检查（要从 UIAccess 令牌重启回普通权限）
             self._handle_uia_status(allow_elevate=False)
         self._sync_auto_popup()
+
+    def _apply_theme_with_fade(self, effective_theme):
+        """换主题：把耗时的换肤动作藏进窗口的淡出过渡里。
+
+        ## 为什么要这样
+
+        `QApplication.setStyleSheet` 会让整个应用重新计算样式，
+        524 个控件时实测 **1.2 秒**，而且是同步阻塞——期间界面
+        完全不动。
+
+        如果直接执行，用户看到的就是"点了一下，界面僵住一秒，
+        然后变了个颜色"，手感很差。
+
+        现在让主窗口先淡出（110ms，这期间事件循环正常），
+        在最暗的时刻执行全部换肤，然后淡入（220ms）。
+        用户感知到的是"轻轻隐了一下"，而不是"卡了一下"。
+        """
+
+        def _do():
+            # 告诉主窗口"动画我这边已经包了"，别它再淡一次
+            self.unified._in_theme_fade = True
+            try:
+                self._apply_app_theme(effective_theme)
+                set_app_theme(self.config.get("theme", "light"))
+                # 已打开的日志窗口同步换肤（否则它会停留在旧主题）
+                self._theme_log_viewer(effective_theme)
+                self._update_system_theme_watcher()
+                # 主窗口自己：主题、QSS、子页广播（不含 app 级重贴）
+                self.window.apply_config(self.config)
+                self.unified._apply_config_now(self.config)
+                self.plugins.set_theme_name(effective_theme)
+                self.plugins.emit("config_changed", self.config)
+                self.unified._update_backdrop()
+            except Exception as e:
+                append_log("error", "theme", "切换主题失败：%r" % (e,))
+                import traceback
+                traceback.print_exc()
+            finally:
+                self.unified._in_theme_fade = False
+
+        # 主窗口不可见时（无头/后台）不做动画，直接执行
+        fader = getattr(self.unified, "_theme_fader", None)
+        if fader is None or not self.unified.isVisible():
+            _do()
+            return
+        fader.run(_do)
 
     def _reload_hotkey(self):
         """按当前配置重新注册全局热键。"""

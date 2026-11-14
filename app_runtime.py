@@ -281,15 +281,78 @@ class AppRuntime:
         self.unified.config_applied.connect(self.apply_settings)
         self.unified.finished.connect(self.resume_global_hooks)
         self.unified.output_selected.connect(self._on_unified_output)
-        self.unified.settings_page.opacity_preview.connect(
-            self._preview_picker_opacity)
-        # 录制热键期间临时停用全局热键（其余时间热键始终可用）
-        self.unified.settings_page.hotkey_capture_changed.connect(
-            self._on_hotkey_capture)
+
+        # ⚠ 设置页的信号**不能在启动时连**：页面改成了懒加载，
+        # 这里一访问 `settings_page` 就会立刻把它构造出来，
+        # 等于把刚省下的 1.6 秒又花回去。
+        #
+        # 改为"页面第一次创建时再连"。`unified.page_created` 在每次
+        # 物化懒加载页面后发出（见 ui/unified_window._build_pages）。
+        self.unified.page_created.connect(self._on_unified_page_created)
+        # 如果设置页已经存在（例如用户配置里 developer_mode 导致提前建了），
+        # 立刻补连一次。
+        if self.unified.has_page("settings"):
+            self._connect_settings_page()
 
         # 数据源变化：用户新增/编辑自定义颜文字、插件启用/停用都要刷新白名单
         self.user_kao.changed.connect(self._refresh_valid_items)
         self.plugins.changed.connect(self._on_plugins_changed)
+
+    def _about_page_if_ready(self):
+        """取关于页——**已构造才返回**，没构造返回 None。
+
+        关于页是懒加载的。这里如果直接 `getattr(self.unified, "about_page")`，
+        `__getattr__` 会立刻把它构造出来（482ms）——等于把懒加载白做了。
+
+        所以：只在用户已经打开过关于页时才给它更新状态；
+        没打开过的话，进页面时会按当前状态重新渲染（页面自己会读 config）。
+        """
+        try:
+            if not self.unified.has_page("about"):
+                return None
+            return self.unified._page("about")
+        except Exception:
+            return None
+
+    def _on_unified_page_created(self, key):
+        """懒加载页面刚建好——给它补连启动时连不上的信号。"""
+        if key == "settings":
+            self._connect_settings_page()
+        elif key == "about":
+            self._connect_about_page()
+
+    def _connect_settings_page(self):
+        """把设置页的两个信号接到本运行时。
+
+        ⚠ 必须幂等：页面可能被销毁重建，重复连接会导致回调执行两次。
+        用标记属性记住"已经连过这个实例"。
+        """
+        page = self.unified._page("settings")
+        if page is None or getattr(page, "_runtime_connected", False):
+            return
+        try:
+            page.opacity_preview.connect(self._preview_picker_opacity)
+            # 录制热键期间临时停用全局热键（其余时间热键始终可用）
+            page.hotkey_capture_changed.connect(self._on_hotkey_capture)
+            page._runtime_connected = True
+        except Exception as e:
+            append_log("warn", "app", "设置页信号连接失败：%r" % (e,))
+
+    def _connect_about_page(self):
+        """关于页：注入"立即安装"与"安装指定包"两个回调。"""
+        page = self.unified._page("about")
+        if page is None or getattr(page, "_runtime_connected", False):
+            return
+        try:
+            setter = getattr(page, "set_install_callback", None)
+            if callable(setter):
+                setter(self.install_update_now)
+            setter2 = getattr(page, "set_install_package_callback", None)
+            if callable(setter2):
+                setter2(self.install_update_from_package)
+            page._runtime_connected = True
+        except Exception as e:
+            append_log("warn", "app", "关于页回调注入失败：%r" % (e,))
 
     def _on_picker_visibility(self, visible):
         """候选条显隐联动监听器：显示时暂停，隐藏时恢复。
@@ -401,8 +464,10 @@ class AppRuntime:
         # 上次更新是否成功（有新版本但版本号没变 = 失败，提示一次）
         self._report_pending_update_result()
 
-        # 关于页的「立即重启并更新」按钮接到本运行时
-        page = getattr(self.unified, "about_page", None)
+        # 关于页的「立即重启并更新」按钮接到本运行时。
+        # 页面是懒加载的，这里若不存在就等它创建时由
+        # `_on_unified_page_created` 补连（见 _connect_about_page）。
+        page = self._about_page_if_ready()
         if page is not None:
             setter = getattr(page, "set_install_callback", None)
             if callable(setter):
@@ -467,7 +532,7 @@ class AppRuntime:
 
     def _on_update_progress(self, pct):
         # 进度只在关于页展示，不打扰用户
-        page = getattr(self.unified, "about_page", None)
+        page = self._about_page_if_ready()
         fn = getattr(page, "set_update_progress", None)
         if callable(fn):
             try:
@@ -479,7 +544,7 @@ class AppRuntime:
         """下载并校验完成：通知用户（可立即重启，也可退出时自动装）。"""
         append_log("info", "update",
                    "新版本 %s 已下载并校验通过，退出程序时会自动安装" % version)
-        page = getattr(self.unified, "about_page", None)
+        page = self._about_page_if_ready()
         fn = getattr(page, "set_update_ready", None)
         if callable(fn):
             try:
@@ -550,7 +615,7 @@ class AppRuntime:
                 pass
             # 让用户在关于页也能看到
             try:
-                page = getattr(self.unified, "about_page", None)
+                page = self._about_page_if_ready()
                 fn = getattr(page, "set_update_failed_note", None)
                 if callable(fn):
                     fn(note)

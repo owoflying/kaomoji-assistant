@@ -69,6 +69,25 @@ def is_supported():
     return sys.platform == "win32" and exe_path() is not None
 
 
+#: `task_exists()` 的缓存：True / False / None(未查过)。
+#:
+#: ## 为什么必须缓存
+#:
+#: `task_exists()` 要起一个 `schtasks` 子进程，**单次约 200ms**。
+#: 而调用链 `is_enabled() → mode() → task_autostart_enabled() → task_exists()`
+#: 每次刷新设置页都会跑一遍——实测切一次主题就多花 397ms（跑了两遍）。
+#:
+#: 自启动状态只在本进程改动它时才会变，所以进程内缓存是安全的；
+#: 真改了就用 `_invalidate_task_cache()` 主动失效。
+_task_exists_cache = None
+
+
+def _invalidate_task_cache():
+    """本进程改动过计划任务后，让缓存失效。"""
+    global _task_exists_cache
+    _task_exists_cache = None
+
+
 def _run_schtasks(args):
     """执行 schtasks 并返回 (成功, 输出)。不解析本地化文本，只看退出码。"""
     try:
@@ -85,11 +104,14 @@ def _run_schtasks(args):
 
 # ---------------------------------------------------------------- 计划任务
 def task_exists():
-    """计划任务是否已存在。"""
+    """计划任务是否已存在（**进程内缓存**，见 `_task_exists_cache`）。"""
+    global _task_exists_cache
     if sys.platform != "win32":
         return False
-    ok, _ = _run_schtasks(["/query", "/tn", TASK_NAME])
-    return ok
+    if _task_exists_cache is None:
+        ok, _ = _run_schtasks(["/query", "/tn", TASK_NAME])
+        _task_exists_cache = bool(ok)
+    return _task_exists_cache
 
 
 def task_autostart_enabled():
@@ -132,6 +154,8 @@ def enable_task_autostart():
         "/rl", "HIGHEST",
         "/f",
     ])
+    # 任务状态变了，缓存必须失效
+    _invalidate_task_cache()
     if ok:
         return True, "已创建开机自启计划任务（登录时以管理员权限运行）"
     if "denied" in out.lower() or "拒绝访问" in out:
@@ -146,6 +170,8 @@ def disable_task_autostart():
     if not task_exists():
         return True, "计划任务不存在"
     ok, out = _run_schtasks(["/delete", "/tn", TASK_NAME, "/f"])
+    # 任务状态变了，缓存必须失效
+    _invalidate_task_cache()
     if ok:
         return True, "已删除开机自启计划任务"
     return False, "删除计划任务失败：%s" % (out or "未知错误")

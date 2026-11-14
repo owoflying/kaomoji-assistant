@@ -205,16 +205,23 @@ def recolor(label, color):
     """重设已有图标 QLabel 的颜色（用于主题切换 / 选中态）。
 
     注意必须重写完整样式（含 font-family），只写 color 会把图标字体丢掉。
+
+    ⚠ **颜色没变就跳过**：`setStyleSheet` 会让 Qt 重新解析这条规则并
+    polish 控件，主题切换时几十个图标各来一次是笔不小的开销。
     """
     if label is None:
         return
+    col = color or "#888888"
     if label.property("_drawn_icon"):
         # 程序绘制图标：重新生成 pixmap
+        if label.property("_icon_color") == col:
+            return
         size = label.property("_icon_px") or 16
-        col = color or "#888888"
         pm_size = int(size) + 4
         label.setPixmap(plugin_pixmap(pm_size, col))
         label.setProperty("_icon_color", col)
         return
     size = label.property("_icon_px") or 16
-    label.setStyleSheet(_icon_qss(size, color))
+    qss = _icon_qss(size, col)
+    if label.styleSheet() != qss:
+        label.setStyleSheet(qss)

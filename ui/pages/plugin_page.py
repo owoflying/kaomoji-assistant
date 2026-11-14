@@ -203,6 +203,12 @@ class _PluginCard(QFrame):
         self.manager.set_enabled(self.rec["id"], bool(checked))
 
     def set_theme(self, t):
+        """给本卡片换配色。
+
+        ⚠ 每处 `setStyleSheet` 都会让 Qt 重新解析规则并 polish 控件。
+        仓库里有 4 个插件时一轮就是 16 次，全无条件重贴会拖慢主题切换。
+        这里统一走 `_set_qss`：样式串相同就跳过。
+        """
         self._theme = t
         err_color = "#ff99a4" if t.dark else "#c42b1c"
         state_color, state_bg = {
@@ -211,21 +217,34 @@ class _PluginCard(QFrame):
             STATE_ERROR: (err_color, "transparent"),
         }.get(self.rec["state"], (t.text_secondary, "transparent"))
         self.state_lbl.setText(_state_text(self.rec["state"]))
-        self.state_lbl.setStyleSheet(
-            "color:%s;background:%s;border-radius:8px;padding:1px 8px;"
-            "font-weight:600;" % (state_color, state_bg))
-        self.icon_lbl.setPixmap(plugin_pixmap(22, state_color))
-        self.name_lbl.setStyleSheet(
+        self._set_qss(self.state_lbl,
+                      "color:%s;background:%s;border-radius:8px;"
+                      "padding:1px 8px;font-weight:600;"
+                      % (state_color, state_bg))
+        if self.icon_lbl.property("_icon_color") != state_color:
+            self.icon_lbl.setPixmap(plugin_pixmap(22, state_color))
+            self.icon_lbl.setProperty("_icon_color", state_color)
+        self._set_qss(
+            self.name_lbl,
             "color:%s;font-weight:600;background:transparent;" % t.text)
-        self.err_lbl.setStyleSheet("color:%s;" % err_color)
+        self._set_qss(self.err_lbl, "color:%s;" % err_color)
         self.toggle.update_theme(t)
         if self.settings_btn is not None:
-            self.settings_btn.setStyleSheet(
+            self._set_qss(
+                self.settings_btn,
                 "QPushButton{color:%s;background:transparent;"
                 "border:1px solid %s;border-radius:6px;padding:2px 10px;}"
                 "QPushButton:hover{background:%s;}"
                 "QPushButton:checked{color:%s;}"
                 % (t.text_secondary, t.card_border, t.nav_hover, t.accent))
+
+    @staticmethod
+    def _set_qss(widget, qss):
+        """只在样式串真的变了时才 setStyleSheet。"""
+        if widget is None:
+            return
+        if widget.styleSheet() != qss:
+            widget.setStyleSheet(qss)
 
 
 class PluginPage(QWidget):

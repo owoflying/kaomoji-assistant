@@ -544,12 +544,15 @@ class AboutPage(QWidget):
 
     # ---------- 主题切换 ----------
     def set_theme(self, theme):
-        """主题切换时刷新开发者徽标等硬编码颜色，避免深浅色下不协调。"""
+        """主题切换时刷新开发者徽标等硬编码颜色，避免深浅色下不协调。
+
+        ⚠ **不 unpolish + polish 整页**：那会让本页所有子控件重新计算样式，
+        在主题切换的总开销里占不小一块。这里真正要更新的只是下面两个
+        用硬编码颜色的标签，`setStyleSheet` 本身已经会让它们重新 polish。
+        """
         self._dev_badge.setStyleSheet("color:%s;font-weight:bold;" % theme.accent)
         # 版本号点击高亮反馈也跟随主题 accent
         self._ver_label_flash_style = "color:%s;font-weight:bold;" % theme.accent
-        self.style().unpolish(self)
-        self.style().polish(self)
         self.update()
 
     # ---------- 事件过滤：捕获版本号点击 ----------

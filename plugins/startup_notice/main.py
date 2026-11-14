@@ -24,7 +24,13 @@ _MODE_TEXT = {
 
 
 def setup(api):
-    api.settings.setdefault("mode", "dialog")
+    # 默认用**托盘气泡**而不是弹窗。
+    #
+    # 这个插件是 default_enabled=true 的，也就是每个用户每次启动都会看到它。
+    # 用模态弹窗的话，用户一开机就得先点掉一个框才能用——实测还会让
+    # `processEvents()` 卡住（等不到点击就永远不返回）。
+    # 气泡不打断操作，效果一样能传达。
+    api.settings.setdefault("mode", "notify")
     api.settings.setdefault("text", "应用加载成功，插件已就绪。")
 
     # ------------------------------------------------------ 统一提示入口

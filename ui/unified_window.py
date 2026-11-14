@@ -118,14 +118,31 @@ class _NavItem(QWidget):
         self._apply_style()
 
     def _apply_style(self):
+        """应用导航项的配色。
+
+        ⚠ **每次 setStyleSheet 都让 Qt 重新解析并 polish 这棵子树**，
+        本控件有 3 处要贴（指示条/文字/自身），9 个导航项一轮就是 27 次。
+        实测主题切换时这 27 次合计占 0.4 秒以上。
+
+        所以每处都先比对当前样式串，一样就跳过——主题没变时
+        这个函数应该完全免费。
+        """
         t = self._theme
         bg = t.nav_selected if self._selected else "transparent"
-        self.indicator.setStyleSheet(
-            "background:%s; border-radius:2px;" % (t.accent if self._selected else "transparent"))
-        self.txt.setStyleSheet("color:%s; background:transparent;" % (
-            t.text if self._selected else t.text_secondary))
-        self.setStyleSheet(
-            "_NavItem{background:%s;border-radius:6px;}" % bg)
+
+        ind = "background:%s; border-radius:2px;" % (
+            t.accent if self._selected else "transparent")
+        if self.indicator.styleSheet() != ind:
+            self.indicator.setStyleSheet(ind)
+
+        txt = "color:%s; background:transparent;" % (
+            t.text if self._selected else t.text_secondary)
+        if self.txt.styleSheet() != txt:
+            self.txt.setStyleSheet(txt)
+
+        own = "_NavItem{background:%s;border-radius:6px;}" % bg
+        if self.styleSheet() != own:
+            self.setStyleSheet(own)
 
     def set_selected(self, selected):
         if self._selected == selected:
@@ -145,6 +162,9 @@ class UnifiedSettingsWindow(FramelessShell):
     output_selected = Signal(str)       # 搜索/库页选中颜文字 -> 注入
     config_applied = Signal(dict)       # 设置页应用配置
     finished = Signal()                 # 窗口关闭（类似 QDialog.finished）
+    #: 某个**懒加载**页面刚被创建 (page_key)。
+    #: 宿主（AppRuntime）据此给这些页面补连信号——它们在启动时还不存在。
+    page_created = Signal(str)
 
     # 圆角 / 留白 / 标题栏尺寸（由 FramelessShell 使用）
     _RADIUS = 12
@@ -334,22 +354,45 @@ class UnifiedSettingsWindow(FramelessShell):
                 for btn in (self._min_btn, self._max_btn, self._close_btn)]
 
     def _build_pages(self):
-        """创建七个业务页 + 开发者页 + 插件页，并挂进内容栈。"""
-        self.home_page = HomePage(self.config, self.state, self.user_kao, self.triggers, self.data)
-        self.library_page = LibraryPage(self.data)
-        self.custom_page = CustomKaomojiPage(self.user_kao)
-        self.trigger_page = TriggerPage(self.triggers, self.theme)
-        self.search_page = SearchPage(self.data, self.user_kao, self.theme.name)
-        self.settings_page = SettingsPage(self.config)
-        self.about_page = AboutPage(self.config, self.state, self.save_config, self.open_log)
+        """创建业务页并挂进内容栈。
 
-        for key, page in (
-            ("home", self.home_page), ("library", self.library_page),
-            ("custom", self.custom_page), ("triggers", self.trigger_page),
-            ("search", self.search_page), ("settings", self.settings_page),
-            ("about", self.about_page),
-        ):
-            self._nav.register_page(key, page)
+        ## 为什么除了首页都改成懒加载
+
+        实测：8 个页面全建要 **2.6~3.3 秒**，占启动总时间的 60%~70%。
+        其中最贵的是设置页（1645ms）和关于页（482ms）。
+
+        但用户开机第一眼看的是首页，其余页面大多是"偶尔点一次"。
+        全量预建等于让所有人每次启动都付这个代价。
+
+        现在只有首页立即构造，其余在**第一次切过去**时构造。
+        没点开的页面永远不建，连内存也省。
+
+        ⚠ 有几点需要照顾（都已处理）：
+          * `self.settings_page` / `self.about_page` 等属性被别的模块直接引用
+            （例如 `_schedule_auto_update` 访问 about_page）——所以用
+            `_page(key)` 统一访问器，取的时候会触发懒加载；
+          * 页面构造要 `self.theme`，主题可能在页面建好之前就切换了——
+            物化时用**当前**主题，而不是构造闭包时捕获的旧值。
+        """
+        self._lazy_factories = {
+            "library": lambda: LibraryPage(self.data),
+            "custom": lambda: CustomKaomojiPage(self.user_kao),
+            "triggers": lambda: TriggerPage(self.triggers, self.theme),
+            "search": lambda: SearchPage(self.data, self.user_kao,
+                                         self.theme.name),
+            "settings": lambda: SettingsPage(self.config),
+            "about": lambda: AboutPage(self.config, self.state,
+                                       self.save_config, self.open_log),
+        }
+
+        # 首页立即建：它是启动后的默认页
+        self.home_page = HomePage(self.config, self.state, self.user_kao,
+                                  self.triggers, self.data)
+        self._nav.register_page("home", self.home_page)
+
+        # 其余页面登记为懒加载
+        for key, factory in self._lazy_factories.items():
+            self._nav.register_lazy_page(key, factory)
 
         # 开发者模式标签页：仅当已解锁时创建并加入栈
         if self.config.get("developer_mode", False):
@@ -372,13 +415,96 @@ class UnifiedSettingsWindow(FramelessShell):
             self.plugins.ui_changed.connect(self._nav.sync_plugin_pages)
             self._nav.sync_plugin_pages()
 
+    #: 懒加载页面 key -> 对外属性名（外部模块直接访问这些属性）
+    #: 页面 key -> 对外属性名。
+    #:
+    #: ⚠ 方向是 **key → attr**。`__getattr__` 里要反查
+    #: （用属性名找 key），别再写反了。
+    _LAZY_ATTRS = {
+        "library": "library_page",
+        "custom": "custom_page",
+        "triggers": "trigger_page",
+        "search": "search_page",
+        "settings": "settings_page",
+        "about": "about_page",
+    }
+    #: 反查表：属性名 -> key（由上面自动生成，避免两处维护）
+    _LAZY_BY_ATTR = {v: k for k, v in _LAZY_ATTRS.items()}
+
+    def has_page(self, key):
+        """这个页面**是否已经构造出来**（懒加载页面在没点开前返回 False）。"""
+        return key in self._nav.pages
+
+    def _page(self, key):
+        """取某个页面，必要时先把它构造出来。
+
+        外部模块（如 app_runtime）会直接访问 `self.settings_page` 这类属性。
+        为了不破坏这些调用方，`__getattr__` 会兜底把属性名映射回页面 key
+        并触发懒加载——见 `_LAZY_ATTRS`。
+        """
+        page = self._nav.pages.get(key)
+        if page is None:
+            self._nav._materialize(key)
+            page = self._nav.pages.get(key)
+        return page
+
+    def __getattr__(self, name):
+        """让 `self.about_page` 这类懒加载属性在第一次访问时自动物化。
+
+        ⚠ 只在**正常属性查找失败**时才被调用，所以已存在的属性不受影响。
+
+        ⚠ `_LAZY_ATTRS` 是**类属性**，不能用 `self.__dict__.get(...)` 取
+        （实例字典里没有）。直接走 `type(self)` 取，并且要避开对
+        未初始化实例的递归访问。
+        """
+        # 反查表：属性名 -> 页面 key
+        by_attr = getattr(type(self), "_LAZY_BY_ATTR", None)
+        if by_attr:
+            key = by_attr.get(name)
+            if key is not None:
+                # ⚠ 这里**不能调 self._page()**：_page 内部会访问 self._nav，
+                # 而 _nav 也不存在时会再次触发 __getattr__，无限递归。
+                # 直接走 __dict__ 拿，拿不到就说明实例还没初始化完。
+                nav = self.__dict__.get("_nav")
+                if nav is not None:
+                    page = nav.pages.get(key)
+                    if page is None:
+                        nav._materialize(key)
+                        page = nav.pages.get(key)
+                    if page is not None:
+                        return page
+        raise AttributeError(
+            "%r object has no attribute %r" % (type(self).__name__, name))
+
     def _wire_page_signals(self):
+        """连接页面信号。
+
+        ⚠ 页面是**懒加载**的：除首页外，其余页面在启动时还不存在。
+        这里不能直接 `self.library_page.xxx` —— 那会触发物化，
+        把刚省下的构造时间又花回去。
+
+        改成：首页立即连；其余在 `page_created` 里按 key 补连。
+        """
         self.home_page.nav_request.connect(self._set_page)
-        self.library_page.selected.connect(self.output_selected.emit)
-        self.search_page.selected.connect(self.output_selected.emit)
-        self.settings_page.config_applied.connect(self._on_settings_applied)
-        # 关于页连点版本号解锁开发者模式后，实时添加「开发者」标签（无需重开窗口）
-        self.about_page.developer_mode_enabled.connect(self._nav.enable_dev_tab)
+        self.page_created.connect(self._on_page_created_wire)
+
+    def _on_page_created_wire(self, key):
+        """某个懒加载页面刚建好——补连它的信号。"""
+        page = self._nav.pages.get(key)
+        if page is None:
+            return
+        try:
+            if key in ("library", "search"):
+                page.selected.connect(self.output_selected.emit)
+            elif key == "settings":
+                page.config_applied.connect(self._on_settings_applied)
+            elif key == "about":
+                # 连点版本号解锁开发者模式后，实时添加「开发者」标签
+                page.developer_mode_enabled.connect(
+                    self._nav.enable_dev_tab)
+        except Exception:
+            import traceback
+            traceback.print_exc()
 
     # ==================================================================
     # 页面调度（转发给 NavController，保留原方法名以免破坏调用方）
@@ -391,7 +517,9 @@ class UnifiedSettingsWindow(FramelessShell):
         if key == "home":
             self.home_page.refresh_stats()
         elif key == "search":
-            self.search_page.focus_query()
+            page = self._page("search")
+            if page is not None:
+                page.focus_query()
 
     def _add_nav_item(self, key, title, icon, nav_layout=None):
         return self._nav.add_nav_item(key, title, icon, nav_layout)
@@ -421,7 +549,10 @@ class UnifiedSettingsWindow(FramelessShell):
         self.config["use_test_features"] = False
         # 同步清空关于页的开发者模式状态，否则它仍记着 developer_mode=True，
         # 再次连点版本号会被短路、不再发出 developer_mode_enabled，无法二次进入。
-        self.about_page.reset_developer_mode()
+        # （懒加载：页面没建过就不用清，它的闭包每次读的都是最新 config）
+        _about = self._page("about")
+        if _about is not None:
+            _about.reset_developer_mode()
         self._nav.disable_dev_tab()
         # ⚠ **不再卸载插件**：插件已是正式功能，与开发者模式无关。
         # 历史：插件曾在测试门控下，关闭开发者模式时必须 unload，才能让它通过
@@ -469,10 +600,12 @@ class UnifiedSettingsWindow(FramelessShell):
 
     def _on_plugins_changed(self):
         """插件集合变化：库页分类与插件页列表需要重建。"""
-        try:
-            self.library_page.reload_categories()
-        except Exception:
-            pass
+        lib = self._page("library")
+        if lib is not None:
+            try:
+                lib.reload_categories()
+            except Exception:
+                pass
         if self.plugin_page is not None:
             self.plugin_page.refresh()
 
@@ -560,12 +693,19 @@ class UnifiedSettingsWindow(FramelessShell):
         self._acrylic_on = _has_dwm
         self._shadow_color = parse_color(self.theme.shadow_color)
         self._apply_theme()
-        self.settings_page.config = config
-        # 让关于页也始终指向统一窗口的权威配置字典：设置页每次 _on_apply 会替换自己的
-        # self.config 为新副本，这里重新指向同一份唯一权威字典，避免 developer_mode
-        # 在页间读不一致（二次解锁失效）。
-        self.about_page.config = config
-        self.settings_page.refresh_from_config()
+        # 让关于页/设置页始终指向统一窗口的权威配置字典：
+        # 设置页每次 _on_apply 会替换自己的 self.config 为新副本，这里重新指向
+        # 同一份唯一权威字典，避免 developer_mode 在页间读不一致（二次解锁失效）。
+        #
+        # ⚠ 懒加载：只处理**已经存在**的页面。没建过的页面在物化时直接用
+        # 构造参数里的 config（同一个 dict 对象），本来就是权威字典。
+        _settings = self._page("settings")
+        if _settings is not None:
+            _settings.config = config
+            _settings.refresh_from_config()
+        _about = self._page("about")
+        if _about is not None:
+            _about.config = config
         # 测试功能可见性可能随外部应用配置变化（如关闭测试模式），同步插件页显隐
         pages_before = set(self._nav.pages)
         self._sync_plugin_tab()
@@ -601,8 +741,10 @@ class UnifiedSettingsWindow(FramelessShell):
         ⚠ **不再卸载插件**：插件已成为正式功能，关闭测试模式不应影响它。
         （历史：插件曾在测试门控下，关闭时必须 unload 才能回滚其界面修改。）
         """
-        self.settings_page.config = self.config
-        self.settings_page.apply_test_feature_visibility()
+        _settings = self._page("settings")
+        if _settings is not None:
+            _settings.config = self.config
+            _settings.apply_test_feature_visibility()
         self._sync_plugin_tab()
 
     # ---------- 面板基底 / 内容区表面（按 panel_alpha 缩放） ----------

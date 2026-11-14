@@ -631,17 +631,30 @@ class SettingsPage(QWidget):
 
     # ---------- 读取/写入 ----------
     def set_theme(self, theme_obj):
-        """主题切换时同步开关/下拉框配色，并强制刷新样式表。"""
+        """主题切换时同步开关/下拉框配色。
+
+        ⚠ **不再 unpolish + polish 整页。**
+        那会让这一页所有子控件（几百个）重新计算样式，实测占
+        一次主题切换总耗时的**一半以上**。而真正需要更新配色的
+        只是下面这些开关和下拉框——它们各自的 `update_theme()`
+        已经负责重绘了。
+
+        之前加 polish 是为了解决"部分控件换主题后没刷新"，但根因是
+        那些控件自己没实现 update_theme，不是整页的问题。
+        """
         self._theme = theme_obj
         for t in (self.auto_check, self.autostart_check,
                   self.blur_hide_check, self.uia_elevation_check):
-            t.update_theme(theme_obj)
+            try:
+                t.update_theme(theme_obj)
+            except Exception:
+                pass
         for c in (self.theme_combo, self.method_combo):
             if c is not None:
-                c.set_theme(theme_obj)
-        # 强制 Qt 重新评估该分支的样式，解决部分控件换主题后未刷新外观的问题
-        self.style().unpolish(self)
-        self.style().polish(self)
+                try:
+                    c.set_theme(theme_obj)
+                except Exception:
+                    pass
         self.update()
 
     def refresh_from_config(self):

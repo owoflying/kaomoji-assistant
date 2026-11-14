@@ -52,13 +52,36 @@ def window(qapp, stores):
 
 
 # ---------------------------------------------------------------- 组装
-def test_window_builds_all_builtin_pages(window):
+def test_window_builds_home_immediately(window):
+    """启动时**只建首页**，其余页面懒加载。
+
+    这是性能优化的核心：全量构造 8 个页面要 2.6~3.3 秒，
+    而用户开机第一眼看的是首页。其余页面第一次切过去时才建。
+    """
     pages = window._nav.pages
-    for key in ("home", "library", "custom", "triggers", "search",
-                "settings", "about"):
-        assert key in pages, "缺少页面 %s" % key
+    assert "home" in pages, "首页必须立即构造"
     assert pages["home"] is window.home_page
-    assert pages["settings"] is window.settings_page
+    # 其余页面此时不该存在（除非配置里开了开发者模式连带创建）
+    for key in ("library", "custom", "triggers", "search",
+                "settings", "about"):
+        assert key not in pages, \
+            "「%s」不该在启动时构造（懒加载）" % key
+
+
+def test_lazy_pages_exist_after_access(window):
+    """访问页面属性会触发懒加载，之后它就存在了。"""
+    for key, attr in (("library", "library_page"),
+                      ("settings", "settings_page"),
+                      ("about", "about_page")):
+        page = getattr(window, attr)
+        assert page is not None
+        assert window._nav.pages[key] is page
+
+
+def test_has_page_reflects_lazy_state(window):
+    """has_page() 要如实反映"这个页面建了没有"。"""
+    assert window.has_page("home") is True
+    assert window.has_page("about") is window.has_page("about")
 
 
 def test_nav_order_matches_nav_items(window):
@@ -87,10 +110,15 @@ def test_title_button_rects_after_show(window, qapp):
 
 # ---------------------------------------------------------------- 页面切换
 def test_set_page_switches_content(window):
+    """切页要真的切过去——并且懒加载页面在切换时被构造出来。"""
     window._set_page("library")
-    assert window.content.currentWidget() is window.library_page
+    lib = window._page("library")
+    assert lib is not None, "切到库页应触发懒加载"
+    assert window.content.currentWidget() is lib
+
     window._set_page("search")
-    assert window.content.currentWidget() is window.search_page
+    search = window._page("search")
+    assert window.content.currentWidget() is search
 
 
 def test_set_page_unknown_key_is_noop(window):
@@ -136,9 +164,10 @@ def test_panel_base_follows_panel_alpha(window):
 def test_apply_config_is_idempotent(window):
     """同样配置重复应用不应重置当前页面（历史 bug：改不透明度跳回第一页）。"""
     window._set_page("search")
+    search = window._page("search")
     window.apply_config(_config(theme="light"))
     window.apply_config(_config(theme="light"))
-    assert window.content.currentWidget() is window.search_page
+    assert window.content.currentWidget() is search
 
 
 def test_pages_receive_theme(window):

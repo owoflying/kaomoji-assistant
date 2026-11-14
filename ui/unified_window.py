@@ -267,9 +267,9 @@ class UnifiedSettingsWindow(FramelessShell):
 
         root.addLayout(body)
 
-        # 主题切换的淡入淡出过渡（挂在 central 上，覆盖整个界面内容）。
-        # 不挂在 self 上：窗口自身有圆角/阴影的自绘逻辑，加 effect 会打乱它。
-        self._theme_fader = ThemeFader(self, central)
+        # 主题切换的过渡（后退+遮罩+加载提示）。
+        # 挂在 central 上、把 root 布局交给它做"右下收边"来表现后退。
+        self._theme_fader = ThemeFader(self, central, root)
 
         self._build_pages()
         self._wire_page_signals()
@@ -710,8 +710,9 @@ class UnifiedSettingsWindow(FramelessShell):
             _do()
             return
         if old_theme is not None and old_theme != new_theme:
-            # 只有深浅色真的换了才做动画
-            self._theme_fader.run(_do)
+            # 只有深浅色真的换了才做动画。
+            # 遮罩颜色要按**目标**主题选，避免深色遮罩闪在浅色界面上。
+            self._theme_fader.run(_do, dark=(new_theme == "dark"))
         else:
             _do()
 

@@ -803,7 +803,7 @@ class AppRuntime:
         if fader is None or not self.unified.isVisible():
             _do()
             return
-        fader.run(_do)
+        fader.run(_do, dark=(effective_theme == "dark"))
 
     def _reload_hotkey(self):
         """按当前配置重新注册全局热键。"""

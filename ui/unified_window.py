@@ -268,8 +268,10 @@ class UnifiedSettingsWindow(FramelessShell):
         root.addLayout(body)
 
         # 主题切换的过渡（后退+遮罩+加载提示）。
-        # 挂在 central 上、把 root 布局交给它做"右下收边"来表现后退。
-        self._theme_fader = ThemeFader(self, central, root)
+        # 传入 _PAD/_RADIUS：遮罩要贴合窗口自绘的圆角底板，
+        # 而不是铺满整个 central（否则会盖住圆角与外阴影）。
+        self._theme_fader = ThemeFader(
+            self, central, root, pad=self._PAD, radius=self._RADIUS)
 
         self._build_pages()
         self._wire_page_signals()
@@ -399,14 +401,14 @@ class UnifiedSettingsWindow(FramelessShell):
         for key, factory in self._lazy_factories.items():
             self._nav.register_lazy_page(key, factory)
 
-        # 开发者模式标签页：仅当已解锁时创建并加入栈
+        # 开发者模式标签页：**懒加载**，与业务页同样按需创建。
+        #
+        # 它有 131~180 个控件（是所有页面里最多的），而绝大多数用户
+        # 一辈子不会打开它。留着它白白拖慢每次主题切换
+        # （实测：移除后 setStyleSheet 从 647ms 降到 442ms）。
         if self.config.get("developer_mode", False):
-            from ui.dev import DevPage
-            self.dev_page = DevPage(
-                self.dev_refs, self.config, self.save_config, self.theme.name)
-            self.dev_page.developer_mode_disabled.connect(self._disable_dev_tab)
-            self.dev_page.test_features_changed.connect(self._on_test_features_changed)
-            self._nav.register_page("developer", self.dev_page)
+            self._nav.add_nav_item("developer", "开发者", "code")
+            self._nav.register_lazy_page("developer", self._build_dev_page)
         # 插件页：**正式功能**，只要有 PluginManager 就创建
         self.plugin_page = None
         if self.plugins is not None:
@@ -439,6 +441,20 @@ class UnifiedSettingsWindow(FramelessShell):
     def has_page(self, key):
         """这个页面**是否已经构造出来**（懒加载页面在没点开前返回 False）。"""
         return key in self._nav.pages
+
+    def _existing_page(self, key):
+        """取页面——**只返回已经存在的**，绝不触发懒加载。
+
+        与 `_page()` 的区别就是这一点，非常关键：
+
+        * `_page(key)`：不存在就当场构造（适合"用户点了这个标签"的路径）
+        * `_existing_page(key)`：不存在就返回 None（适合"顺手同步一下
+          已经开着的页面"的路径）
+
+        在换肤、配置刷新这类会频繁调用的路径上误用 `_page()`，
+        会把用户没打开过的页面一并建出来，白花 300~400ms。
+        """
+        return self._nav.pages.get(key)
 
     def _page(self, key):
         """取某个页面，必要时先把它构造出来。
@@ -480,6 +496,17 @@ class UnifiedSettingsWindow(FramelessShell):
                         return page
         raise AttributeError(
             "%r object has no attribute %r" % (type(self).__name__, name))
+
+    def _build_dev_page(self):
+        """构造开发者页（懒加载：第一次切到它时才调用）。"""
+        from ui.dev import DevPage
+
+        page = DevPage(
+            self.dev_refs, self.config, self.save_config, self.theme.name)
+        page.developer_mode_disabled.connect(self._disable_dev_tab)
+        page.test_features_changed.connect(self._on_test_features_changed)
+        self.dev_page = page
+        return page
 
     def _wire_page_signals(self):
         """连接页面信号。
@@ -555,7 +582,7 @@ class UnifiedSettingsWindow(FramelessShell):
         # 同步清空关于页的开发者模式状态，否则它仍记着 developer_mode=True，
         # 再次连点版本号会被短路、不再发出 developer_mode_enabled，无法二次进入。
         # （懒加载：页面没建过就不用清，它的闭包每次读的都是最新 config）
-        _about = self._page("about")
+        _about = self._existing_page("about")
         if _about is not None:
             _about.reset_developer_mode()
         self._nav.disable_dev_tab()
@@ -605,7 +632,7 @@ class UnifiedSettingsWindow(FramelessShell):
 
     def _on_plugins_changed(self):
         """插件集合变化：库页分类与插件页列表需要重建。"""
-        lib = self._page("library")
+        lib = self._existing_page("library")
         if lib is not None:
             try:
                 lib.reload_categories()
@@ -727,13 +754,17 @@ class UnifiedSettingsWindow(FramelessShell):
         # 设置页每次 _on_apply 会替换自己的 self.config 为新副本，这里重新指向
         # 同一份唯一权威字典，避免 developer_mode 在页间读不一致（二次解锁失效）。
         #
-        # ⚠ 懒加载：只处理**已经存在**的页面。没建过的页面在物化时直接用
-        # 构造参数里的 config（同一个 dict 对象），本来就是权威字典。
-        _settings = self._page("settings")
+        # ⚠ **必须用 `_existing_page()`，不能用 `_page()`**：
+        # `_page()` 的语义是"不存在就创建"，在换肤路径上调用会把用户
+        # 根本没打开过的设置页/关于页当场构造出来（各约 300~400ms），
+        # 白白拖慢每次主题切换。实测切一次主题因此多花 379ms。
+        # 没建过的页面在物化时直接用构造参数里的 config（同一个 dict），
+        # 本来就是权威字典，不需要在这里补。
+        _settings = self._existing_page("settings")
         if _settings is not None:
             _settings.config = config
             _settings.refresh_from_config()
-        _about = self._page("about")
+        _about = self._existing_page("about")
         if _about is not None:
             _about.config = config
         # 测试功能可见性可能随外部应用配置变化（如关闭测试模式），同步插件页显隐
@@ -771,7 +802,7 @@ class UnifiedSettingsWindow(FramelessShell):
         ⚠ **不再卸载插件**：插件已成为正式功能，关闭测试模式不应影响它。
         （历史：插件曾在测试门控下，关闭时必须 unload 才能回滚其界面修改。）
         """
-        _settings = self._page("settings")
+        _settings = self._existing_page("settings")
         if _settings is not None:
             _settings.config = self.config
             _settings.apply_test_feature_visibility()

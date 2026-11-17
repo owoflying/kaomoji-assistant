@@ -165,6 +165,8 @@ def test_dev_page_toggle_test_features_keeps_plugins(live):
     """开发者页关「测试功能」：同样不影响插件。"""
     _assert_modified(live)
 
+    # 开发者页是懒加载的：先把它建出来（等价于用户点了那个标签）
+    live.window._page("developer")
     live.window.dev_page._on_toggle_test()
     live.app.processEvents()
 

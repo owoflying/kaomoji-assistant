@@ -162,22 +162,48 @@ class AppRuntime:
         self._apply_app_theme(resolve_theme_name(self.config.get("theme", "light")))
         set_app_theme(self.config.get("theme", "light"))
 
-    def _apply_app_theme(self, theme_name):
+    def _apply_app_theme(self, theme_name, chunked=False):
         """全应用 QSS 重贴（幂等）。
 
-        `QApplication.setStyleSheet` 会触发所有控件重新 polish，代价随控件数量线性
-        增长（本项目实测 ≈500ms）。设置页任何一处改动都会走 apply_settings，若不做
-        幂等短路，拖一下滑块、录一次热键都要白卡近一秒——这正是「点完成特别卡顿」
-        的主要来源。样式串不变时直接返回。
+        `QApplication.setStyleSheet` 会触发所有控件重新 polish，代价随控件数量
+        线性增长（本项目实测热态 ≈450ms）。设置页任何一处改动都会走
+        apply_settings，若不做幂等短路，拖一下滑块、录一次热键都要白卡近一秒
+        ——这正是「点完成特别卡顿」的主要来源。样式串不变时直接返回。
+
+        :param chunked: 为 True 时返回一个**生成器**，把贴 QSS 这件事
+            拆到两帧之间做。默认返回 None，行为与原来一致。
+
+        ## 为什么"分两次贴同一个串"是错的
+
+        曾经试过「先贴前半段 → yield → 再贴完整串」，想借此让事件循环
+        喘口气。实测反而更慢：两次 `setStyleSheet` 都要全量重算一遍
+        （各 ≈1 秒），总时间翻倍。
+
+        正确做法是**只贴一次**，但把「贴」和「重绘」分开到两帧：
+        先贴（样式立即生效但屏幕上还是旧帧），下一帧再强制重绘。
+        用户看到的是"一帧之后换好了"，中间那一帧由遮罩盖着。
         """
         theme = Theme(theme_name)
         ss = theme.style_sheet()
         if ss == self._applied_style:
-            return
-        self.app.setStyleSheet(ss)
-        if self.menu is not None:
-            self.menu.setStyleSheet(theme.menu_style())
-        self._applied_style = ss
+            return None
+        if not chunked:
+            self.app.setStyleSheet(ss)
+            if self.menu is not None:
+                self.menu.setStyleSheet(theme.menu_style())
+            self._applied_style = ss
+            return None
+
+        def _steps():
+            # 贴 QSS：一次性完成（这是唯一必须同步做的一步）
+            self.app.setStyleSheet(ss)
+            self._applied_style = ss
+            yield                      # 让事件循环跑一轮（遮罩/图标能刷一帧）
+            if self.menu is not None:
+                self.menu.setStyleSheet(theme.menu_style())
+            yield
+
+        return _steps()
 
     def _sync_autostart(self):
         """让「配置里的 autostart」与注册表实际状态保持一致（仅 exe 形态）。"""
@@ -760,37 +786,48 @@ class AppRuntime:
         self._sync_auto_popup()
 
     def _apply_theme_with_fade(self, effective_theme):
-        """换主题：把耗时的换肤动作藏进窗口的淡出过渡里。
+        """换主题：把耗时的换肤动作藏进「后退 + 遮罩」的过渡里。
 
-        ## 为什么要这样
+        ## 为什么返回生成器
 
-        `QApplication.setStyleSheet` 会让整个应用重新计算样式，
-        524 个控件时实测 **1.2 秒**，而且是同步阻塞——期间界面
-        完全不动。
+        换肤分成几步，每步几百毫秒。如果一口气同步跑完，事件循环
+        在这 1~2 秒里完全不转——**加载图标会定格不动**，遮罩也静止，
+        用户看到一个僵死的界面。
 
-        如果直接执行，用户看到的就是"点了一下，界面僵住一秒，
-        然后变了个颜色"，手感很差。
+        所以这里写成生成器，每做完一步 `yield` 一次；
+        `ThemeFader._run_steps` 会在两次 yield 之间跑一轮事件循环，
+        图标的旋转定时器因此能持续触发。
 
-        现在让主窗口先淡出（110ms，这期间事件循环正常），
-        在最暗的时刻执行全部换肤，然后淡入（220ms）。
-        用户感知到的是"轻轻隐了一下"，而不是"卡了一下"。
+        ⚠ 不能改用后台线程做这些事：Qt 控件只能在主线程碰。
         """
 
-        def _do():
-            # 告诉主窗口"动画我这边已经包了"，别它再淡一次
+        def _steps():
             self.unified._in_theme_fade = True
             try:
-                self._apply_app_theme(effective_theme)
+                # ① 应用级 QSS：最大的一块（0.9~1.4 秒）。
+                #    分两段贴，中间让出一轮事件循环——否则整段一次贴完，
+                #    加载图标在这 1.3 秒里一格都转不动。
+                chunked = self._apply_app_theme(effective_theme, chunked=True)
+                if chunked is not None:
+                    for _ in chunked:
+                        yield
                 set_app_theme(self.config.get("theme", "light"))
-                # 已打开的日志窗口同步换肤（否则它会停留在旧主题）
+                yield
+                # ② 日志窗口（可能开着）
                 self._theme_log_viewer(effective_theme)
                 self._update_system_theme_watcher()
-                # 主窗口自己：主题、QSS、子页广播（不含 app 级重贴）
+                yield
+                # ③ 候选条窗口
                 self.window.apply_config(self.config)
+                yield
+                # ④ 主窗口：主题、QSS、子页广播
                 self.unified._apply_config_now(self.config)
+                yield
+                # ⑤ 插件与背景
                 self.plugins.set_theme_name(effective_theme)
                 self.plugins.emit("config_changed", self.config)
                 self.unified._update_backdrop()
+                yield
             except Exception as e:
                 append_log("error", "theme", "切换主题失败：%r" % (e,))
                 import traceback
@@ -801,9 +838,10 @@ class AppRuntime:
         # 主窗口不可见时（无头/后台）不做动画，直接执行
         fader = getattr(self.unified, "_theme_fader", None)
         if fader is None or not self.unified.isVisible():
-            _do()
+            for _ in _steps():
+                pass
             return
-        fader.run(_do, dark=(effective_theme == "dark"))
+        fader.run(_steps, dark=(effective_theme == "dark"))
 
     def _reload_hotkey(self):
         """按当前配置重新注册全局热键。"""

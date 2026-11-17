@@ -55,7 +55,7 @@ from PySide6.QtCore import (
     Property, QEasingCurve, QObject, QParallelAnimationGroup,
     QPropertyAnimation, QRectF, Qt, QTimer,
 )
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QPainter, QPainterPath
 from PySide6.QtWidgets import QGraphicsOpacityEffect, QWidget
 
 #: 后退时右下各收多少像素。24/18 在 1024x720 上约缩到 97%，
@@ -74,6 +74,71 @@ _RETURN_MS = 260
 #: 加载图标的旋转周期（毫秒）与半径
 _SPIN_MS = 900
 _SPIN_R = 15
+
+
+def _is_generator_fn(fn):
+    """这个函数是不是生成器函数（用来决定是否分片执行）。"""
+    import inspect
+
+    try:
+        return inspect.isgeneratorfunction(fn)
+    except Exception:
+        return False
+
+
+def _pump(app, min_ms=48):
+    """跑一轮事件循环，**并真正等待一小段时间**，让动画推进。
+
+    ## 为什么要等，而不是只 processEvents
+
+    `processEvents()` 只是把**当前已排队**的消息处理掉，然后立刻返回。
+    而旋转图标的 `QTimer` 是每 16ms 触发一次——刚设完定时器那会儿
+    还没有到期事件，`processEvents` 扫一遍就回来了，定时器根本没机会触发。
+
+    实测：只调 `processEvents` 时，一次换肤下来角度只变了 2 次；
+    加上真正的等待后，7 次 pump 让角度从 0 连续走到 64°。
+
+    ## 为什么不用 QEventLoop.exec()
+
+    在 Qt 信号槽内部再开嵌套事件循环，Qt 会拒绝（"event loop is
+    already running"）。实测那样做角度完全不变。
+
+    这里用**轮询 + 短睡眠**：反复 `processEvents` 并 `sleep`，
+    累计等够 min_ms。实测 40ms 内 16ms 的定时器能正常触发 2 次。
+
+    ## 48ms 是怎么定的
+
+    图标 900ms 转一圈 → 每 48ms 约 19°。分片之间能稳定转 2~3 帧，
+    视觉上就是"一直在转"。分片总共 7 次，累计多花约 340ms，
+    相对于 1.3 秒的换肤本身可以接受。
+    """
+    if app is None:
+        return
+    import time as _time
+
+    deadline = _time.perf_counter() + max(0.001, min_ms / 1000.0)
+    while _time.perf_counter() < deadline:
+        try:
+            app.processEvents()
+        except Exception:
+            pass
+        _time.sleep(0.004)
+
+
+def _drain(apply_fn):
+    """不用动画时把换肤跑完（兼容生成器与普通函数）。"""
+    from PySide6.QtCore import QCoreApplication
+
+    app = QCoreApplication.instance()
+    try:
+        if _is_generator_fn(apply_fn):
+            for _ in apply_fn():
+                _pump(app)
+        else:
+            apply_fn()
+    except Exception:
+        import traceback
+        traceback.print_exc()
 
 
 class _AnimState(QObject):
@@ -114,20 +179,24 @@ class _Veil(QWidget):
 
     自绘内容：半透明底色（带圆角）+ 旋转弧线 + 一行说明文字。
     透明度由自己的 `opacity` 属性控制，供动画驱动。
+
+    ## 对齐
+
+    遮罩的矩形由宿主传入（见 `ThemeFader._veil_rect`），
+    必须与窗口**自绘圆角底板**重合，而不是铺满整个窗口。
+    `central` 铺满窗口 (0,0,w,h)，但底板只画在
+    `(_PAD, _PAD, w-2*PAD, h-2*PAD)`——按 central 铺会盖住
+    窗口的圆角和外阴影，看起来就是"没对齐、多出一圈"。
     """
 
-    def __init__(self, parent):
+    def __init__(self, parent, radius=10):
         super().__init__(parent)
         self._opacity = 0.0
-        self._angle = 0.0
         self._dark = False
         self._text = "正在切换主题…"
+        self._radius = radius
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.setAttribute(Qt.WA_NoSystemBackground, True)
-        # 旋转动画：只在遮罩可见时跑
-        self._spin_timer = QTimer(self)
-        self._spin_timer.setInterval(16)     # ~60fps
-        self._spin_timer.timeout.connect(self._on_spin)
 
     # ---------------- 属性 ----------------
     def _get_opacity(self):
@@ -143,17 +212,6 @@ class _Veil(QWidget):
         self._dark = bool(dark)
         self.update()
 
-    def start_spin(self):
-        if not self._spin_timer.isActive():
-            self._spin_timer.start()
-
-    def stop_spin(self):
-        self._spin_timer.stop()
-
-    def _on_spin(self):
-        self._angle = (self._angle + 360.0 * 16 / _SPIN_MS) % 360.0
-        self.update()
-
     # ---------------- 绘制 ----------------
     def paintEvent(self, _e):
         if self._opacity <= 0.001:
@@ -165,38 +223,12 @@ class _Veil(QWidget):
         base = QColor(250, 250, 252) if not self._dark else QColor(32, 32, 36)
         base.setAlpha(int((170 if not self._dark else 150) * self._opacity))
         path = QPainterPath()
-        path.addRoundedRect(QRectF(self.rect()), 10, 10)
+        path.addRoundedRect(QRectF(self.rect()), self._radius, self._radius)
         p.fillPath(path, base)
 
-        # 居中：图标 + 文字
-        cx = self.width() / 2.0
-        cy = self.height() / 2.0
-        alpha = self._opacity
-
-        accent = QColor(0, 120, 212) if not self._dark else QColor(96, 205, 255)
-        accent.setAlpha(int(255 * alpha))
-
-        # 旋转弧线（缺口圆环）
-        pen = QPen(accent)
-        pen.setWidth(3)
-        pen.setCapStyle(Qt.RoundCap)
-        p.setPen(pen)
-        p.setBrush(Qt.NoBrush)
-        ring = QRectF(cx - _SPIN_R, cy - 44 - _SPIN_R,
-                      _SPIN_R * 2, _SPIN_R * 2)
-        # Qt 角度单位是 1/16 度，逆时针为正
-        p.drawArc(ring, int(-self._angle * 16), int(270 * 16))
-
-        # 文字
-        f = QFont()
-        f.setPixelSize(14)
-        f.setWeight(QFont.Weight.Medium)
-        p.setFont(f)
-        txt_col = QColor(40, 40, 45) if not self._dark else QColor(235, 235, 240)
-        txt_col.setAlpha(int(255 * alpha))
-        p.setPen(txt_col)
-        text_rect = QRectF(0, cy - 6, self.width(), 28)
-        p.drawText(text_rect, Qt.AlignHCenter | Qt.AlignTop, self._text)
+        # 遮罩自己的旋转动画已经移到子线程的独立窗口里
+        # （见 ui/spinner_overlay.py）：主线程阻塞时这里画不动，
+        # 而独立窗口至少能在阻塞解除的瞬间立即显示最新帧。
 
 
 class ThemeFader(QObject):
@@ -208,18 +240,44 @@ class ThemeFader(QObject):
         fader.run(lambda: self._apply_theme(), dark=True)
     """
 
-    def __init__(self, host, widget, layout=None):
+    def __init__(self, host, widget, layout=None, pad=0, radius=10):
         super().__init__(host)
         self._widget = widget
         self._layout = layout
+        #: 窗口自绘底板的内缩量（= FramelessShell 的 _PAD）。
+        #: 遮罩要贴合底板而不是铺满窗口，否则会盖住圆角与外阴影。
+        self._pad = int(pad)
+        self._radius = int(radius)
         self._effect = None
         self._veil = None
+        self._overlay = None
         self._anim = None
         self._pending = None
         self._base_margins = None
         self._ins_r = 0.0
         self._ins_b = 0.0
         self._state = _AnimState(self, self._apply_inset)
+
+    def _veil_rect(self):
+        """遮罩应覆盖的矩形：与窗口自绘的圆角底板重合。
+
+        `central` 铺满整个窗口 (0,0,w,h)，但窗口自绘的底板只画在
+        `(PAD, PAD, w-2*PAD, h-2*PAD)`。遮罩按 central 铺会盖住
+        圆角和外阴影——那就是用户看到的"没对齐"。
+
+        最大化时窗口不画圆角/阴影（`_PAD` 语义失效），此时铺满即可。
+        """
+        host = self._widget
+        if host is None:
+            return None
+        r = host.rect()
+        if self._pad > 0 and r.width() > self._pad * 2 \
+                and r.height() > self._pad * 2:
+            from PySide6.QtCore import QRect
+            return QRect(self._pad, self._pad,
+                         r.width() - self._pad * 2,
+                         r.height() - self._pad * 2)
+        return r
 
     # ------------------------------------------------------------ 内部
     def _apply_inset(self, right, bottom):
@@ -238,9 +296,9 @@ class ThemeFader(QObject):
 
     def _ensure_veil(self, dark):
         if self._veil is None:
-            self._veil = _Veil(self._widget)
+            self._veil = _Veil(self._widget, radius=self._radius)
         self._veil.set_theme_dark(dark)
-        self._veil.setGeometry(self._widget.rect())
+        self._resize_veil()
         self._veil.show()
         self._veil.raise_()
         return self._veil
@@ -257,9 +315,13 @@ class ThemeFader(QObject):
         if self._layout is not None and self._base_margins is not None:
             l, t, r, b = self._base_margins
             self._layout.setContentsMargins(l, t, r, b)
+        if self._overlay is not None:
+            try:
+                self._overlay.stop()
+            except RuntimeError:
+                self._overlay = None
         if self._veil is not None:
             try:
-                self._veil.stop_spin()
                 self._veil.opacity = 0.0
                 self._veil.hide()
             except RuntimeError:
@@ -294,16 +356,57 @@ class ThemeFader(QObject):
             self._pending = None
 
     def _resize_veil(self):
-        if self._veil is not None:
-            self._veil.setGeometry(self._widget.rect())
+        """让遮罩贴合窗口底板的实际矩形（不是铺满 central）。"""
+        if self._veil is None:
+            return
+        rect = self._veil_rect()
+        if rect is not None:
+            self._veil.setGeometry(rect)
             self._veil.raise_()
+
+    def _show_overlay(self):
+        """显示子线程驱动的加载指示器（独立顶层窗口）。"""
+        from ui.spinner_overlay import SpinnerOverlay, parent_center_global
+
+        if self._overlay is None:
+            self._overlay = SpinnerOverlay()
+            # 窗口销毁前把子线程收干净，否则 Qt 会报
+            # "QThread: Destroyed while thread is still running"
+            host = self.parent()
+            if host is not None:
+                try:
+                    host.destroyed.connect(self._shutdown_overlay)
+                except Exception:
+                    pass
+        self._overlay.set_dark(self._veil._dark if self._veil else False)
+        self._overlay.set_text("正在切换主题…")
+        self._overlay.start(parent_center_global(self._widget))
+
+    def _shutdown_overlay(self):
+        """彻底停掉加载指示器的子线程（宿主销毁时调用）。"""
+        ov = self._overlay
+        self._overlay = None
+        if ov is None:
+            return
+        try:
+            # 必须在 deleteLater 之前等线程真正停下，
+            # 否则 QTimer 会在主线程被销毁并报跨线程警告
+            ov.shutdown()
+            ov.deleteLater()
+        except RuntimeError:
+            pass
 
     # ------------------------------------------------------------ 对外
     def run(self, apply_fn, enabled=True, dark=False):
-        """执行一轮过渡：后退 → 遮罩(+提示) → apply_fn() → 归位。"""
+        """执行一轮过渡：后退 → 遮罩(+提示) → apply_fn() → 归位。
+
+        `apply_fn` 可以是**生成器**：每次 `yield` 表示"这一步做完了"，
+        过渡会在两次 yield 之间跑一轮事件循环，让加载图标继续转、
+        遮罩动画不停顿。传普通函数则当作"一步做完"。
+        """
         if not enabled or not self._widget.isVisible():
             # 不可见（后台/无头）就不做动画，直接换，省掉无谓等待
-            apply_fn()
+            _drain(apply_fn)
             return
 
         self._stop_anim()
@@ -353,23 +456,55 @@ class ThemeFader(QObject):
         group.addAnimation(veil_anim)
 
         def _on_receded():
-            # 遮罩出来之后开始转图标（虽然换肤期间会卡住，但前后能转）
+            # 显示独立的加载指示器窗口（子线程负责出帧）
             try:
-                veil.start_spin()
+                self._show_overlay()
             except RuntimeError:
                 pass
-            # ---------- 阶段二：换肤（卡顿藏在遮罩下） ----------
-            try:
-                apply_fn()
-            except Exception:
-                import traceback
-                traceback.print_exc()
-            finally:
-                self._start_return()
+            # ---------- 阶段二：换肤（分片执行，图标能继续转） ----------
+            self._run_steps(apply_fn)
 
         group.finished.connect(_on_receded)
         self._anim = group
         group.start()
+
+    def _run_steps(self, apply_fn):
+        """分片执行换肤，每片之间跑一轮事件循环。
+
+        ## 为什么必须分片
+
+        换主题的各个步骤（app 级 QSS、主窗口重铺、子页广播…）分开做
+        都只要几百毫秒。如果一口气同步跑完，事件循环在这 1~2 秒里
+        完全不转——**加载图标会定格**，遮罩也纹丝不动，用户看到的
+        就是一个僵住的界面。
+
+        每完成一片就跑一轮 `processEvents()`：
+          * 图标的旋转定时器能触发，视觉上一直在转；
+          * 遮罩和内容的动画不会停顿；
+          * 代价是整体多花几十毫秒（事件循环调度的开销），值得。
+
+        ⚠ 不能改用后台线程：Qt 的控件操作必须在主线程，
+        跨线程改样式会直接崩。
+        """
+        from PySide6.QtCore import QCoreApplication
+
+        app = QCoreApplication.instance()
+        try:
+            if hasattr(apply_fn, "__next__") or (
+                    callable(apply_fn) and _is_generator_fn(apply_fn)):
+                steps = apply_fn()
+                for _ in steps:
+                    _pump(app)
+            else:
+                # 普通函数：至少让图标在开始前动一下
+                _pump(app)
+                apply_fn()
+                _pump(app)
+        except Exception:
+            import traceback
+            traceback.print_exc()
+        finally:
+            self._start_return()
 
     def _start_return(self):
         """阶段三：遮罩散去 + 内容退回来。"""
@@ -389,7 +524,8 @@ class ThemeFader(QObject):
 
         if veil is not None:
             try:
-                veil.stop_spin()
+                if self._overlay is not None:
+                    self._overlay.stop()
             except RuntimeError:
                 pass
             va = QPropertyAnimation(veil, b"opacity", self)

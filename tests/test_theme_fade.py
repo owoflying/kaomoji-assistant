@@ -7,7 +7,7 @@
 
 1. **后退确实发生**：右下收边量真的从 0 涨到设定值，之后归位
 2. **换肤发生在后退之后**：否则卡顿暴露在正常界面上
-3. **遮罩带加载提示**：用户得知道"正在切换主题"
+3. **加载窗口带说明文字**，且**主线程阻塞时仍在转**（核心）
 4. **结束后一切复原**：边距归位、effect 摘掉、遮罩隐藏
 5. **异常/连点/隐藏**等边界不出事
 """
@@ -112,41 +112,84 @@ def test_loading_hint_uses_thread_overlay(stage):
     fader.run(lambda: None)
     fader._show_overlay()
     ov = fader._overlay
-    assert ov is not None, "应创建加载指示器窗口"
+    assert ov is not None, "应创建加载指示窗口"
     assert "正在切换主题" in ov._text, \
         "窗口上要有说明文字，实际：%r" % ov._text
-    # 子线程在工作
-    assert ov._thread.isRunning(), "出帧线程应已启动"
     fader._shutdown_overlay()
     fader._teardown()
 
 
-def test_spinner_thread_produces_frames():
-    """子线程要真的持续产出帧（主线程阻塞也不影响它算帧）。"""
+def test_win32_spinner_keeps_spinning_while_main_blocked():
+    """**核心验证**：主线程阻塞时，加载窗口仍要持续旋转。
+
+    ## 为什么这个测试最重要
+
+    用户的原始抱怨是"图标一帧一帧的转"。根因是 Qt 的所有窗口绘制
+    都由 GUI 主线程执行——主线程卡在 `setStyleSheet` 里时，任何
+    Qt 控件都不重绘。
+
+    解法是用纯 Win32 窗口：Win32 的规则是"窗口消息由创建它的线程
+    派发"，所以子线程创建的窗口完全不受主线程阻塞影响。
+
+    这个测试在主线程里 `sleep`（模拟换肤阻塞），然后检查子线程
+    窗口的旋转角度有没有继续前进。
+    """
+    if sys.platform != "win32":
+        pytest.skip("Win32 窗口测试")
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     import time
 
     from PySide6.QtWidgets import QApplication
 
-    app = QApplication.instance() or QApplication([])
-    from ui.spinner_overlay import SpinnerOverlay
+    QApplication.instance() or QApplication([])
+    from ui.win32_spinner import Win32SpinnerWindow
 
-    ov = SpinnerOverlay()
-    n = {"c": 0}
-    ov._worker.frame_ready.connect(lambda img: n.__setitem__("c", n["c"] + 1))
-    from PySide6.QtCore import QPoint
+    win = Win32SpinnerWindow("正在切换主题…", dark=False)
+    win.start(400, 300)
+    assert win._wait_ready(2.0), "窗口没能创建出来"
 
-    ov.start(QPoint(300, 300))
-    app.processEvents()
+    time.sleep(0.25)
+    a0 = win._angle
+    # 主线程完全阻塞——模拟 setStyleSheet 卡住
+    time.sleep(0.5)
+    a1 = win._angle
 
-    t0 = time.perf_counter()
-    while time.perf_counter() - t0 < 0.5:
-        app.processEvents()
-        time.sleep(0.01)
+    win.stop()
+    win.join()
 
-    ov.shutdown()
-    assert n["c"] >= 3, "0.5 秒内至少该出几帧，实际 %d" % n["c"]
-    assert not ov._thread.isRunning(), "关闭后线程要停干净"
+    assert a1 != a0, \
+        "主线程阻塞期间旋转角度没变（%r -> %r），说明还在依赖主线程" \
+        % (a0, a1)
+
+
+def test_win32_spinner_repeatable():
+    """反复创建/销毁要都能正常工作（类名冲突是踩过的坑）。"""
+    if sys.platform != "win32":
+        pytest.skip("Win32 窗口测试")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    import time
+
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    from ui.win32_spinner import Win32SpinnerWindow
+
+    ok = 0
+    for i in range(3):
+        win = Win32SpinnerWindow("测试", dark=(i % 2 == 1))
+        win.start(400, 300)
+        if not win._wait_ready(2.0):
+            win.stop()
+            win.join()
+            continue
+        time.sleep(0.2)
+        a0 = win._angle
+        time.sleep(0.35)
+        if win._angle != a0:
+            ok += 1
+        win.stop()
+        win.join()
+    assert ok == 3, "3 轮里只有 %d 轮正常" % ok
 
 
 def test_teardown_restores_everything(stage):

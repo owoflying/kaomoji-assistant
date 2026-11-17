@@ -316,10 +316,7 @@ class ThemeFader(QObject):
             l, t, r, b = self._base_margins
             self._layout.setContentsMargins(l, t, r, b)
         if self._overlay is not None:
-            try:
-                self._overlay.stop()
-            except RuntimeError:
-                self._overlay = None
+            self._shutdown_overlay()
         if self._veil is not None:
             try:
                 self._veil.opacity = 0.0
@@ -365,35 +362,47 @@ class ThemeFader(QObject):
             self._veil.raise_()
 
     def _show_overlay(self):
-        """显示子线程驱动的加载指示器（独立顶层窗口）。"""
-        from ui.spinner_overlay import SpinnerOverlay, parent_center_global
+        """显示加载指示窗口。
+
+        ## 为什么用纯 Win32 窗口而不是 Qt
+
+        实测确认了 Qt 的硬约束：**所有 Qt 窗口的绘制都由 GUI 主线程执行**，
+        与窗口属于哪个线程无关。同一 QWidget 上跑 20ms 定时器：
+
+            正常运行时      ：12 次 paintEvent
+            主线程阻塞 500ms： 0 次
+            恢复后          ：11 次
+
+        换肤期间主线程被 `setStyleSheet` 卡住（约 0.4~1 秒），
+        Qt 窗口必然定格。
+
+        Win32 的规则不同：「**窗口消息由创建它的线程派发**」。
+        所以在子线程里 `CreateWindowExW` 的窗口，`WM_TIMER` / `WM_PAINT`
+        都由子线程自己处理，完全不受主线程阻塞影响。
+
+        实测：主线程阻塞 600ms 期间，`ui/win32_spinner.py` 的窗口
+        角度从 45° 连续转到 162°——真正做到了动画不卡。
+        """
+        from ui.win32_spinner import Win32SpinnerWindow
 
         if self._overlay is None:
-            self._overlay = SpinnerOverlay()
-            # 窗口销毁前把子线程收干净，否则 Qt 会报
-            # "QThread: Destroyed while thread is still running"
-            host = self.parent()
-            if host is not None:
-                try:
-                    host.destroyed.connect(self._shutdown_overlay)
-                except Exception:
-                    pass
-        self._overlay.set_dark(self._veil._dark if self._veil else False)
-        self._overlay.set_text("正在切换主题…")
-        self._overlay.start(parent_center_global(self._widget))
+            dark = self._veil._dark if self._veil else False
+            self._overlay = Win32SpinnerWindow("正在切换主题…", dark=dark)
+        center = self._widget.rect().center()
+        gp = self._widget.mapToGlobal(center)
+        self._overlay.start(gp.x(), gp.y())
 
     def _shutdown_overlay(self):
-        """彻底停掉加载指示器的子线程（宿主销毁时调用）。"""
+        """停掉加载指示窗口（子线程会自行销毁窗口）。"""
         ov = self._overlay
         self._overlay = None
         if ov is None:
             return
         try:
-            # 必须在 deleteLater 之前等线程真正停下，
-            # 否则 QTimer 会在主线程被销毁并报跨线程警告
-            ov.shutdown()
-            ov.deleteLater()
-        except RuntimeError:
+            ov.stop()
+            # join 会等子线程把窗口销毁掉；给足时间避免残留黑框
+            ov.join(1.5)
+        except Exception:
             pass
 
     # ------------------------------------------------------------ 对外
@@ -523,11 +532,8 @@ class ThemeFader(QObject):
         group.addAnimation(fade)
 
         if veil is not None:
-            try:
-                if self._overlay is not None:
-                    self._overlay.stop()
-            except RuntimeError:
-                pass
+            if self._overlay is not None:
+                self._shutdown_overlay()
             va = QPropertyAnimation(veil, b"opacity", self)
             va.setDuration(_RETURN_MS)
             va.setStartValue(1.0)

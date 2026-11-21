@@ -286,6 +286,8 @@ class AppRuntime:
         w.isVisibleChanged.connect(self._on_picker_visibility)        # 面板因某情绪弹出后立即锁定该情绪，避免同一句话被反复推荐
         w.emotion_shown.connect(self.monitor.notify_shown)
         w.selected.connect(self.on_selected)
+        # Ctrl+R：重复上一条（同一句里想再用一次同一个颜文字）
+        w.repeat_last_requested.connect(self.repeat_last_injected)
         w.settings_requested.connect(lambda: self.open_unified("settings"))
 
         # 开发者事件流
@@ -996,6 +998,13 @@ class AppRuntime:
         self.bus.log("注入", "主程序", "注入颜文字：%s（方式=%s）" % (text, method))
         self.plugins.emit("before_insert", text, ctx)
 
+        # 记进「注入历史」：与 usage（累计次数）不同，这是一条按时间排的
+        # 流水，用来支持「刚才那个再来一次」。
+        try:
+            self.state.add_history(text, source=ctx.get("source") or "")
+        except Exception as e:
+            append_log("warn", "inject", "记录注入历史失败：%r" % (e,))
+
         trigger_word = ctx.get("trigger_word") or ""
         if ctx.get("delete_trigger") and trigger_word:
             self._apply_trigger_with_delete(text, method, trigger_word)
@@ -1203,6 +1212,28 @@ class AppRuntime:
             except Exception:
                 pass
         return False
+
+    def repeat_last_injected(self):
+        """把上一条注入的颜文字再插一次（候选条里 Ctrl+R）。
+
+        设计取舍：**只取上一条，不做"上一条历史"面板**。
+        实景是"刚发完一句，下一句还想用同一个"——一次按键就够。
+        翻更早的历史属于低频操作，不值得占一个热键。
+
+        跳过最近一条是因为历史里第一条就是"上一次注入"，
+        而用户此刻正在候选条里想复用**那个**。
+        """
+        text = ""
+        try:
+            text = self.state.last_injected(0)
+        except Exception:
+            text = ""
+        if not text:
+            append_log("info", "inject", "没有可重复的颜文字（历史为空）")
+            return False
+        # 走统一注入入口，保证监听器静默期、插件转换、历史记录都一致
+        self.on_selected(text, {"source": "repeat"})
+        return True
 
     def _apply_trigger_with_delete(self, text, method, trigger_word):
         """先安全删掉触发词，再注入颜文字；任何不确定都只注入不删除。"""

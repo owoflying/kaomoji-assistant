@@ -179,6 +179,8 @@ class PickerWindow(QWidget):
     # 自定义可见性信号：本版本 Qt6 的 QWidget 未提供 isVisibleChanged/visibilityChanged，
     # 故在 showEvent/hideEvent 中手动 emit，供 AppRuntime 暂停/恢复自动弹出监听使用。
     isVisibleChanged = Signal(bool)
+    #: Ctrl+R：把上一条注入的颜文字再插一次
+    repeat_last_requested = Signal()
 
     def __init__(self, data: KaomojiData, config: dict, state: UserState, user_kao=None):
         super().__init__()
@@ -439,16 +441,36 @@ class PickerWindow(QWidget):
 
     # ---------- 数据 ----------
     def _manual_items(self):
-        """手动唤起：按「频率 + 新近度 + 收藏」评分排序。
+        """手动唤起：按「频率 + 新近度 + 收藏 + 时段习惯」评分排序。
 
         ⚠ 不再单纯按「最近使用」排。实测用户真实数据：
         用过 4 次的 (｡･ω･｡) 曾排在第 5 位，只用过 2 次的却排第 1——
         每次唤起都要往下翻。改用 `UserState.rank()` 后，最常用稳定在首位，
         顺序也固定（不再随使用顺序漂移），用户能形成肌肉记忆。
+
+        ## 时段场景
+
+        当前时段若对应某个场景（比如深夜 → "night"），会把该场景下的
+        颜文字提到池子**前面**作为候选。这样深夜唤起时更容易看到
+        "困了/晚安"这类，早上更容易看到问候类。
+
+        只做「提前」不做「过滤」：池子仍是全集，只是排序靠前，
+        用户想找别的照样翻得到。
         """
         seen = set()
         pool = []
-        for src in (list(self.state.recent),
+
+        # 当前时段对应的场景条目排在最前
+        scene_items = []
+        try:
+            scene = self.state.current_scene()
+            if scene:
+                scene_items = list(self.data.by_scene(scene))
+        except Exception:
+            scene_items = []
+
+        for src in (scene_items,
+                    list(self.state.recent),
                     (self.user_kao.get_all() if self.user_kao is not None else []),
                     list(self.data.get_items())):
             for k in src:
@@ -533,6 +555,13 @@ class PickerWindow(QWidget):
 
     # ---------- 键盘（仅在窗口意外获得焦点时兜底；主路径是全局钩子） ----------
     def keyPressEvent(self, e):
+        # Ctrl+R：重复上一条注入的颜文字。
+        # 场景：刚发了一个 `(๑˃ᴗ˂)ﻭ`，想说第二句又想用同一个。
+        # 不用重新唤起翻找，直接在面板里按一下。
+        if (e.key() == Qt.Key_R
+                and e.modifiers() & Qt.ControlModifier):
+            self.repeat_last_requested.emit()
+            return
         t = e.text()
         if t and t in "123456789":
             self._on_hk_action("num" + t)

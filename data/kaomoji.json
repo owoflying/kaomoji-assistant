@@ -2,30 +2,320 @@
   "categories": [
     {
       "name": "开心",
+      "aliases": [
+        "kx",
+        "happy",
+        "joy",
+        "smile",
+        "glad",
+        "高兴",
+        "快乐",
+        "笑",
+        "愉快"
+      ],
+      "scenes": [
+        "greeting",
+        "celebrate"
+      ],
       "items": [
-        "(｡･ω･｡)",
-        "(◕‿◕)",
-        "(≧▽≦)",
+        {
+          "text": "(＾▽＾)",
+          "aliases": [
+            "happy",
+            "smile",
+            "yay"
+          ],
+          "scenes": [
+            "greeting"
+          ]
+        },
+        {
+          "text": "(◕‿◕)",
+          "aliases": [
+            "smile",
+            "sweet"
+          ]
+        },
+        {
+          "text": "(｡･ω･｡)",
+          "aliases": [
+            "soft",
+            "cute"
+          ]
+        },
+        {
+          "text": "(๑˃ᴗ˂)ﻭ",
+          "aliases": [
+            "cheer",
+            "win",
+            "yes"
+          ],
+          "scenes": [
+            "celebrate"
+          ]
+        },
+        {
+          "text": "(＾ω＾)",
+          "aliases": [
+            "smile"
+          ]
+        },
+        {
+          "text": "ヽ(・∀・)ﾉ",
+          "aliases": [
+            "yay",
+            "hello",
+            "hi"
+          ],
+          "scenes": [
+            "greeting"
+          ]
+        },
+        {
+          "text": "(≧▽≦)",
+          "aliases": [
+            "laugh",
+            "lol",
+            "haha"
+          ]
+        },
+        {
+          "text": "(*≧ω≦*)",
+          "aliases": [
+            "excited",
+            "happy"
+          ]
+        },
+        {
+          "text": "(•‿•)",
+          "aliases": [
+            "smile",
+            "polite"
+          ]
+        },
+        {
+          "text": "(ᵔᴥᵔ)",
+          "aliases": [
+            "cute",
+            "smile"
+          ]
+        },
+        {
+          "text": "(＾◡＾)",
+          "aliases": [
+            "smile",
+            "warm"
+          ]
+        },
+        {
+          "text": "٩(◕‿◕)۶",
+          "aliases": [
+            "yay",
+            "celebrate"
+          ],
+          "scenes": [
+            "celebrate"
+          ]
+        },
+        {
+          "text": "(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧",
+          "aliases": [
+            "magic",
+            "sparkle",
+            "send"
+          ],
+          "scenes": [
+            "celebrate"
+          ]
+        },
+        {
+          "text": "ヾ(≧▽≦*)o",
+          "aliases": [
+            "haha",
+            "laugh"
+          ]
+        },
+        {
+          "text": "(✿◠‿◠)",
+          "aliases": [
+            "flower",
+            "gentle"
+          ]
+        },
+        {
+          "text": "(„• ᴗ •„)",
+          "aliases": [
+            "shy",
+            "happy"
+          ]
+        },
+        {
+          "text": "(๑>◡<๑)",
+          "aliases": [
+            "love",
+            "happy"
+          ]
+        },
+        {
+          "text": "(⌒▽⌒)",
+          "aliases": [
+            "grin",
+            "bigsmile"
+          ]
+        },
+        {
+          "text": "o(≧▽≦)o",
+          "aliases": [
+            "yay",
+            "excited"
+          ]
+        },
+        {
+          "text": "(＊❛ᴗ❛＊)",
+          "aliases": [
+            "blush",
+            "happy"
+          ]
+        },
         "(◠‿◠)",
         "ヽ(°〇°)ﾉ",
         "(*^▽^*)",
-        "ヾ(≧▽≦*)o",
         "(✿◡‿◡)",
         "(つ≧▽≦)つ",
         "＼(＾▽＾)／",
-        "(๑˃ᴗ˂)ﻭ",
         "☆*:.｡.o(≧▽≦)o.｡.:*☆",
         "(≧ω≦)",
         "(ノ^o^)ノ",
-        "(*≧ω≦*)",
         "(◕ᴗ◕✿)",
         "(｡≖ᴗ≖｡)"
       ]
     },
     {
       "name": "伤心",
+      "aliases": [
+        "sx",
+        "sad",
+        "cry",
+        "unhappy",
+        "blue",
+        "难过",
+        "哭",
+        "悲伤",
+        "伤心"
+      ],
+      "scenes": [
+        "comfort"
+      ],
       "items": [
-        "(╥﹏╥)",
+        {
+          "text": "(╥﹏╥)",
+          "aliases": [
+            "cry",
+            "tears",
+            "sob"
+          ]
+        },
+        {
+          "text": "(ノ﹏ヽ)",
+          "aliases": [
+            "cry",
+            "weep"
+          ]
+        },
+        {
+          "text": "(｡•́︿•̀｡)",
+          "aliases": [
+            "sad",
+            "down"
+          ]
+        },
+        {
+          "text": "(╯︵╰,)",
+          "aliases": [
+            "cry",
+            "grief"
+          ]
+        },
+        {
+          "text": "(っ˘̩╭╮˘̩)っ",
+          "aliases": [
+            "hug",
+            "comfort"
+          ],
+          "scenes": [
+            "comfort"
+          ]
+        },
+        {
+          "text": "(ಥ﹏ಥ)",
+          "aliases": [
+            "cry",
+            "tears"
+          ]
+        },
+        {
+          "text": "(´;ω;`)",
+          "aliases": [
+            "sob",
+            "cry"
+          ]
+        },
+        {
+          "text": "(个_个)",
+          "aliases": [
+            "cry",
+            "sad"
+          ]
+        },
+        {
+          "text": "｡ﾟ(ﾟ´ω`ﾟ)ﾟ｡",
+          "aliases": [
+            "wail",
+            "cry"
+          ]
+        },
+        {
+          "text": "(´-ω-`)",
+          "aliases": [
+            "sigh",
+            "tired"
+          ]
+        },
+        {
+          "text": "(´。＿。｀)",
+          "aliases": [
+            "blank",
+            "down"
+          ]
+        },
+        {
+          "text": "(╥_╥)",
+          "aliases": [
+            "cry",
+            "sad"
+          ]
+        },
+        {
+          "text": "(ノдヽ)",
+          "aliases": [
+            "cry",
+            "despair"
+          ]
+        },
+        {
+          "text": "(´；ω；`)",
+          "aliases": [
+            "cry",
+            "tears"
+          ]
+        },
+        {
+          "text": "( >д<)",
+          "aliases": [
+            "pain",
+            "ouch"
+          ]
+        },
         "(；へ：)",
         "(´；ω；｀)",
         "(T_T)",
@@ -39,23 +329,223 @@
     },
     {
       "name": "生气",
+      "aliases": [
+        "sq",
+        "angry",
+        "mad",
+        "rage",
+        "愤怒",
+        "火大",
+        "气"
+      ],
+      "scenes": [],
       "items": [
+        {
+          "text": "(＃`Д´)",
+          "aliases": [
+            "angry",
+            "furious"
+          ]
+        },
+        {
+          "text": "(╬ Ò﹏Ó)",
+          "aliases": [
+            "rage",
+            "mad"
+          ]
+        },
+        {
+          "text": "(ノಠ益ಠ)ノ彡┻━┻",
+          "aliases": [
+            "tableflip",
+            "rage",
+            "flip"
+          ]
+        },
+        {
+          "text": "(｀Д´)",
+          "aliases": [
+            "angry",
+            "mad"
+          ]
+        },
+        {
+          "text": "(・`ω´・)",
+          "aliases": [
+            "annoyed",
+            "hmp"
+          ]
+        },
+        {
+          "text": "(￣ヘ￣)",
+          "aliases": [
+            "annoyed",
+            "sigh"
+          ]
+        },
+        {
+          "text": "(╯°□°）╯︵ ┻━┻",
+          "aliases": [
+            "tableflip",
+            "flip"
+          ]
+        },
+        {
+          "text": "(¬_¬)",
+          "aliases": [
+            "sideeye",
+            "unimpressed"
+          ]
+        },
+        {
+          "text": "(눈_눈)",
+          "aliases": [
+            "glare",
+            "sus"
+          ]
+        },
+        {
+          "text": "(҂`_´)",
+          "aliases": [
+            "angry",
+            "cursing"
+          ]
+        },
+        {
+          "text": "(￣ω￣;)",
+          "aliases": [
+            "sweat",
+            "awkward"
+          ]
+        },
+        {
+          "text": "(≖_≖ )",
+          "aliases": [
+            "sideeye",
+            "doubt"
+          ]
+        },
         "(╬ಠ益ಠ)",
-        "(╯°□°）╯︵ ┻━┻",
         "(ーー゛)",
         "(；￣Д￣)",
         "(҂◡_◡)",
         "(╬⓪益⓪)",
-        "(ノಠ益ಠ)ノ彡┻━┻",
         "(｀ε´)",
         "(▼皿▼#)"
       ]
     },
     {
       "name": "惊讶",
+      "aliases": [
+        "jy",
+        "surprise",
+        "shock",
+        "wow",
+        "omg",
+        "震惊",
+        "吃惊",
+        "哇"
+      ],
+      "scenes": [],
       "items": [
-        "(⊙_⊙)",
-        "Σ(°△°|||)︴",
+        {
+          "text": "(°ロ°)",
+          "aliases": [
+            "shock",
+            "surprised"
+          ]
+        },
+        {
+          "text": "(⊙_⊙)",
+          "aliases": [
+            "surprise",
+            "stare"
+          ]
+        },
+        {
+          "text": "Σ(°△°|||)︴",
+          "aliases": [
+            "shock",
+            "omg"
+          ]
+        },
+        {
+          "text": "(ﾟдﾟ)",
+          "aliases": [
+            "shock",
+            "what"
+          ]
+        },
+        {
+          "text": "(⊙o⊙)",
+          "aliases": [
+            "wow",
+            "surprised"
+          ]
+        },
+        {
+          "text": "(゜ロ゜)",
+          "aliases": [
+            "shock",
+            "gasp"
+          ]
+        },
+        {
+          "text": "Σ(っ °Д °;)っ",
+          "aliases": [
+            "omg",
+            "panic"
+          ]
+        },
+        {
+          "text": "(°◇°)",
+          "aliases": [
+            "surprise",
+            "gasp"
+          ]
+        },
+        {
+          "text": "(๑°ㅁ°๑)",
+          "aliases": [
+            "shock",
+            "wow"
+          ]
+        },
+        {
+          "text": "(☉_☉)",
+          "aliases": [
+            "stare",
+            "surprise"
+          ]
+        },
+        {
+          "text": "(°ω°;)",
+          "aliases": [
+            "nervous",
+            "shock"
+          ]
+        },
+        {
+          "text": "(」゜ロ゜)」",
+          "aliases": [
+            "panic",
+            "run"
+          ]
+        },
+        {
+          "text": "(⊙﹏⊙)",
+          "aliases": [
+            "confused",
+            "shock"
+          ]
+        },
+        {
+          "text": "(*ﾟﾛﾟ)",
+          "aliases": [
+            "wow",
+            "surprise"
+          ]
+        },
         "(゜o゜)",
         "(！？)",
         "(°o°)",
@@ -66,19 +556,131 @@
         "(；ﾟдﾟ)",
         "ヾ(≧∇≦*)",
         "(☉ж⊙)",
-        "(°ロ°)",
         "(＃ﾟДﾟ)"
       ]
     },
     {
       "name": "喜欢",
+      "aliases": [
+        "xh",
+        "love",
+        "heart",
+        "like",
+        "adore",
+        "爱",
+        "心",
+        "喜爱"
+      ],
+      "scenes": [
+        "greeting",
+        "comfort"
+      ],
       "items": [
-        "(♡˙︶˙♡)",
-        "(｡♥‿♥｡)",
+        {
+          "text": "(♥ω♥*)",
+          "aliases": [
+            "love",
+            "heart"
+          ]
+        },
+        {
+          "text": "(｡♥‿♥｡)",
+          "aliases": [
+            "love",
+            "inlove"
+          ]
+        },
+        {
+          "text": "(◍•ᴗ•◍)❤",
+          "aliases": [
+            "love",
+            "heart"
+          ]
+        },
+        {
+          "text": "( ´ ▽ ` ).｡ｏ♡",
+          "aliases": [
+            "love",
+            "sweet"
+          ]
+        },
+        {
+          "text": "♡(˃͈ દ ˂͈ ༶ )",
+          "aliases": [
+            "love",
+            "kiss"
+          ]
+        },
+        {
+          "text": "(´,,•ω•,,)♡",
+          "aliases": [
+            "love",
+            "shy"
+          ]
+        },
+        {
+          "text": "(⁄ ⁄•⁄ω⁄•⁄ ⁄)",
+          "aliases": [
+            "blush",
+            "shy"
+          ]
+        },
+        {
+          "text": "(*/ω＼*)",
+          "aliases": [
+            "shy",
+            "blush"
+          ]
+        },
+        {
+          "text": "(灬º‿º灬)♡",
+          "aliases": [
+            "love",
+            "warm"
+          ]
+        },
+        {
+          "text": "(っ˘ω˘ς )",
+          "aliases": [
+            "cuddle",
+            "love"
+          ],
+          "scenes": [
+            "comfort"
+          ]
+        },
+        {
+          "text": "(♡˙︶˙♡)",
+          "aliases": [
+            "love",
+            "happy"
+          ]
+        },
+        {
+          "text": "(◕‿◕)♡",
+          "aliases": [
+            "love",
+            "smile"
+          ]
+        },
+        {
+          "text": "(づ｡◕‿‿◕｡)づ",
+          "aliases": [
+            "hug",
+            "comfort"
+          ],
+          "scenes": [
+            "comfort"
+          ]
+        },
+        {
+          "text": "(ღ˘⌣˘ღ)",
+          "aliases": [
+            "love",
+            "peaceful"
+          ]
+        },
         "(づ￣ 3￣)づ",
-        "♡(˃͈ દ ˂͈ ༶ )",
-        "(◍•ᴗ•◍)❤",
-        "(ღ˘⌣˘ღ)",
         "♥(´ε｀ )♡",
         "( ˘ ³˘)♥",
         "(｡•̀ᴗ-)✧",
@@ -90,23 +692,564 @@
       ]
     },
     {
-      "name": "动物",
+      "name": "害羞",
+      "aliases": [
+        "hx",
+        "shy",
+        "blush",
+        "embarrass",
+        "脸红",
+        "不好意思"
+      ],
+      "scenes": [],
       "items": [
-        "(・∀・)",
-        "(^・ω・^)",
-        "(=^･ω･^=)",
-        "(ฅ^•ﻌ•^ฅ)",
-        "(ᵔᴥᵔ)",
-        "(˙꒳˙)",
-        "(・ω・)",
-        "(ﾐዝ፨ዝﾐ)",
-        "(≡^∇^≡)",
-        "(´・ω・)ﾉ"
+        {
+          "text": "(⁄ ⁄•⁄ω⁄•⁄ ⁄)⁄",
+          "aliases": [
+            "shy",
+            "blush"
+          ]
+        },
+        {
+          "text": "(*/▽＼*)",
+          "aliases": [
+            "shy"
+          ]
+        },
+        {
+          "text": "(〃∀〃)",
+          "aliases": [
+            "blush",
+            "shy"
+          ]
+        },
+        {
+          "text": "(´-ω-`)ゞ",
+          "aliases": [
+            "embarrassed",
+            "oops"
+          ]
+        },
+        {
+          "text": "(⁄˘⁄ ⁄ ω⁄ ⁄ ˘⁄)",
+          "aliases": [
+            "shy",
+            "flustered"
+          ]
+        },
+        {
+          "text": "(๑•́ ₃ •̀๑)",
+          "aliases": [
+            "pout",
+            "cute"
+          ]
+        },
+        {
+          "text": "(〃ω〃)",
+          "aliases": [
+            "shy",
+            "blush"
+          ]
+        },
+        {
+          "text": "(〃▽〃)",
+          "aliases": [
+            "shy",
+            "happy"
+          ]
+        },
+        {
+          "text": "( ›´ω`‹ )",
+          "aliases": [
+            "shy",
+            "guilty"
+          ]
+        },
+        {
+          "text": "(๑´ㅂ`๑)",
+          "aliases": [
+            "shy",
+            "cute"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "得意",
+      "aliases": [
+        "dy",
+        "proud",
+        "smug",
+        "cool",
+        "confident",
+        "骄傲",
+        "酷",
+        "炫"
+      ],
+      "scenes": [
+        "celebrate"
+      ],
+      "items": [
+        {
+          "text": "(￣▽￣)ノ",
+          "aliases": [
+            "cool",
+            "bye"
+          ],
+          "scenes": [
+            "farewell"
+          ]
+        },
+        {
+          "text": "(⌐■_■)",
+          "aliases": [
+            "cool",
+            "dealwithit"
+          ]
+        },
+        {
+          "text": "(・ω<)★",
+          "aliases": [
+            "wink",
+            "cheeky"
+          ]
+        },
+        {
+          "text": "(￣ω￣)",
+          "aliases": [
+            "smug",
+            "calm"
+          ]
+        },
+        {
+          "text": "(˘ω˘)",
+          "aliases": [
+            "peaceful",
+            "calm"
+          ]
+        },
+        {
+          "text": "(￣∀￣)",
+          "aliases": [
+            "smug",
+            "sly"
+          ]
+        },
+        {
+          "text": "(｡•̀ᴗ-)✧",
+          "aliases": [
+            "confident",
+            "sparkle"
+          ]
+        },
+        {
+          "text": "(๑˘︶˘๑)",
+          "aliases": [
+            "relaxed",
+            "cool"
+          ]
+        },
+        {
+          "text": "( •_•)>⌐■-■",
+          "aliases": [
+            "sunglasses",
+            "cool"
+          ]
+        },
+        {
+          "text": "( ´ ▽ ` )ﾉ",
+          "aliases": [
+            "bye",
+            "wave"
+          ],
+          "scenes": [
+            "farewell"
+          ]
+        },
+        {
+          "text": "(≖ᴗ≖)",
+          "aliases": [
+            "smirk",
+            "knowing"
+          ]
+        },
+        {
+          "text": "(๑•̀ㅂ•́)و✧",
+          "aliases": [
+            "determined",
+            "fight",
+            "yes"
+          ],
+          "scenes": [
+            "celebrate"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "无语",
+      "aliases": [
+        "wy",
+        "speechless",
+        "facepalm",
+        "meh",
+        "whatever",
+        "无奈",
+        "无力吐槽"
+      ],
+      "scenes": [],
+      "items": [
+        {
+          "text": "(￣_￣)",
+          "aliases": [
+            "speechless",
+            "meh"
+          ]
+        },
+        {
+          "text": "(・_・;)",
+          "aliases": [
+            "awkward",
+            "sweat"
+          ]
+        },
+        {
+          "text": "(-_-;)",
+          "aliases": [
+            "awkward",
+            "sweat"
+          ]
+        },
+        {
+          "text": "(￣ヘ￣;)",
+          "aliases": [
+            "annoyed",
+            "sigh"
+          ]
+        },
+        {
+          "text": "(´_ゝ`)",
+          "aliases": [
+            "deadpan",
+            "meh"
+          ]
+        },
+        {
+          "text": "(・_・;)",
+          "aliases": [
+            "speechless"
+          ]
+        },
+        {
+          "text": "(ー_ーゞ",
+          "aliases": [
+            "meh",
+            "sweat"
+          ]
+        },
+        {
+          "text": "(￣ー￣)",
+          "aliases": [
+            "smug",
+            "knowing"
+          ]
+        },
+        {
+          "text": "(._.)",
+          "aliases": [
+            "blank",
+            "meh"
+          ]
+        },
+        {
+          "text": "(´･_･`)",
+          "aliases": [
+            "tired",
+            "meh"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "思考",
+      "aliases": [
+        "sk",
+        "think",
+        "hmm",
+        "wonder",
+        "confused",
+        "想",
+        "疑惑",
+        "疑问"
+      ],
+      "scenes": [],
+      "items": [
+        {
+          "text": "(・∀・)?",
+          "aliases": [
+            "question",
+            "hmm"
+          ]
+        },
+        {
+          "text": "(￣～￣)",
+          "aliases": [
+            "thinking",
+            "hmm"
+          ]
+        },
+        {
+          "text": "(´・ω・`)",
+          "aliases": [
+            "confused",
+            "hmm"
+          ]
+        },
+        {
+          "text": "(・・)",
+          "aliases": [
+            "confused",
+            "what"
+          ]
+        },
+        {
+          "text": "(？ω？)",
+          "aliases": [
+            "confused",
+            "curious"
+          ]
+        },
+        {
+          "text": "(・_・?",
+          "aliases": [
+            "question",
+            "huh"
+          ]
+        },
+        {
+          "text": "(°ー°〃)",
+          "aliases": [
+            "thinking",
+            "curious"
+          ]
+        },
+        {
+          "text": "(-ω-)",
+          "aliases": [
+            "pondering",
+            "hmm"
+          ]
+        },
+        {
+          "text": "(￣ ￣|||)",
+          "aliases": [
+            "doubt",
+            "sweat"
+          ]
+        },
+        "(－_－)",
+        "(・_・)",
+        "(￣▽￣)ノ",
+        "(¬_¬\")",
+        "(；・∀・)",
+        "(－ω－)ｚｚｚ",
+        "(・・?)",
+        "(。。)"
+      ]
+    },
+    {
+      "name": "疲惫",
+      "aliases": [
+        "pb",
+        "tired",
+        "sleepy",
+        "exhausted",
+        "drained",
+        "累",
+        "困",
+        "睡",
+        "疲倦",
+        "睡觉"
+      ],
+      "scenes": [
+        "night"
+      ],
+      "items": [
+        {
+          "text": "(=_=)",
+          "aliases": [
+            "tired",
+            "sleepy"
+          ]
+        },
+        {
+          "text": "(－_－) zzZ",
+          "aliases": [
+            "sleep",
+            "sleepy"
+          ],
+          "scenes": [
+            "night"
+          ]
+        },
+        {
+          "text": "(￣o￣) zzZZzz",
+          "aliases": [
+            "sleep"
+          ],
+          "scenes": [
+            "night"
+          ]
+        },
+        {
+          "text": "(´-﹏-`)",
+          "aliases": [
+            "exhausted"
+          ]
+        },
+        {
+          "text": "(~_~;)",
+          "aliases": [
+            "sweat",
+            "tired"
+          ]
+        },
+        {
+          "text": "(－‸＃)",
+          "aliases": [
+            "annoyed",
+            "tired"
+          ]
+        },
+        {
+          "text": "(¯﹃¯)",
+          "aliases": [
+            "drool",
+            "hungry"
+          ]
+        },
+        {
+          "text": "(︶︹︺)",
+          "aliases": [
+            "sigh",
+            "down"
+          ]
+        },
+        {
+          "text": "(◞‸◟)",
+          "aliases": [
+            "sigh",
+            "sad"
+          ]
+        },
+        "(´-ω-`)",
+        "(-_-)",
+        "(:3[___]",
+        "ε=ε=(´д｀*)",
+        "(≧▽≦)zzz",
+        "┐(´～｀)┌",
+        "(。-ω-)zzz",
+        "=_=",
+        "╮(╯▽╰)╭"
       ]
     },
     {
       "name": "动作",
+      "aliases": [
+        "dz",
+        "action",
+        "gesture",
+        "手势",
+        "动"
+      ],
+      "scenes": [
+        "farewell",
+        "greeting"
+      ],
       "items": [
+        {
+          "text": "(ノ°Д°)?~~~",
+          "aliases": [
+            "run",
+            "escape"
+          ]
+        },
+        {
+          "text": "ヽ(￣ω￣(￣ω￣〃)ゝ",
+          "aliases": [
+            "walk",
+            "pair"
+          ]
+        },
+        {
+          "text": "(－ω－)φ",
+          "aliases": [
+            "write",
+            "note"
+          ]
+        },
+        {
+          "text": "(╯°□°)╯︵ ┻━┻",
+          "aliases": [
+            "tableflip",
+            "flip"
+          ]
+        },
+        {
+          "text": "┬─┬ノ( º _ ºノ)",
+          "aliases": [
+            "unflip",
+            "calm"
+          ]
+        },
+        {
+          "text": "(๑•̀ㅂ•́)ゞ",
+          "aliases": [
+            "salute",
+            "yes"
+          ]
+        },
+        {
+          "text": "o(*°▽°*)o",
+          "aliases": [
+            "cheer",
+            "wave"
+          ]
+        },
+        {
+          "text": "(づ￣ ³￣)づ",
+          "aliases": [
+            "kiss",
+            "hug"
+          ],
+          "scenes": [
+            "comfort"
+          ]
+        },
+        {
+          "text": "(☞ﾟヮﾟ)☞",
+          "aliases": [
+            "point",
+            "this"
+          ]
+        },
+        {
+          "text": "☜(ﾟヮﾟ☜)",
+          "aliases": [
+            "point",
+            "that"
+          ]
+        },
+        {
+          "text": "(ノ^_^)ノ",
+          "aliases": [
+            "wave",
+            "bye"
+          ],
+          "scenes": [
+            "farewell"
+          ]
+        },
         "(ノ￣ω￣)ノ",
         "(っ´▽｀)ノ",
         "(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧",
@@ -118,8 +1261,170 @@
       ]
     },
     {
-      "name": "符号",
+      "name": "动物",
+      "aliases": [
+        "dw",
+        "animal",
+        "cat",
+        "dog",
+        "bear",
+        "猫",
+        "狗",
+        "熊"
+      ],
+      "scenes": [
+        "greeting"
+      ],
       "items": [
+        {
+          "text": "(=^･ω･^=)",
+          "aliases": [
+            "cat",
+            "meow"
+          ]
+        },
+        {
+          "text": "ฅ^•ﻌ•^ฅ",
+          "aliases": [
+            "cat",
+            "paw"
+          ]
+        },
+        {
+          "text": "(=ↀωↀ=)",
+          "aliases": [
+            "cat"
+          ]
+        },
+        {
+          "text": "ʕ•ᴥ•ʔ",
+          "aliases": [
+            "bear"
+          ]
+        },
+        {
+          "text": "ʕ￫ᴥ￩ʔ",
+          "aliases": [
+            "bear",
+            "confused"
+          ]
+        },
+        {
+          "text": "(=･ｪ･=)",
+          "aliases": [
+            "dog",
+            "puppy"
+          ]
+        },
+        {
+          "text": "U・ᴥ・U",
+          "aliases": [
+            "dog",
+            "puppy"
+          ]
+        },
+        {
+          "text": "(•ө•)♡",
+          "aliases": [
+            "bird",
+            "love"
+          ]
+        },
+        {
+          "text": "(´･ω･`)",
+          "aliases": [
+            "mouse",
+            "small"
+          ]
+        },
+        {
+          "text": "/ᐠ｡ꞈ｡ᐟ\\",
+          "aliases": [
+            "cat",
+            "cute"
+          ]
+        },
+        "(・∀・)",
+        "(^・ω・^)",
+        "(ฅ^•ﻌ•^ฅ)",
+        "(ᵔᴥᵔ)",
+        "(˙꒳˙)",
+        "(・ω・)",
+        "(ﾐዝ፨ዝﾐ)",
+        "(≡^∇^≡)",
+        "(´・ω・)ﾉ"
+      ]
+    },
+    {
+      "name": "符号",
+      "aliases": [
+        "fh",
+        "symbol",
+        "deco",
+        "kaomoji",
+        "装饰",
+        "花边"
+      ],
+      "scenes": [],
+      "items": [
+        {
+          "text": "✧･ﾟ: *✧･ﾟ:*",
+          "aliases": [
+            "sparkle",
+            "magic"
+          ]
+        },
+        {
+          "text": "☆*:.｡.o(≧▽≦)o.｡.:*☆",
+          "aliases": [
+            "sparkle",
+            "star"
+          ],
+          "scenes": [
+            "celebrate"
+          ]
+        },
+        {
+          "text": "ﾟ+｡:.ﾟヽ(*´∀`)ﾉﾟ.:｡+ﾟ",
+          "aliases": [
+            "sparkle",
+            "celebration"
+          ],
+          "scenes": [
+            "celebrate"
+          ]
+        },
+        {
+          "text": "・‥…━━━☆",
+          "aliases": [
+            "star",
+            "line"
+          ]
+        },
+        {
+          "text": "╰(*°▽°*)╯",
+          "aliases": [
+            "cheer",
+            "hooray"
+          ],
+          "scenes": [
+            "celebrate"
+          ]
+        },
+        {
+          "text": "(*￣▽￣)ノ~~",
+          "aliases": [
+            "point",
+            "hey"
+          ]
+        },
+        {
+          "text": "☁️✧⁺⸜(●˙▾˙●)⸝⁺✧",
+          "aliases": [
+            "cloud",
+            "dream"
+          ]
+        },
         "(✿ π _ π)",
         "╮(╯_╰)╭",
         "(￣～￣)",
@@ -133,30 +1438,702 @@
       ]
     },
     {
-      "name": "思考",
+      "name": "加油",
+      "aliases": [
+        "jy2",
+        "cheer",
+        "fight",
+        "ganbatte",
+        "support",
+        "努力",
+        "冲",
+        "鼓劲",
+        "支持"
+      ],
+      "scenes": [
+        "support",
+        "celebrate"
+      ],
       "items": [
-        "(－_－)",
-        "(・_・)",
-        "(￣▽￣)ノ",
-        "(¬_¬\")",
-        "(；・∀・)",
-        "(－ω－)ｚｚｚ",
-        "(・・?)",
-        "(。。)"
+        {
+          "text": "(๑•̀ㅂ•́)و✧",
+          "aliases": [
+            "fight",
+            "determined"
+          ],
+          "scenes": [
+            "support"
+          ]
+        },
+        {
+          "text": "٩(๑•̀ω•́๑)۶",
+          "aliases": [
+            "fight",
+            "go"
+          ],
+          "scenes": [
+            "support"
+          ]
+        },
+        {
+          "text": "o(｀ω´*)o",
+          "aliases": [
+            "fight",
+            "determined"
+          ],
+          "scenes": [
+            "support"
+          ]
+        },
+        {
+          "text": "(ง •̀_•́)ง",
+          "aliases": [
+            "fight",
+            "punch",
+            "go"
+          ],
+          "scenes": [
+            "support"
+          ]
+        },
+        {
+          "text": "ᕦ(ò_óˇ)ᕤ",
+          "aliases": [
+            "strong",
+            "fight"
+          ],
+          "scenes": [
+            "support"
+          ]
+        },
+        {
+          "text": "💪(•̀ᴗ•́)و",
+          "aliases": [
+            "strong",
+            "muscle"
+          ],
+          "scenes": [
+            "support"
+          ]
+        },
+        {
+          "text": "(๑˃̵ᴗ˂̵)و",
+          "aliases": [
+            "yes",
+            "go"
+          ],
+          "scenes": [
+            "support"
+          ]
+        },
+        {
+          "text": "٩(ˊᗜˋ*)و",
+          "aliases": [
+            "go",
+            "cheer"
+          ],
+          "scenes": [
+            "support"
+          ]
+        },
+        {
+          "text": "(•̀ᴗ•́)و",
+          "aliases": [
+            "go",
+            "ok"
+          ],
+          "scenes": [
+            "support"
+          ]
+        },
+        {
+          "text": "ヽ(•̀ω•́ )ゝ",
+          "aliases": [
+            "salute",
+            "ready"
+          ],
+          "scenes": [
+            "support"
+          ]
+        }
       ]
     },
     {
-      "name": "疲惫",
+      "name": "告别",
+      "aliases": [
+        "gb",
+        "bye",
+        "farewell",
+        "goodbye",
+        "leave",
+        "再见",
+        "拜拜",
+        "离别"
+      ],
+      "scenes": [
+        "farewell"
+      ],
       "items": [
-        "(´-ω-`)",
-        "(-_-)",
-        "(:3[___]",
-        "ε=ε=(´д｀*)",
-        "(≧▽≦)zzz",
-        "┐(´～｀)┌",
-        "(。-ω-)zzz",
-        "=_=",
-        "╮(╯▽╰)╭"
+        {
+          "text": "(´・ω・)ﾉ",
+          "aliases": [
+            "bye",
+            "wave"
+          ]
+        },
+        {
+          "text": "(・ω・)ノ",
+          "aliases": [
+            "bye",
+            "hi"
+          ]
+        },
+        {
+          "text": "(￣▽￣)ﾉ",
+          "aliases": [
+            "bye",
+            "cool"
+          ]
+        },
+        {
+          "text": "ノシ",
+          "aliases": [
+            "bye",
+            "wave"
+          ]
+        },
+        {
+          "text": "(´ω｀)ノ",
+          "aliases": [
+            "bye"
+          ]
+        },
+        {
+          "text": "( ^_^ )/",
+          "aliases": [
+            "bye",
+            "wave"
+          ]
+        },
+        {
+          "text": "(；ω；)ﾉ",
+          "aliases": [
+            "bye",
+            "sad"
+          ]
+        },
+        {
+          "text": "(｡･ω･)ﾉﾞ",
+          "aliases": [
+            "bye",
+            "cute"
+          ]
+        },
+        {
+          "text": "ﾉｼ",
+          "aliases": [
+            "bye",
+            "wave"
+          ]
+        },
+        {
+          "text": "(´∀｀)ﾉ",
+          "aliases": [
+            "bye",
+            "happy"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "道歉",
+      "aliases": [
+        "qq",
+        "sorry",
+        "apologize",
+        "regret",
+        "对不起",
+        "抱歉",
+        "认错"
+      ],
+      "scenes": [
+        "apology"
+      ],
+      "items": [
+        {
+          "text": "(｡•́︿•̀｡)ゞ",
+          "aliases": [
+            "sorry",
+            "oops"
+          ],
+          "scenes": [
+            "apology"
+          ]
+        },
+        {
+          "text": "m(_ _)m",
+          "aliases": [
+            "sorry",
+            "bow"
+          ],
+          "scenes": [
+            "apology"
+          ]
+        },
+        {
+          "text": "(_ _*)ゞ",
+          "aliases": [
+            "sorry",
+            "bow"
+          ],
+          "scenes": [
+            "apology"
+          ]
+        },
+        {
+          "text": "(｡-人-｡)",
+          "aliases": [
+            "sorry",
+            "pray"
+          ],
+          "scenes": [
+            "apology"
+          ]
+        },
+        {
+          "text": "(´-ω-`;)ゞ",
+          "aliases": [
+            "oops",
+            "sorry"
+          ],
+          "scenes": [
+            "apology"
+          ]
+        },
+        {
+          "text": "(>_<)",
+          "aliases": [
+            "oops",
+            "sorry"
+          ],
+          "scenes": [
+            "apology"
+          ]
+        },
+        {
+          "text": "(๑•́ ₃ •̀๑)",
+          "aliases": [
+            "pout",
+            "sorry"
+          ],
+          "scenes": [
+            "apology"
+          ]
+        },
+        {
+          "text": "人(_ _*)",
+          "aliases": [
+            "bow",
+            "sorry"
+          ],
+          "scenes": [
+            "apology"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "感谢",
+      "aliases": [
+        "gx",
+        "thanks",
+        "thank",
+        "thx",
+        "谢谢",
+        "谢",
+        "感恩"
+      ],
+      "scenes": [
+        "gratitude"
+      ],
+      "items": [
+        {
+          "text": "(｡◕‿◕｡)❤",
+          "aliases": [
+            "thanks",
+            "love"
+          ],
+          "scenes": [
+            "gratitude"
+          ]
+        },
+        {
+          "text": "(*´▽`人)",
+          "aliases": [
+            "thanks",
+            "pray"
+          ],
+          "scenes": [
+            "gratitude"
+          ]
+        },
+        {
+          "text": "(๑˃ᴗ˂)ﻭ",
+          "aliases": [
+            "thanks",
+            "yes"
+          ],
+          "scenes": [
+            "gratitude"
+          ]
+        },
+        {
+          "text": "(◍•ᴗ•◍)♡",
+          "aliases": [
+            "thanks",
+            "love"
+          ],
+          "scenes": [
+            "gratitude"
+          ]
+        },
+        {
+          "text": "(´｡• ᵕ •｡`)",
+          "aliases": [
+            "thanks",
+            "warm"
+          ],
+          "scenes": [
+            "gratitude"
+          ]
+        },
+        {
+          "text": "(*´∀｀*)人(*´∀｀*)",
+          "aliases": [
+            "thanks",
+            "mutual"
+          ],
+          "scenes": [
+            "gratitude"
+          ]
+        },
+        {
+          "text": "(人´∀｀)．☆",
+          "aliases": [
+            "thanks",
+            "bow"
+          ],
+          "scenes": [
+            "gratitude"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "庆祝",
+      "aliases": [
+        "qz",
+        "celebrate",
+        "congrats",
+        "party",
+        "yay",
+        "恭喜",
+        "庆祝",
+        "贺"
+      ],
+      "scenes": [
+        "celebrate"
+      ],
+      "items": [
+        {
+          "text": "٩(◕‿◕)۶",
+          "aliases": [
+            "yay",
+            "party"
+          ]
+        },
+        {
+          "text": "ヽ(°〇°)ﾉ",
+          "aliases": [
+            "wow",
+            "party"
+          ]
+        },
+        {
+          "text": "☆ﾟ.*･｡ﾟヽ(✿ﾟ▽ﾟ)ノﾟ｡･*.ﾟ☆",
+          "aliases": [
+            "party",
+            "confetti"
+          ]
+        },
+        {
+          "text": "(๑˃̵ᴗ˂̵)ﻭ",
+          "aliases": [
+            "yes",
+            "win"
+          ]
+        },
+        {
+          "text": "＼(≧▽≦)／",
+          "aliases": [
+            "yay",
+            "hooray"
+          ]
+        },
+        {
+          "text": "(*≧∀≦*)",
+          "aliases": [
+            "excited",
+            "celebrate"
+          ]
+        },
+        {
+          "text": "✧*｡٩(ˊᗜˋ*)و✧*｡",
+          "aliases": [
+            "sparkle",
+            "win"
+          ]
+        },
+        {
+          "text": "🎉ヽ(・∀・)ﾉ🎉",
+          "aliases": [
+            "party",
+            "confetti"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "打招呼",
+      "aliases": [
+        "zhaohu",
+        "greet",
+        "hello",
+        "hi",
+        "morning",
+        "你好",
+        "问候",
+        "早安",
+        "早上好"
+      ],
+      "scenes": [
+        "greeting"
+      ],
+      "items": [
+        {
+          "text": "(*ﾟ▽ﾟ)ﾉ",
+          "aliases": [
+            "hi",
+            "hello"
+          ]
+        },
+        {
+          "text": "(｡･ω･)ﾉﾞ",
+          "aliases": [
+            "hi",
+            "cute"
+          ]
+        },
+        {
+          "text": "ヾ(＾∇＾)",
+          "aliases": [
+            "hello",
+            "hi"
+          ]
+        },
+        {
+          "text": "( ´ ▽ ` )ﾉ",
+          "aliases": [
+            "hi",
+            "wave"
+          ]
+        },
+        {
+          "text": "ヽ(´▽`)/",
+          "aliases": [
+            "hi",
+            "happy"
+          ]
+        },
+        {
+          "text": "(◕ᴗ◕✿)",
+          "aliases": [
+            "hi",
+            "gentle"
+          ]
+        },
+        {
+          "text": "(｡>﹏<｡)ﾉ",
+          "aliases": [
+            "hi",
+            "shy"
+          ]
+        },
+        {
+          "text": "＼(＾▽＾)／",
+          "aliases": [
+            "hi",
+            "yay"
+          ]
+        },
+        {
+          "text": "(ノ・∀・)ノ",
+          "aliases": [
+            "hi",
+            "wave"
+          ]
+        },
+        {
+          "text": "(◍•ᴗ•◍)ﾉ",
+          "aliases": [
+            "hi",
+            "friendly"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "拥抱",
+      "aliases": [
+        "yb",
+        "hug",
+        "cuddle",
+        "comfort",
+        "抱",
+        "抱抱",
+        "安慰"
+      ],
+      "scenes": [
+        "comfort"
+      ],
+      "items": [
+        {
+          "text": "(づ｡◕‿‿◕｡)づ",
+          "aliases": [
+            "hug"
+          ]
+        },
+        {
+          "text": "(っ˘ω˘ς )",
+          "aliases": [
+            "cuddle",
+            "hug"
+          ]
+        },
+        {
+          "text": "(つ≧▽≦)つ",
+          "aliases": [
+            "hug",
+            "happy"
+          ]
+        },
+        {
+          "text": "(づ￣ ³￣)づ",
+          "aliases": [
+            "kiss",
+            "hug"
+          ]
+        },
+        {
+          "text": "ʕっ•ᴥ•ʔっ",
+          "aliases": [
+            "bearhug",
+            "hug"
+          ]
+        },
+        {
+          "text": "(っ´▽`)っ",
+          "aliases": [
+            "hug",
+            "warm"
+          ]
+        },
+        {
+          "text": "( *´꒳`*)੭⁾⁾",
+          "aliases": [
+            "hug",
+            "squeeze"
+          ]
+        },
+        {
+          "text": "(づ●─●)づ",
+          "aliases": [
+            "hug"
+          ]
+        },
+        {
+          "text": "(っ・ω・)っ",
+          "aliases": [
+            "hug",
+            "support"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "晚安",
+      "aliases": [
+        "wa",
+        "night",
+        "sleep",
+        "goodnight",
+        "睡",
+        "困",
+        "睡觉",
+        "休息"
+      ],
+      "scenes": [
+        "night"
+      ],
+      "items": [
+        {
+          "text": "(´-ω-)｡O○☆ﾟ･:,｡*",
+          "aliases": [
+            "goodnight",
+            "sleep"
+          ]
+        },
+        {
+          "text": "(－_－) zzZ",
+          "aliases": [
+            "sleep",
+            "tired"
+          ]
+        },
+        {
+          "text": "寝る(。-ω-)zzz",
+          "aliases": [
+            "sleep",
+            "night"
+          ]
+        },
+        {
+          "text": "(つω-`)",
+          "aliases": [
+            "sleepy",
+            "night"
+          ]
+        },
+        {
+          "text": "( ˘ω˘ )",
+          "aliases": [
+            "sleep",
+            "calm"
+          ]
+        },
+        {
+          "text": "(*´꒳`*)〜☆",
+          "aliases": [
+            "goodnight",
+            "sweet"
+          ]
+        },
+        {
+          "text": "(´△｀) zzZ",
+          "aliases": [
+            "sleep"
+          ]
+        }
       ]
     }
   ]

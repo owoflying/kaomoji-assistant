@@ -46,10 +46,17 @@ class _ItemEditDialog(QDialog):
         root.setSpacing(10)
 
         root.addWidget(QLabel("颜文字"))
+        text_row = QHBoxLayout()
         self.text_edit = QLineEdit(text)
         self.text_edit.setPlaceholderText("例如 (｡•̀ᴗ-)✧")
         self.text_edit.setFont(kaomoji_font(14))
-        root.addWidget(self.text_edit)
+        text_row.addWidget(self.text_edit, 1)
+        # 组合器：符号难记、括号对不齐时用它拼，比手打快得多
+        compose_btn = QPushButton("组合…")
+        compose_btn.setToolTip("用积木拼一个颜文字（左括/眼/嘴/右括/装饰）")
+        compose_btn.clicked.connect(self._open_composer)
+        text_row.addWidget(compose_btn)
+        root.addLayout(text_row)
 
         grp_row = QHBoxLayout()
         grp_row.addWidget(QLabel("分组"))
@@ -78,6 +85,15 @@ class _ItemEditDialog(QDialog):
             self.group_combo.currentText().strip() or "默认",
             self.tags_edit.text().strip(),
         )
+
+    def _open_composer(self):
+        """打开积木组合器；确认后把结果回填到输入框。"""
+        from ui.compose_dialog import ComposeDialog
+
+        dlg = ComposeDialog(self._theme, initial=self.text_edit.text().strip(),
+                            parent=self)
+        if dlg.exec() == QDialog.Accepted and dlg.text():
+            self.text_edit.setText(dlg.text())
 
 
 class CustomKaomojiPage(QWidget):

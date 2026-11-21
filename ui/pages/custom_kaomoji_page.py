@@ -153,10 +153,17 @@ class CustomKaomojiPage(QWidget):
         self.add_btn = QPushButton("新增")
         self.edit_btn = QPushButton("编辑")
         self.del_btn = QPushButton("删除")
+        # 组合器入口放在主按钮区，而不是只藏在「新增」对话框里。
+        # 原来只有打开编辑对话框才能看到它，用户根本不知道有这个功能。
+        self.compose_btn = QPushButton("组合一个")
+        self.compose_btn.setToolTip(
+            "用积木拼一个颜文字（左括/眼/嘴/右括/装饰），拼完直接加进当前分组")
         self.add_btn.clicked.connect(self._add_item)
         self.edit_btn.clicked.connect(self._edit_item)
         self.del_btn.clicked.connect(self._del_item)
-        for btn in (self.add_btn, self.edit_btn, self.del_btn):
+        self.compose_btn.clicked.connect(self._compose_and_add)
+        for btn in (self.add_btn, self.compose_btn, self.edit_btn,
+                    self.del_btn):
             op_row.addWidget(btn)
         op_row.addStretch(1)
         list_root.addLayout(op_row)
@@ -262,6 +269,25 @@ class CustomKaomojiPage(QWidget):
             if text:
                 self.user_kao.add_item(text, group, tags)
                 self._refresh_groups()
+
+    def _compose_and_add(self):
+        """组合器的一步到位入口：拼完直接加进当前分组。
+
+        与「新增 → 组合…」的区别：这条路径**不弹第二个对话框**。
+        用户想快速攒几个颜文字时，不用每次都填分组和标签
+        （分组取当前选中的，标签留空，之后想补再编辑）。
+        """
+        from ui.compose_dialog import ComposeDialog
+
+        dlg = ComposeDialog(self._theme, parent=self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        text = dlg.text()
+        if not text:
+            return
+        group = self.group_combo.currentText().strip() or "默认"
+        self.user_kao.add_item(text, group, "")
+        self._refresh_groups()
 
     def _edit_item(self, *args):
         row = self.list_w.currentRow()

@@ -200,17 +200,34 @@ def test_hour_bucket_covers_all_hours():
 
 
 def test_hour_affinity_normalizes(qapp, tmp_path):
-    """时段偏好归一化到 0~1：最高频的那条是 1.0。"""
-    from core.user_state import UserState, hour_bucket
+    """时段偏好归一化到 0~1：最高频的那条是 1.0。
+
+    ⚠ 有个**冷启动门槛**（`HOUR_MIN_BUCKET_SAMPLES`）：该时段总样本
+    不足时直接返回 0。不加的话，用户某天第一次用了某条，这一条就成了
+    "该时段最高频"，affinity=1.0 立刻霸屏——第一次用就被"学"成这样，
+    用户会觉得推荐在乱跳。
+
+    所以这里要**先喂够样本**再断言归一化。
+    """
+    from core.user_state import (
+        HOUR_MIN_BUCKET_SAMPLES, UserState, hour_bucket,
+    )
 
     st = UserState(path=str(tmp_path / "s.json"))
-    for _ in range(4):
-        st.record_usage("(A)")
-    st.record_usage("(B)")
-
     b = hour_bucket()
+
+    # 冷启动：样本不足时一律 0
+    st.record_usage("(A)")
+    assert st.hour_affinity("(A)", b) == 0.0, "样本不足时不该有时段偏好"
+
+    # 喂够样本后正常归一化
+    for _ in range(HOUR_MIN_BUCKET_SAMPLES + 2):
+        st.record_usage("(A)")
+    for _ in range(2):
+        st.record_usage("(B)")
+
     assert st.hour_affinity("(A)", b) == pytest.approx(1.0)
-    assert st.hour_affinity("(B)", b) == pytest.approx(0.25)
+    assert 0.0 < st.hour_affinity("(B)", b) < 1.0
     assert st.hour_affinity("(Z)", b) == 0.0
 
 
@@ -227,13 +244,16 @@ def test_hour_usage_persists(qapp, tmp_path):
 
 
 def test_score_includes_hour_bonus(qapp, tmp_path):
-    """时段加成要真的影响排序。"""
-    from core.user_state import WEIGHT_HOUR, UserState, hour_bucket
+    """时段加成要真的影响排序（同样要先喂够样本）。"""
+    from core.user_state import (
+        HOUR_MIN_BUCKET_SAMPLES, WEIGHT_HOUR, UserState, hour_bucket,
+    )
 
     st = UserState(path=str(tmp_path / "s.json"))
-    st.record_usage("(A)")
-
     b = hour_bucket()
+    for _ in range(HOUR_MIN_BUCKET_SAMPLES + 1):
+        st.record_usage("(A)")
+
     has = st.score("(A)", hour_bucket_name=b)
     no = st.score("(A)", hour_bucket_name="__none__")
     assert has > no

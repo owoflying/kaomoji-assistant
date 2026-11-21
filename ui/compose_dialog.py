@@ -56,6 +56,7 @@ class ComposeDialog(QDialog):
         self.preview.setFont(_kaomoji_font(22))
         self.preview.setAlignment(Qt.AlignCenter)
         self.preview.setMinimumHeight(46)
+        self.preview.setToolTip("可以直接手改这里——积木只是起点，不是约束")
         root.addWidget(self.preview)
 
         # ---------- 积木行 ----------

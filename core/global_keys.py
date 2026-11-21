@@ -83,6 +83,7 @@ VK_1 = 0x31
 VK_9 = 0x39
 VK_NUMPAD1 = 0x61
 VK_NUMPAD9 = 0x69
+VK_R = 0x52
 
 # 完全忽略的键（既不当作“可处理”，也不当作“继续打字”）
 _IGNORE = frozenset([
@@ -131,6 +132,34 @@ def _map_key(vk):
     return None
 
 
+def _ctrl_down():
+    """Ctrl 是否被按住。
+
+    ⚠ 单独判断而不复用 `_mods_down()`：后者把 Shift 也算"修饰键"，
+    而这里要的语义是严格的 Ctrl。
+    """
+    if _user32 is None:
+        return False
+    return bool(_user32.GetAsyncKeyState(VK_CONTROL) & 0x8000)
+
+
+def _map_combo(vk):
+    """带修饰键的组合键映射。返回 None 表示不是组合键。
+
+    ## 为什么单独一个函数
+
+    `_map_key()` 处理的是"单键即动作"（方向键、回车、数字）。
+    组合键的性质不同：**必须确认修饰键真的按着**，否则 R 键会被
+    当成"重复上一条"吞掉——用户根本打不出字母 R。
+
+    这也是为什么这里只认 Ctrl+R：它是独立的组合键动作，
+    不参与 `_PANEL_ACTIONS` 那套"面板开着就拦截"的规则。
+    """
+    if vk == VK_R and _ctrl_down():
+        return "repeat"
+    return None
+
+
 def _mods_down():
     if _user32 is None:
         return False
@@ -157,6 +186,16 @@ class GlobalKeyInterceptor(QObject):
         self._engaged = False
         # 已被吞掉 keydown 的 vk，用于连带吞掉它的 keyup（只在钩子线程访问）
         self._eaten = set()
+        #: 历史里是否有可重复的条目——决定 Ctrl+R 该不该被吞
+        self._has_repeatable = False
+
+    def set_has_repeatable(self, flag):
+        """告诉钩子"现在有没有可重复的内容"。
+
+        候选条每次显示时调用。没有可重复内容时 Ctrl+R 不吞键，
+        避免打断用户在浏览器里刷新。
+        """
+        self._has_repeatable = bool(flag)
 
     # ---------- 生命周期 ----------
     def start(self):
@@ -216,6 +255,10 @@ class GlobalKeyInterceptor(QObject):
             if action in ("prev", "next"):
                 return paging                    # 单页时翻页无意义 -> 让 '-' 正常输入
             return count > 1 or paging           # left/right：只有 1 个候选时不拦
+        # Ctrl+R：没有可重复的历史时不吞——Ctrl+R 在浏览器里是刷新，
+        # 用户很可能真想刷新，不能因为我们没东西可重复就把它吃掉。
+        if action == "repeat":
+            return self._has_repeatable
         # 回车 / 空格：正常写作里高频（发消息、上屏拼音），拦错了非常烦。
         # 仅在用户已明确表达选字意图时才吞：
         #   * 手动按热键唤起 —— 意图本身就很明确；
@@ -252,6 +295,20 @@ class GlobalKeyInterceptor(QObject):
         # 4) 修饰/锁定键：既不处理也不触发关闭
         if vk in _IGNORE:
             return True
+        # 4.5) 我们的组合键（Ctrl+R 重复上一条）
+        #
+        # ⚠ 必须放在下面"组合键一律放行"之前，否则永远轮不到它：
+        # 那一步会把所有带修饰键的按键当成"用户在打字"直接放行并关闭面板。
+        #
+        # ⚠ 还要求**历史里确实有东西可重复**：Ctrl+R 在浏览器里是刷新，
+        # 用户很可能真想刷新。没有可重复的内容时就不吞键、也不关面板，
+        # 让 Ctrl+R 照常传给它原本的目标程序。
+        combo = _map_combo(vk)
+        if combo is not None and self._allows(combo):
+            self.action.emit(combo)
+            self._eaten.add(vk)
+            self._eat()
+            return False        # 理论上不可达：_eat() 已抛出
         # 5) 带修饰键的组合（Ctrl+C / Shift+1 / Alt+Tab…）一律不碰
         if _mods_down():
             self.dismiss.emit()

@@ -44,8 +44,31 @@ RECENT_DECAY = 6.0
 #: 权重比收藏低（收藏是明确的用户意图），比新近度高（时段是长期规律）。
 WEIGHT_HOUR = 0.9
 
+#: 时段偏好生效的最小样本量。
+#:
+#: 某个时段一共用过不到这么多次时，不启用时段加成——
+#: 样本太少，"最高频"可能只是"今天早上顺手用了一次"，
+#: 拿它去影响排序纯属噪声。见 `hour_affinity` 的说明。
+HOUR_MIN_BUCKET_SAMPLES = 8
+
 #: 时段环境加成权重：推荐时如果条目属于当前时段场景，额外加分。
 WEIGHT_SCENE = 0.8
+
+#: 网络分数换算到「线性分」的量纲系数。
+#:
+#: 线性分的大致范围：freq ≈ 0~2.3，rec ≈ 0~1，hour ≈ 0~1，
+#: 收藏 +2.5 —— 所以常见分值在 0~4 之间。
+#: 网络输出是 0~1，乘 2.0 后能与之同量级地竞争，
+#: 但不会一上来就把线性信号压死（那会让老用户的肌肉记忆失效）。
+NET_SCALE = 2.0
+
+#: 正样本学习率。压低到 0.03 是刻意的——偏好要"多次一致的选择"
+#: 才形成，一次点击不该立刻改变排序。
+LEARN_LR_POS = 0.03
+#: 负样本学习率：比正样本更低，因为"没被选"的信号更弱。
+LEARN_LR_NEG = 0.02
+#: 负样本目标值。不是 0——没被选可能只是这次不合适，不代表讨厌。
+NEGATIVE_TARGET = 0.15
 
 #: 时段分桶：把 24 小时压成 6 个有语义的桶。
 #:
@@ -129,6 +152,9 @@ class UserState(QObject):
         #: 注入流水：[{"text", "ts", "source"}, ...]，最新的在前。
         #: 与 recent 不同：同一条可以重复出现（见 add_history 的说明）。
         self.history = []
+        #: 推荐网络（`attach_rank_net` 装上才有；None 时 rank() 走纯线性公式）
+        self.rank_net = None
+        self.rank_data = None
         #: {时段桶: {text: 次数}}——用于「时段习惯」推荐。
         #: 与 usage 分开存：usage 是总量，这里是分布（某条在深夜用得多
         #: 不代表它总量就多）。
@@ -256,6 +282,8 @@ class UserState(QObject):
                 )
         except Exception:
             pass
+        # 网络权重单独存（见 save_rank_net 的说明）
+        self.save_rank_net()
 
     def _schedule_save(self):
         """合并 500ms 内的多次落盘请求为一次（见 __init__ 的 _save_timer）。"""
@@ -304,12 +332,28 @@ class UserState(QObject):
         """某条颜文字在当前时段的偏好强度（0~1）。
 
         算法：该时段内它的次数 / 该时段内最高次数。
-        归一化而不是直接用次数——否则用得多的人所有项分数都高，
-        时段偏好就淹没在总量里了。
+
+        ## 两个刻意的修正
+
+        1. **归一化而非直接用次数**：否则用得多的人所有项分数都高，
+           时段偏好就淹没在总量里了。
+
+        2. **最小样本门槛（`HOUR_MIN_BUCKET_SAMPLES`）**：时段内
+           总样本太少时直接返回 0。
+
+           不加这个会产生一个很蠢的行为：用户某天早上第一次用了
+           某条，这一条就成了"早上最高频"，affinity = 1.0，
+           立刻压到所有常用项前面。第一天用就被"学"成这样，
+           用户会觉得推荐在乱跳。
+
+           门槛之下宁可不用时段信号——它本来就是锦上添花。
         """
         b = bucket if bucket is not None else hour_bucket()
         m = self.hour_usage.get(b) or {}
         if not m:
+            return 0.0
+        # 总样本不够时不可信：1 条数据得出的"最高频"没有意义
+        if sum(m.values()) < HOUR_MIN_BUCKET_SAMPLES:
             return 0.0
         cnt = m.get(str(text), 0)
         if cnt <= 0:
@@ -374,10 +418,117 @@ class UserState(QObject):
 
         这一步取代了原先的"最近优先"和情绪推荐里的 `random.shuffle`：
         每次弹出顺序稳定，用户才能形成肌肉记忆——第 1 个永远是我最常用的那个。
+
+        ## 神经网络加权（可选）
+
+        如果调用方给 `self.rank_net` 装了网络（见 `attach_rank_net`），
+        会把它给出的 0~1 分数按 `blend_weight()` 混进来：
+
+            最终 = 线性分 + blend * 网络分 * NET_SCALE
+
+        `blend` 在样本少时接近 0（完全等于原来的行为），
+        攒够数据才逐步接手。详见 `core/rank_net.py` 的冷启动说明。
         """
         seq = [str(x) for x in items]
-        # sorted 是稳定排序：同分项保持原相对顺序
-        return sorted(seq, key=lambda t: -self.score(t, now))
+        net = getattr(self, "rank_net", None)
+        if net is None:
+            return sorted(seq, key=lambda t: -self.score(t, now))
+
+        blend = net.blend_weight()
+        try:
+            from core.rank_net import features
+        except Exception:
+            return sorted(seq, key=lambda t: -self.score(t, now))
+
+        data = getattr(self, "rank_data", None)
+        bucket = hour_bucket()
+        scored = []
+        for i, t in enumerate(seq):
+            base = self.score(t, now)
+            if blend > 0.0:
+                try:
+                    fv = features(t, state=self, data=data,
+                                  hour_bucket_name=bucket, now=now)
+                    base += blend * net.predict(fv) * NET_SCALE
+                except Exception:
+                    pass
+            scored.append((-base, i, t))
+        scored.sort()
+        return [t for _s, _i, t in scored]
+
+    # ---------- 推荐网络 ----------
+    def attach_rank_net(self, net, data=None):
+        """装上推荐网络（AppRuntime 启动时调用）。
+
+        :param data: KaomojiData，提供分类归属与场景标签等特征
+        """
+        self.rank_net = net
+        self.rank_data = data
+
+    def detach_rank_net(self):
+        self.rank_net = None
+        self.rank_data = None
+
+    def learn_selection(self, chosen, shown):
+        """用户从候选里选中了一条——教网络「这种情境该选这条」。
+
+        ## 训练信号
+
+        * **正样本**：选中的那条，目标值 1.0。
+        * **负样本**：同屏展示过但没被选的条目，目标值 0.0。
+
+        只取**同屏展示过的**作为负样本，而不是整个库——
+        用户没看到的条目不能算"他不要"，那是噪声。
+
+        ## 三个防止「学得太死」的措施
+
+        第一版实测有问题：连选 40 次同一条，网络就把它推到 0.95、
+        其它全压到 0.02，用户想换口味得再练 40 次才扳得回来。
+        真实的偏好不是这么刚性的。
+
+        1. **负样本采样**：同屏可能几十条，只取 3 条。全喂进去
+           会让负样本在数量上压倒正样本（1 正 : 39 负），
+           几次之后就学会"什么都不选"。
+        2. **负样本目标值不是 0 而是 0.15**：没被选可能只是这次不合适，
+           不代表讨厌。留一点余地。
+        3. **更低的学习率**：单次选择的影响有限，需要多次一致的选择
+           才会改变排序——这才符合"偏好"的语义。
+        """
+        net = getattr(self, "rank_net", None)
+        if net is None:
+            return 0
+        ch = str(chosen or "")
+        if not ch:
+            return 0
+        try:
+            from core.rank_net import features
+        except Exception:
+            return 0
+
+        data = getattr(self, "rank_data", None)
+        bucket = hour_bucket()
+        trained = 0
+        try:
+            fv = features(ch, state=self, data=data, hour_bucket_name=bucket)
+            net.train_one(fv, 1.0, lr=LEARN_LR_POS)
+            trained += 1
+        except Exception:
+            pass
+
+        # 负样本：从同屏的其它条目里均匀取 3 条
+        negatives = [str(x) for x in (shown or []) if str(x) != ch]
+        if negatives:
+            step = max(1, len(negatives) // 3)
+            for t in negatives[::step][:3]:
+                try:
+                    fv = features(t, state=self, data=data,
+                                  hour_bucket_name=bucket)
+                    net.train_one(fv, NEGATIVE_TARGET, lr=LEARN_LR_NEG)
+                    trained += 1
+                except Exception:
+                    pass
+        self._schedule_save()
+        return trained
 
     def current_scene(self):
         """当前时段对应的推荐场景名（空串表示这个时段没有特定场景）。"""
@@ -442,6 +593,57 @@ class UserState(QObject):
             top = sorted(m.items(), key=lambda kv: kv[1], reverse=True)[:3]
             out.append((label.get(bucket, bucket), top))
         return out
+
+    def rank_net_path(self):
+        """推荐网络权重的存放路径（与 user_state.json 同目录）。"""
+        d = os.path.dirname(self.path) or "."
+        return os.path.join(d, "rank_net.json")
+
+    def save_rank_net(self):
+        """把网络权重落盘。
+
+        单独存一个文件而不是塞进 user_state.json：
+        权重是几十个浮点数组，混在用户数据里既难读也难以手工清理
+        （"推荐不准了想重置"只需删这个文件）。
+        """
+        net = getattr(self, "rank_net", None)
+        if net is None:
+            return
+        try:
+            net.save(self.rank_net_path())
+        except Exception:
+            pass
+
+    def load_rank_net(self):
+        """从磁盘读回网络权重；文件不存在则返回一个全新网络。"""
+        try:
+            from core.rank_net import RankNet
+        except Exception:
+            return None
+        try:
+            return RankNet.load(self.rank_net_path())
+        except Exception:
+            return None
+
+    def reset_rank_net(self):
+        """把网络重置成"没学过"的状态（用户抱怨推荐乱了时用）。"""
+        try:
+            from core.rank_net import RankNet
+        except Exception:
+            return
+        old = getattr(self, "rank_net", None)
+        data = getattr(self, "rank_data", None)
+        self.rank_net = RankNet()
+        self.rank_data = data
+        # 顺手删掉磁盘上的旧权重，否则下次启动又读回来
+        try:
+            p = self.rank_net_path()
+            if os.path.isfile(p):
+                os.remove(p)
+        except Exception:
+            pass
+        if old is not None:
+            self._schedule_save()
 
     def toggle_favorite(self, text):
         text = str(text)

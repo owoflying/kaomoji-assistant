@@ -251,6 +251,14 @@ class AppRuntime:
             max_recent=int(self.config.get("max_recent", 30)),
             valid_items=_valid_item_pool(self.data, self.user_kao, self.triggers),
         )
+        # 推荐排序网络：从磁盘读回权重；没有就用全新网络（输出接近 0.5，
+        # blend_weight 为 0，完全不影响排序，见 core/rank_net.py 冷启动说明）
+        try:
+            net = self.state.load_rank_net()
+            if net is not None:
+                self.state.attach_rank_net(net, self.data)
+        except Exception as e:
+            append_log("warn", "rank", "推荐网络加载失败：%r" % (e,))
         self.injector = KaomojiInjector()
         self.bus = DevEventBus()
 
@@ -1004,6 +1012,16 @@ class AppRuntime:
             self.state.add_history(text, source=ctx.get("source") or "")
         except Exception as e:
             append_log("warn", "inject", "记录注入历史失败：%r" % (e,))
+
+        # 教推荐网络：这次在「这些候选」里选了「这条」。
+        # 只在从候选条里选的时候学——库页浏览、Ctrl+R 重复这类
+        # 不代表「在当前情境下的偏好」，喂进去反而是噪声。
+        try:
+            shown = ctx.get("_shown")
+            if shown and ctx.get("source") in (None, "", "picker"):
+                self.state.learn_selection(text, shown)
+        except Exception as e:
+            append_log("warn", "rank", "推荐网络学习失败：%r" % (e,))
 
         trigger_word = ctx.get("trigger_word") or ""
         if ctx.get("delete_trigger") and trigger_word:

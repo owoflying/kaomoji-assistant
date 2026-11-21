@@ -400,6 +400,13 @@ class PickerWindow(QWidget):
         if self._interceptor is not None:
             self._interceptor.set_state(
                 len(visible), multi, self._emotion is None)
+            # 告知钩子"现在有没有可重复的历史"：没有的话 Ctrl+R 不吞键，
+            # 让它在浏览器里照常刷新（见 global_keys._allows 的说明）
+            try:
+                has_hist = bool(self.state and self.state.history)
+            except Exception:
+                has_hist = False
+            self._interceptor.set_has_repeatable(has_hist)
         self.adjustSize()
         self.update()
 
@@ -520,12 +527,20 @@ class PickerWindow(QWidget):
         text, ctx = self._pending, self._pending_ctx
         self._pending = None
         self._pending_ctx = None
+        # 把「同屏展示过哪些」带给上层：推荐网络要拿落选项当负样本，
+        # 只能用用户真正看到过的条目，不能用整个库（那是噪声）。
+        if isinstance(ctx, dict):
+            ctx.setdefault("_shown", list(self.items))
         self.selected.emit(text, ctx)
 
     # ---------- 全局键盘钩子动作 ----------
     def _on_hk_action(self, action):
         if action == "cancel":
             self.dismiss()
+        elif action == "repeat":
+            # Ctrl+R（经全局钩子送来）：重复上一条
+            self.dismiss()
+            self.repeat_last_requested.emit()
         elif action == "confirm":
             visible = self._visible_items()
             if visible and 0 <= self.active < len(visible):
@@ -555,13 +570,12 @@ class PickerWindow(QWidget):
 
     # ---------- 键盘（仅在窗口意外获得焦点时兜底；主路径是全局钩子） ----------
     def keyPressEvent(self, e):
-        # Ctrl+R：重复上一条注入的颜文字。
-        # 场景：刚发了一个 `(๑˃ᴗ˂)ﻭ`，想说第二句又想用同一个。
-        # 不用重新唤起翻找，直接在面板里按一下。
-        if (e.key() == Qt.Key_R
-                and e.modifiers() & Qt.ControlModifier):
-            self.repeat_last_requested.emit()
-            return
+        # ⚠ 这里**不处理 Ctrl+R**。
+        #
+        # 本窗口是 `WindowDoesNotAcceptFocus` + `WA_ShowWithoutActivating`，
+        # 键盘输入根本到不了这里（实测：加了也完全收不到）。
+        # Ctrl+R 走的是全局钩子 `core/global_keys._map_combo`，
+        # 由 `_on_hk_action("repeat")` 转成信号。
         t = e.text()
         if t and t in "123456789":
             self._on_hk_action("num" + t)

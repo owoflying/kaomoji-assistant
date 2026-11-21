@@ -91,8 +91,16 @@ def test_nav_order_matches_nav_items(window):
 
 
 def test_shell_geometry_constants(window):
-    assert window._RADIUS == 12
-    assert window._PAD == 12
+    """窗口几何常量要引用设计令牌，不是硬编码的魔法数。
+
+    ⚠ 这里断言的是**令牌**而不是具体数字：圆角从 12 改成 8 是为了
+    对齐 WinUI 3 规范，不应该让测试失败——测试要守的是"几何值来自
+    统一定义"，而不是"必须是某个历史数值"。
+    """
+    from ui import win11_theme as T
+
+    assert window._RADIUS == T.RADIUS_WINDOW
+    assert window._PAD == 12          # 阴影/缩放热区，与令牌无关
     assert window._TITLEBAR_H == 40
     assert window.minimumWidth() == 900
 

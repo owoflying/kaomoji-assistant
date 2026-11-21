@@ -2,8 +2,53 @@
 
 提供浅色/深色主题令牌、圆角卡片/按钮/输入框的 QSS、以及常用动画辅助。
 所有颜色尽量贴近 Windows 11 设置应用的 Mica/Acrylic 观感。
+
+## 设计令牌（对齐 WinUI 3 规范）
+
+之前的问题是**圆角、高度、间距各自为政**：圆角有 6/8/10/12 四种，
+控件高度有 30/40 两种，看起来"不像 WinUI3"——其实颜色是对的，
+乱的是几何。
+
+WinUI 3 的圆角是有层级的，不是随便取：
+    小控件（按钮/输入框/开关）  4px
+    容器（卡片/对话框/弹出层）  8px
+    窗口                     8px
+
+高度也是统一的：标准控件 32px、紧凑 24px、大 40px。
+这三档覆盖了几乎所有场景。
+
+所以这里把数值集中成令牌，QSS 里一律引用，不再写裸数字。
+要整体调外观时改这里一处即可。
 """
 from PySide6.QtGui import QFont
+
+
+# ====================================================================
+# 设计令牌（单位 px，遵循 WinUI 3 规范）
+# ====================================================================
+
+#: 圆角：按控件层级分三档（WinUI 3 的 CornerRadius 语义）
+RADIUS_CONTROL = 4      # 按钮、输入框、下拉框、开关等小控件
+RADIUS_CARD = 8         # 卡片、对话框、弹出层等容器
+RADIUS_WINDOW = 8       # 主窗口
+
+#: 控件高度三档（WinUI 3 的 ControlSize 语义）
+HEIGHT_COMPACT = 24
+HEIGHT_STANDARD = 32
+HEIGHT_LARGE = 40
+
+#: 间距标尺（8px 网格，WinUI 3 用 4/8/12/16/24 这几档）
+SPACE_XS = 4
+SPACE_SM = 8
+SPACE_MD = 12
+SPACE_LG = 16
+SPACE_XL = 24
+
+#: 字号
+FONT_CAPTION = 12
+FONT_BODY = 14
+FONT_SUBTITLE = 20
+FONT_TITLE = 28
 
 
 # 全局当前主题名（light/dark）。部分独立窗口/弹出层无法从父级便捷取到主题，
@@ -64,8 +109,8 @@ class Theme:
             self.card_hover = "#303030"
             self.card_border = "#3d3d3d"
             self.text = "#ffffff"
-            self.text_secondary = "#9ca3af"
-            self.text_tertiary = "#6b7280"
+            self.text_secondary = "#c5c5c5"
+            self.text_tertiary = "#8b8b8b"
             self.accent = "#60cdff"            # Win11 强调蓝（深色模式）
             self.accent_hover = "#7bd4ff"
             self.accent_bg = "rgba(96,205,255,0.15)"
@@ -91,7 +136,7 @@ class Theme:
             self.card_hover = "#f7f7f7"
             self.card_border = "#e8e8e8"
             self.text = "#1f1f1f"
-            self.text_secondary = "#5f5f5f"
+            self.text_secondary = "#5c5c5c"
             self.text_tertiary = "#9ca3af"
             self.accent = "#0067c0"            # Win11 强调蓝（浅色模式）
             self.accent_hover = "#0a72cf"
@@ -170,7 +215,7 @@ class Theme:
         QFrame#Card {{
             background: {t.card};
             border: 1px solid {t.card_border};
-            border-radius: 12px;
+            border-radius: {RADIUS_CARD}px;
         }}
         QFrame#CardHover:hover {{
             background: {t.card_hover};
@@ -190,7 +235,7 @@ class Theme:
         QPushButton {{
             background: {t.input_bg};
             border: 1px solid {t.input_border};
-            border-radius: 6px;
+            border-radius: {RADIUS_CONTROL}px;
             padding: 6px 16px;
             font-size: 13px;
             color: {t.text};
@@ -228,7 +273,7 @@ class Theme:
         QPushButton#TitleButton, QPushButton#TitleClose {{
             background: transparent;
             border: none;
-            border-radius: 6px;
+            border-radius: {RADIUS_CONTROL}px;
             padding: 0;
             color: {t.text_secondary};
             font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
@@ -248,11 +293,60 @@ class Theme:
         QDialog {{
             background: {t.bg};
         }}
+        /* ⚠ 文本框必须显式给样式。
+           全局 QSS 一旦设置，Qt 对**没匹配到规则**的控件会退回系统默认
+           绘制——而系统默认是浅色。深色主题下就变成"白底浅字"，
+           内容几乎看不见（实测：「使用统计」的排行框、「剪贴板提取」
+           的列表都踩过）。
+
+           这类"遗漏样式"比写错颜色更隐蔽：界面上大部分地方正常，
+           只有某个对话框一打开才发现有问题。 */
+        QPlainTextEdit, QTextEdit {{
+            background: {t.card};
+            color: {t.text};
+            border: 1px solid {t.card_border};
+            border-radius: {RADIUS_CARD}px;
+            padding: 8px 10px;
+            selection-background-color: {t.accent};
+            selection-color: {t.bg};
+        }}
+        QPlainTextEdit:focus, QTextEdit:focus {{
+            border: 1px solid {t.accent};
+        }}
+        /* 选项卡：WinUI3 的 Pivot 是"选中项下方一条短横线"，
+           不是传统 Tab 的方块。这里按 WinUI3 的观感做。 */
+        QTabWidget::pane {{
+            border: none;
+            background: transparent;
+            top: -1px;
+        }}
+        QTabBar {{
+            background: transparent;
+        }}
+        QTabBar::tab {{
+            background: transparent;
+            color: {t.text_secondary};
+            padding: 8px 14px;
+            margin-right: 4px;
+            border: none;
+            border-bottom: 2px solid transparent;
+            font-size: 13px;
+        }}
+        QTabBar::tab:hover {{
+            color: {t.text};
+            background: {t.nav_hover};
+            border-top-left-radius: 6px;
+            border-top-right-radius: 6px;
+        }}
+        QTabBar::tab:selected {{
+            color: {t.text};
+            border-bottom: 2px solid {t.accent};
+            font-weight: 600;
+        }}
         QLineEdit, QComboBox, QSpinBox {{
             background: {t.input_bg};
             border: 1px solid {t.input_border};
-            border-radius: 6px;
-            padding: 6px 10px;
+            border-radius: {RADIUS_CONTROL}px;            padding: 6px 10px;
             font-size: 13px;
             color: {t.text};
         }}
@@ -267,10 +361,10 @@ class Theme:
         QListWidget::item {{
             background: {t.card};
             border: 1px solid {t.card_border};
-            border-radius: 10px;
+            border-radius: {RADIUS_CONTROL}px;
             margin: 4px 6px;
             padding: 10px 12px;
-            min-height: 30px;
+            min-height: {HEIGHT_STANDARD}px;
             color: {t.text};
         }}
         QListWidget::item:selected {{
@@ -341,11 +435,11 @@ class Theme:
         QComboBox {{
             background: {t.input_bg};
             border: 1px solid {t.input_border};
-            border-radius: 6px;
+            border-radius: {RADIUS_CONTROL}px;
             padding: 4px 10px;
             font-size: 13px;
             color: {t.text};
-            min-height: 22px;
+            min-height: {HEIGHT_COMPACT}px;
         }}
         QComboBox:hover {{
             border: 1px solid {t.input_border};
@@ -372,7 +466,7 @@ class Theme:
             background-color: {t.card};
             color: {t.text};
             border: 1px solid {t.card_border};
-            border-radius: 8px;
+            border-radius: {RADIUS_CARD}px;
             padding: 6px;
             outline: none;
             selection-background-color: {t.accent};
@@ -381,9 +475,9 @@ class Theme:
         QComboBox QAbstractItemView::item {{
             background-color: transparent;
             color: {t.text};
-            border-radius: 6px;
+            border-radius: {RADIUS_CONTROL}px;
             padding: 6px 10px;
-            min-height: 24px;
+            min-height: {HEIGHT_COMPACT}px;
         }}
         QComboBox QAbstractItemView::item:hover {{
             background-color: {t.nav_hover};
@@ -403,7 +497,7 @@ class Theme:
         QMenu {{
             background: {t.card};
             border: 1px solid {t.card_border};
-            border-radius: 8px;
+            border-radius: {RADIUS_CARD}px;
             padding: 6px;
             color: {t.text};
             font-size: 13px;
@@ -411,7 +505,7 @@ class Theme:
         QMenu::item {{
             background: transparent;
             padding: 7px 18px 7px 14px;
-            border-radius: 6px;
+            border-radius: {RADIUS_CONTROL}px;
             color: {t.text};
         }}
         QMenu::item:selected {{
@@ -422,6 +516,50 @@ class Theme:
             height: 1px;
             background: {t.divider};
             margin: 6px 8px;
+        }}
+        /* ---------- 兜底：通用前景/背景 ----------
+
+           全局 QSS 是「匹配式」的：**没匹配到规则**的控件会用系统默认
+           绘制，而系统默认是浅色。深色主题下就是"白底浅字"。
+
+           这类问题特别隐蔽——界面上大部分地方正常，只有某个对话框
+           打开才发现。本项目实际踩过两次：使用统计的排行框、
+           剪贴板提取的列表，都是因为缺 QPlainTextEdit / QCheckBox
+           的规则。
+
+           加一组最通用的兜底，让"完全没写过样式"的控件至少配色正确；
+           配合 `tests/test_theme_coverage.py` 的覆盖检查，双保险。 */
+        QWidget {{
+            color: {t.text};
+        }}
+        QWidget:disabled {{
+            color: {t.text_tertiary};
+        }}
+        QRadioButton {{
+            color: {t.text};
+            background: transparent;
+        }}
+        QToolTip {{
+            background: {t.card};
+            color: {t.text};
+            border: 1px solid {t.card_border};
+            padding: 4px 8px;
+        }}
+        /* 消息框：QMessageBox 是独立顶层窗口，主窗口的 QSS 不会自动生效。
+           不给它样式的话，深色主题下弹出来的框是白底浅字。 */
+        QMessageBox {{
+            background: {t.bg};
+        }}
+        QMessageBox QLabel {{
+            color: {t.text};
+            background: transparent;
+        }}
+        /* 对话框按钮组与堆叠容器：透明即可，让内部控件自己上色 */
+        QDialogButtonBox {{
+            background: transparent;
+        }}
+        QStackedWidget {{
+            background: transparent;
         }}
         """
 
@@ -436,7 +574,7 @@ class Theme:
         QMenu {{
             background: {t.card};
             border: 1px solid {t.card_border};
-            border-radius: 8px;
+            border-radius: {RADIUS_CARD}px;
             padding: 6px;
             color: {t.text};
             font-size: 13px;
@@ -444,7 +582,7 @@ class Theme:
         QMenu::item {{
             background: transparent;
             padding: 7px 18px 7px 14px;
-            border-radius: 6px;
+            border-radius: {RADIUS_CONTROL}px;
             color: {t.text};
         }}
         QMenu::item:selected {{

@@ -90,7 +90,9 @@ class _NavItem(QWidget):
         self._theme = theme
         self._selected = False
         self._anim = None
-        self.setFixedHeight(40)
+        # WinUI 3 的 NavigationView 项高度是 36px（原 40 偏高，
+        # 一屏放不下几项，也显得笨重）
+        self.setFixedHeight(36)
         self.setCursor(Qt.PointingHandCursor)
         self.setAttribute(Qt.WA_Hover, True)
 
@@ -141,7 +143,13 @@ class _NavItem(QWidget):
         if self.txt.styleSheet() != txt:
             self.txt.setStyleSheet(txt)
 
-        own = "_NavItem{background:%s;border-radius:6px;}" % bg
+        # 圆角用主题令牌（WinUI 3 小控件统一 4px）
+        try:
+            from ui.win11_theme import RADIUS_CONTROL
+        except Exception:
+            RADIUS_CONTROL = 4
+        own = ("_NavItem{background:%s;border-radius:%dpx;}"
+               % (bg, RADIUS_CONTROL))
         if self.styleSheet() != own:
             self.setStyleSheet(own)
 
@@ -168,7 +176,11 @@ class UnifiedSettingsWindow(FramelessShell):
     page_created = Signal(str)
 
     # 圆角 / 留白 / 标题栏尺寸（由 FramelessShell 使用）
-    _RADIUS = 12
+    # 窗口圆角对齐 WinUI 3 规范（8px；原 12px 偏"圆润"，不像系统窗口）
+    try:
+        from ui.win11_theme import RADIUS_WINDOW as _RADIUS
+    except Exception:
+        _RADIUS = 8
     _PAD = 12          # 窗口边缘到面板内容的距离（也是阴影与缩放热区宽度）
     _TITLEBAR_H = 40
 

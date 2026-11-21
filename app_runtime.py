@@ -419,6 +419,11 @@ class AppRuntime:
         panel_action.triggered.connect(self.open_unified)
         settings_action = QAction("设置", self.app)
         settings_action.triggered.connect(lambda: self.open_unified("settings"))
+        # 从剪贴板提取别人用的颜文字
+        extract_action = QAction("从剪贴板提取颜文字", self.app)
+        extract_action.setToolTip(
+            "先在聊天里选中含颜文字的文字并复制，再点这里")
+        extract_action.triggered.connect(self.extract_from_clipboard)
         quit_action = QAction("退出", self.app)
         quit_action.triggered.connect(self.app.quit)
         # 日志入口整合进开发者模式：未启用时不可访问。菜单每次弹出时重新判定，
@@ -427,7 +432,8 @@ class AppRuntime:
         log_action.triggered.connect(self.open_log_viewer)
         log_action.setVisible(self._developer_mode())
 
-        for act in (show_action, panel_action, settings_action, log_action):
+        for act in (show_action, panel_action, extract_action,
+                    settings_action, log_action):
             self.menu.addAction(act)
         self.menu.addSeparator()
         self.menu.addAction(quit_action)
@@ -1234,6 +1240,76 @@ class AppRuntime:
             except Exception:
                 pass
         return False
+
+    def extract_from_clipboard(self):
+        """从剪贴板提取颜文字，弹窗供一键收藏。
+
+        ## 为什么用剪贴板
+
+        试过用 UIA 遍历聊天窗口的 UI 树，结论是不该走那条路：
+        微信/QQ 大量自绘控件，UIA 树经常是空的；还要处理"读哪个窗口"
+        "权限够不够"等问题。
+
+        剪贴板方案则是**用户已经明确表达了意图**——他手动选中了、
+        手动复制了。我们只负责从中挑出颜文字，兼容一切软件。
+
+        :return: 收藏的条数（0 表示没提取到或用户取消）
+        """
+        from ui.extract_dialog import ExtractDialog, read_clipboard_items
+
+        # 已知条目：用于在弹窗里标注"已在库中"，默认不重复勾选
+        try:
+            known = set(self.data.get_items())
+            if self.user_kao is not None:
+                known.update(self.user_kao.get_all())
+            known.update(self.state.favorites)
+        except Exception:
+            known = set()
+
+        items, raw = read_clipboard_items()
+        if not items:
+            append_log("info", "extract",
+                       "剪贴板里没找到颜文字（内容长度 %d）" % len(raw or ""))
+            # 明确告知，而不是弹一个空窗口让人困惑
+            self.tray.showMessage(
+                "没找到颜文字",
+                ("剪贴板里没有可识别的颜文字。\n"
+                 "请先在聊天里选中含颜文字的文字并复制。")
+                if not raw else
+                ("剪贴板内容里没识别出颜文字。\n"
+                 "（已读取 %d 个字符）" % len(raw)),
+                QSystemTrayIcon.MessageIcon.Information, 4000)
+            return 0
+
+        dlg = ExtractDialog(items, theme=Theme(
+            resolve_theme_name(self.config.get("theme", "light"))),
+            parent=self.unified if self.unified.isVisible() else None,
+            preexisting=known)
+        if dlg.exec() != dlg.DialogCode.Accepted:
+            return 0
+
+        chosen = dlg.selected()
+        if not chosen:
+            return 0
+        added = 0
+        for text in chosen:
+            try:
+                if self.user_kao is not None and text not in known:
+                    self.user_kao.add_item(text, "收藏", "")
+                    added += 1
+                elif text not in self.state.favorites:
+                    self.state.toggle_favorite(text)
+                    added += 1
+            except Exception as e:
+                append_log("warn", "extract", "收藏失败：%r" % (e,))
+        append_log("info", "extract", "从剪贴板收藏了 %d 条颜文字" % added)
+        if added:
+            self.tray.showMessage(
+                "已收藏",
+                "从剪贴板收下了 %d 条颜文字，可在「我的颜文字」里查看"
+                % added,
+                QSystemTrayIcon.MessageIcon.Information, 3000)
+        return added
 
     def repeat_last_injected(self):
         """把上一条注入的颜文字再插一次（候选条里 Ctrl+R）。

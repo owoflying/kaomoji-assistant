@@ -1016,9 +1016,13 @@ class AppRuntime:
         # 教推荐网络：这次在「这些候选」里选了「这条」。
         # 只在从候选条里选的时候学——库页浏览、Ctrl+R 重复这类
         # 不代表「在当前情境下的偏好」，喂进去反而是噪声。
+        #
+        # 用户可在设置里关闭学习（`rank_learning`）。关闭后**只是不再学**，
+        # 已经学到的不受影响——和情绪学习那个开关的行为保持一致。
         try:
             shown = ctx.get("_shown")
-            if shown and ctx.get("source") in (None, "", "picker"):
+            if (shown and ctx.get("source") in (None, "", "picker")
+                    and bool(self.config.get("rank_learning", True))):
                 self.state.learn_selection(text, shown)
         except Exception as e:
             append_log("warn", "rank", "推荐网络学习失败：%r" % (e,))

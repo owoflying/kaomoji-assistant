@@ -456,6 +456,82 @@ class UserState(QObject):
         scored.sort()
         return [t for _s, _i, t in scored]
 
+    # ---------- 推荐理由（可解释性） ----------
+    def explain(self, text, hour_bucket_name=None):
+        """解释"这条为什么排在这个位置"，返回 [(标签, 说明), ...]。
+
+        ## 为什么需要
+
+        推荐排序是个黑盒：用户只看到顺序变了，不知道为什么。
+        尤其加了神经网络之后，"它把我常用的挤下去了"这种感觉
+        很容易让人烦躁却无从反馈。
+
+        给出理由，至少让变化是**可理解**的。
+
+        返回的标签是短词（给候选条角标用），说明是一句话（给统计页用）。
+        只返回真正起作用的那几项——没命中就不列，避免噪音。
+        """
+        text = str(text or "")
+        out = []
+        if not text:
+            return out
+
+        count = self.usage.get(text, 0)
+        if count >= 3:
+            out.append(("常用", "用过 %d 次" % count))
+        elif count > 0:
+            out.append(("用过", "用过 %d 次" % count))
+
+        if text in self.favorites:
+            out.append(("收藏", "你收藏了这条"))
+
+        # 新近度：在最近列表前几位
+        try:
+            idx = self.recent.index(text)
+        except ValueError:
+            idx = -1
+        if 0 <= idx < 3:
+            out.append(("刚用过", "最近第 %d 个" % (idx + 1)))
+
+        # 连用：历史里连续出现
+        run = 0
+        for h in self.recent_injected(20):
+            if h.get("text") == text:
+                run += 1
+            elif run > 0:
+                break
+        if run >= 2:
+            out.append(("连用", "连续用了 %d 次" % run))
+
+        # 时段偏好
+        aff = self.hour_affinity(text, hour_bucket_name)
+        if aff >= 0.6:
+            out.append(("时段偏好", "这个时段常用"))
+
+        # 网络贡献
+        net = getattr(self, "rank_net", None)
+        if net is not None:
+            blend = net.blend_weight()
+            if blend > 0.0:
+                try:
+                    from core.rank_net import features
+                    fv = features(text, state=self,
+                                  data=getattr(self, "rank_data", None),
+                                  hour_bucket_name=hour_bucket_name)
+                    p = net.predict(fv)
+                    if p >= 0.65:
+                        out.append(("学到了", "推断你在这种情境下会选它"))
+                    elif p <= 0.2:
+                        out.append(("少推荐", "推断你这次不太想要它"))
+                except Exception:
+                    pass
+        return out
+
+    def primary_reason(self, text, hour_bucket_name=None):
+        """只取最靠前的那一条理由标签（候选条角标用）。"""
+        reasons = self.explain(text, hour_bucket_name)
+        return reasons[0][0] if reasons else ""
+
     # ---------- 推荐网络 ----------
     def attach_rank_net(self, net, data=None):
         """装上推荐网络（AppRuntime 启动时调用）。
@@ -644,6 +720,156 @@ class UserState(QObject):
             pass
         if old is not None:
             self._schedule_save()
+
+    def export_data(self, path):
+        """把**全部**使用记录导出成一个 JSON 文件。
+
+        ## 与「保存使用统计」的区别
+
+        那个是给人看的文本（排行榜）；这个是**完整可回灌的数据**：
+        次数、最后使用时间、时段分布、注入流水、收藏、网络权重，
+        导回去能原样恢复。
+
+        用途：换机器迁移、备份、或者想分析自己的使用数据。
+
+        :return: (成功, 消息)
+        """
+        net = getattr(self, "rank_net", None)
+        payload = {
+            "_format": "kaomoji-assistant-usage",
+            "_version": 2,
+            "exported_at": time.time(),
+            "recent": self.recent,
+            "favorites": self.favorites,
+            "usage": self.usage,
+            "last_used": self.last_used,
+            "hour_usage": self.hour_usage,
+            "history": self.history,
+            "rank_net": net.to_dict() if net is not None else None,
+        }
+        try:
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+            return True, "已导出 %d 条使用记录" % len(self.usage)
+        except Exception as e:
+            return False, "导出失败：%r" % (e,)
+
+    def import_data(self, path, merge=True):
+        """从导出的 JSON 恢复使用记录。
+
+        :param merge: True 时**累加**（次数相加、流水合并去重），
+                      False 时整体替换。
+                      默认累加：用户在另一台机器上也有使用记录时，
+                      两边合并比直接覆盖更合理。
+
+        :return: (成功, 消息)
+
+        ⚠ **不认识的条目不导入**：导入前会用 `valid_items` 过滤，
+        和载入本地文件同一套自净规则。
+        """
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            return False, "读取失败：%r" % (e,)
+
+        if not isinstance(data, dict) or "usage" not in data:
+            return False, "这不像是使用记录的导出文件"
+
+        try:
+            if not merge:
+                self.recent = []
+                self.favorites = []
+                self.usage = {}
+                self.last_used = {}
+                self.hour_usage = {}
+
+            # 次数：累加（merge）或直接采用（replace，上面已清空）
+            added = 0
+            for k, v in (data.get("usage") or {}).items():
+                try:
+                    key, cnt = str(k), int(v)
+                except (TypeError, ValueError):
+                    continue
+                if not self._accepts(key):
+                    continue
+                self.usage[key] = self.usage.get(key, 0) + cnt
+                added += 1
+
+            # 最后使用时间：取较新的那个
+            for k, v in (data.get("last_used") or {}).items():
+                try:
+                    key, ts = str(k), float(v)
+                except (TypeError, ValueError):
+                    continue
+                if not self._accepts(key):
+                    continue
+                if ts > self.last_used.get(key, 0.0):
+                    self.last_used[key] = ts
+
+            # 时段分布：逐层累加
+            for bucket, m in (data.get("hour_usage") or {}).items():
+                if not isinstance(m, dict):
+                    continue
+                cur = self.hour_usage.setdefault(str(bucket), {})
+                for k, v in m.items():
+                    try:
+                        key, cnt = str(k), int(v)
+                    except (TypeError, ValueError):
+                        continue
+                    if not self._accepts(key):
+                        continue
+                    cur[key] = cur.get(key, 0) + cnt
+
+            # 收藏：合并去重，保持顺序
+            for t in (data.get("favorites") or []):
+                t = str(t)
+                if self._accepts(t) and t not in self.favorites:
+                    self.favorites.append(t)
+
+            # 流水：合并后按时间倒序截断
+            incoming = []
+            for rec in (data.get("history") or []):
+                if not isinstance(rec, dict):
+                    continue
+                t = str(rec.get("text") or "")
+                if not self._accepts(t):
+                    continue
+                try:
+                    ts = float(rec.get("ts") or 0)
+                except (TypeError, ValueError):
+                    ts = 0.0
+                incoming.append({"text": t, "ts": ts,
+                                 "source": str(rec.get("source") or "")})
+            if incoming:
+                merged = self.history + incoming
+                merged.sort(key=lambda r: r.get("ts", 0), reverse=True)
+                self.history = merged[: self.max_history]
+
+            # 最近列表：合并去重
+            for t in (data.get("recent") or []):
+                t = str(t)
+                if self._accepts(t) and t not in self.recent:
+                    self.recent.append(t)
+            self.recent = self.recent[: self.max_recent]
+
+            # 网络权重：只有本地没有时可选择接管（合并训练毫无意义，
+            # 两组权重相加等于破坏模型）
+            nd = data.get("rank_net")
+            cur_net = getattr(self, "rank_net", None)
+            if nd and (cur_net is None or cur_net.samples == 0):
+                try:
+                    from core.rank_net import RankNet
+                    self.rank_net = RankNet.from_dict(nd)
+                except Exception:
+                    pass
+
+            self.save()
+            return True, ("导入完成：%d 个条目，累计插入 %d 次"
+                          % (added, self.total_inserts()))
+        except Exception as e:
+            return False, "导入失败：%r" % (e,)
 
     def toggle_favorite(self, text):
         text = str(text)

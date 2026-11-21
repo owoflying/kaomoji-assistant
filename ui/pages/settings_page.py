@@ -212,6 +212,38 @@ class SettingsPage(QWidget):
         self._add_row(croot, "", self._emotion_reset_row())
         v.addWidget(card)
 
+        # 推荐
+        v.addWidget(self._section_title("推荐"))
+        card = self._card()
+        croot = QVBoxLayout(card)
+        croot.setContentsMargins(16, 14, 16, 14)
+        croot.setSpacing(10)
+        rt = QLabel("候选条怎么排：越靠前的越可能是我现在想要的。"
+                    "下面是影响排序的几个因素。")
+        rt.setObjectName("Caption")
+        rt.setWordWrap(True)
+        croot.addWidget(rt)
+        self._add_row(croot, "显示推荐理由", self._reason_toggle())
+        reason_tip = QLabel(
+            "开启后，候选条会在颜文字旁标出「常用 / 收藏 / 刚用过」这类小字，"
+            "让你知道它为什么排在这里。关闭时界面更清爽。")
+        reason_tip.setObjectName("Caption")
+        reason_tip.setWordWrap(True)
+        croot.addWidget(reason_tip)
+        self._add_row(croot, "学习我的使用习惯", self._rank_learn_toggle())
+        learn_tip = QLabel(
+            "开启后会逐渐学会「什么情境下你爱用哪条」，用得越久越贴合。"
+            "关闭后不再学习，已有记录保持不变。")
+        learn_tip.setObjectName("Caption")
+        learn_tip.setWordWrap(True)
+        croot.addWidget(learn_tip)
+        self._rank_stats = QLabel("")
+        self._rank_stats.setObjectName("Caption")
+        self._rank_stats.setWordWrap(True)
+        croot.addWidget(self._rank_stats)
+        self._add_row(croot, "", self._rank_reset_row())
+        v.addWidget(card)
+
         # 系统
         v.addWidget(self._section_title("系统"))
         card = self._card()
@@ -512,8 +544,81 @@ class SettingsPage(QWidget):
             "关闭后不再学习，已学到的保持不变")
         return self.emotion_learn_check
 
-    def _emotion_reset_row(self):
+    # ------------------------------------------------------------ 推荐
+    def _reason_toggle(self):
+        """「显示推荐理由」开关。"""
+        self.reason_check = ToggleSwitch(self._theme)
+        self.reason_check.setToolTip(
+            "在候选条上标出「常用 / 收藏 / 刚用过」这类小字，"
+            "让你知道它为什么排在这里")
+        self.reason_check.toggled.connect(
+            lambda *_a: self._on_apply())
+        return self.reason_check
+
+    def _rank_learn_toggle(self):
+        """「学习我的使用习惯」开关。"""
+        self.rank_learn_check = ToggleSwitch(self._theme)
+        self.rank_learn_check.setToolTip(
+            "逐渐学会「什么情境下你爱用哪条」。关闭后不再学习，"
+            "已有记录保持不变")
+        self.rank_learn_check.toggled.connect(
+            lambda *_a: self._on_apply())
+        return self.rank_learn_check
+
+    def _rank_reset_row(self):
         from PySide6.QtWidgets import QPushButton
+
+        b = QPushButton("重置推荐学习")
+        b.setCursor(Qt.PointingHandCursor)
+        b.setToolTip("清空推荐网络学到的东西，排序回到「频率+新近度+收藏」"
+                     "的简单规则。使用记录（次数/历史）不受影响。")
+        b.clicked.connect(self._on_reset_rank)
+        return b
+
+    def _on_reset_rank(self):
+        """重置推荐网络。
+
+        ⚠ 只清**网络权重**，不动使用记录。用户抱怨"推荐乱了"时
+        应该按这个，而不是把历史也一起删掉——历史本身是有价值的
+        （排行榜、Ctrl+R 都靠它）。
+        """
+        try:
+            target = getattr(self, "_app_state", None)
+            if target is None:
+                self._refresh_rank_stats("请重启程序后再试")
+                return
+            target.reset_rank_net()
+            self._refresh_rank_stats("已重置推荐学习，排序回到简单规则")
+        except Exception as e:
+            self._refresh_rank_stats("重置失败：%r" % (e,))
+
+    def _refresh_rank_stats(self, note=""):
+        """在设置页显示推荐网络当前的学习进度。"""
+        lbl = getattr(self, "_rank_stats", None)
+        if lbl is None:
+            return
+        state = getattr(self, "_app_state", None)
+        if state is None:
+            lbl.setText(note or "")
+            return
+        try:
+            net = state.rank_net
+            samples = net.samples if net is not None else 0
+            blend = net.blend_weight() if net is not None else 0.0
+            if samples <= 0:
+                desc = "还没有开始学习。用候选条选中几次后就会开始。"
+            elif blend < 0.05:
+                desc = ("已收集 %d 个样本，还在观察阶段——"
+                        "样本不够时不改变排序，避免乱推荐。" % samples)
+            else:
+                desc = ("已学习 %d 个样本，个性化影响约 %d%%。"
+                        % (samples, int(blend * 100)))
+            total = state.total_inserts()
+            lbl.setText(desc + ("（累计插入 %d 次）" % total if total else ""))
+        except Exception:
+            lbl.setText(note or "")
+
+    def _emotion_reset_row(self):
 
         b = QPushButton("清除学习记录")
         b.setCursor(Qt.PointingHandCursor)
@@ -691,6 +796,12 @@ class SettingsPage(QWidget):
                 bool(cfg.get("emotion_learning", True)))
             self._sync_emotion_controls()
             self._refresh_emotion_stats()
+            # 推荐相关
+            self.reason_check.setChecked(
+                bool(cfg.get("show_reason_tags", False)))
+            self.rank_learn_check.setChecked(
+                bool(cfg.get("rank_learning", True)))
+            self._refresh_rank_stats()
             self.page_spin.setValue(int(cfg.get("page_size", 3)))
             self.autostart_check.setChecked(autostart.is_enabled())
             self.auto_update_check.setChecked(bool(cfg.get("auto_update", True)))
@@ -931,6 +1042,8 @@ class SettingsPage(QWidget):
         new_cfg["emotion_use_ai"] = self.emotion_ai_check.isChecked()
         new_cfg["emotion_sensitivity"] = int(self.emotion_sens_slider.value())
         new_cfg["emotion_learning"] = self.emotion_learn_check.isChecked()
+        new_cfg["show_reason_tags"] = self.reason_check.isChecked()
+        new_cfg["rank_learning"] = self.rank_learn_check.isChecked()
         new_cfg["page_size"] = self.page_spin.value()
         new_cfg["autostart"] = self.autostart_check.isChecked()
         new_cfg["auto_update"] = self.auto_update_check.isChecked()

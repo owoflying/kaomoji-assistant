@@ -362,7 +362,6 @@ class UnifiedSettingsWindow(FramelessShell):
 
     def _build_pages(self):
         """创建业务页并挂进内容栈。
-
         ## 为什么除了首页都改成懒加载
 
         实测：8 个页面全建要 **2.6~3.3 秒**，占启动总时间的 60%~70%。
@@ -381,13 +380,30 @@ class UnifiedSettingsWindow(FramelessShell):
           * 页面构造要 `self.theme`，主题可能在页面建好之前就切换了——
             物化时用**当前**主题，而不是构造闭包时捕获的旧值。
         """
+        def _settings_page():
+            """设置页工厂：构造后注入 state。
+
+            设置页的「推荐」分组要显示学习进度、提供重置按钮，
+            这些都依赖 UserState。但 SettingsPage 构造函数只收 config
+            （保持它的可测试性），所以在这里补注。
+            """
+            page = SettingsPage(self.config)
+            page._app_state = self.state
+            # 构造时 refresh_from_config 已经跑过一轮，那时 _app_state 还没注入，
+            # 推荐统计是空的。这里补刷一次（只是个 Label 赋值，开销可忽略）。
+            try:
+                page._refresh_rank_stats()
+            except Exception:
+                pass
+            return page
+
         self._lazy_factories = {
             "library": lambda: LibraryPage(self.data),
             "custom": lambda: CustomKaomojiPage(self.user_kao),
             "triggers": lambda: TriggerPage(self.triggers, self.theme),
             "search": lambda: SearchPage(self.data, self.user_kao,
                                          self.theme.name),
-            "settings": lambda: SettingsPage(self.config),
+            "settings": _settings_page,
             "about": lambda: AboutPage(self.config, self.state,
                                        self.save_config, self.open_log),
         }

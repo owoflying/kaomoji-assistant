@@ -84,6 +84,7 @@ def _style(p):
     QWidget#chip[active="true"] QLabel#num {{ color: {accent}; font-weight: 600; }}
     QLabel#kao {{ color: {text}; font-size: 15px; }}
     QLabel#page {{ color: {num}; font-size: 11px; padding-left: 2px; }}
+QLabel#reason {{ color: {num}; font-size: 10px; padding-left: 4px; }}
     QPushButton#nav {{
         border: none; background: transparent; color: {nav};
         font-size: 15px; border-radius: 5px; padding: 0;
@@ -129,10 +130,33 @@ class CandidateChip(QWidget):
         self.kao = QLabel("")
         self.kao.setObjectName("kao")
         lay.addWidget(self.kao)
+        # 推荐理由角标（"常用"/"收藏"/"刚用过"…）。
+        #
+        # ## 为什么做成**默认隐藏的小字**而不是图标
+        #
+        # 候选条是"扫一眼就选"的界面，任何额外元素都会拖慢扫描。
+        # 所以：
+        #   * 只在有理由时显示，没理由的条目完全不留白；
+        #   * 用极小字号 + 次要色，不与颜文字本身争视觉；
+        #   * 默认在设置里关闭——用户没主动开启时，候选条保持原样。
+        self.reason = QLabel("")
+        self.reason.setObjectName("reason")
+        self.reason.hide()
+        lay.addWidget(self.reason)
 
     def set_text(self, index, text):
         self.num.setText(str(index))
         self.kao.setText(text)
+
+    def set_reason(self, label):
+        """设置推荐理由角标；空字符串表示不显示。"""
+        label = (label or "").strip()
+        if label:
+            self.reason.setText(label)
+            self.reason.show()
+        else:
+            self.reason.setText("")
+            self.reason.hide()
 
     def set_active(self, on):
         """设置选中/悬停高亮。
@@ -380,9 +404,19 @@ class PickerWindow(QWidget):
         if self.page >= pages:
             self.page = pages - 1
         visible = self._visible_items()
+        # 是否显示"为什么推荐"角标（默认关闭，见设置页）
+        show_reason = bool(self.config.get("show_reason_tags", False))
         for i, chip in enumerate(self._chips):
             if i < len(visible):
                 chip.set_text(i + 1, visible[i])
+                if show_reason:
+                    try:
+                        chip.set_reason(
+                            self.state.primary_reason(visible[i]))
+                    except Exception:
+                        chip.set_reason("")
+                else:
+                    chip.set_reason("")
                 chip.show()
             else:
                 chip.hide()

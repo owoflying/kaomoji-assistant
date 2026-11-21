@@ -9,7 +9,8 @@ import os
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QFrame, QPushButton, QHBoxLayout,
-    QScrollArea, QDialog, QPlainTextEdit, QFileDialog,
+    QScrollArea, QDialog, QPlainTextEdit, QFileDialog, QTabWidget,
+    QMessageBox,
 )
 from PySide6.QtCore import Qt, QUrl, QTimer, QEvent, Signal
 from PySide6.QtGui import QFont, QDesktopServices
@@ -24,7 +25,25 @@ _CLICK_TIMEOUT_MS = 6000    # 两次点击间隔超过该值才清零（放宽�
 
 
 class UsageStatsDialog(QDialog):
-    """使用统计详情弹窗：展示累计插入次数与 Top 颜文字排行。"""
+    """使用统计详情弹窗。
+
+    ## 为什么改成分页
+
+    原来只有一个纯文本排行框，展示的是「累计次数 Top N」。
+    但程序实际记录了六类数据（recent / favorites / usage / last_used /
+    hour_usage / history），其中后两类是本轮新增的、而且**完全不外露**：
+    用户只感觉到候选条顺序变了，不知道为什么。
+
+    现在分四页，把每类数据都摊开：
+
+        排行     —— 用得最多的
+        时段     —— 我在什么时间爱用什么
+        流水     —— 我最近依次用了什么
+        推荐理由 —— 每条为什么排在当前位置
+
+    「推荐理由」页最重要：它把黑盒的排序逻辑说出来，
+    用户才知道"为什么我常用的那条被挤下去了"。
+    """
 
     def __init__(self, state, theme, parent=None):
         super().__init__(parent)
@@ -32,8 +51,8 @@ class UsageStatsDialog(QDialog):
         self._theme = theme
         self.setWindowTitle("使用统计")
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
-        self.setMinimumSize(420, 420)
-        self.resize(520, 560)
+        self.setMinimumSize(520, 460)
+        self.resize(600, 580)
         self._init_ui()
         self._refresh()
 
@@ -41,31 +60,56 @@ class UsageStatsDialog(QDialog):
         t = self._theme
         root = QVBoxLayout(self)
         root.setContentsMargins(20, 18, 20, 18)
-        root.setSpacing(14)
+        root.setSpacing(12)
 
         title = QLabel("使用统计")
         title.setObjectName("PageTitle")
         root.addWidget(title)
 
-        # 累计插入
         self._total = QLabel("")
         self._total.setObjectName("SectionTitle")
         root.addWidget(self._total)
 
-        # 排行文本框
-        self._text = QPlainTextEdit()
-        self._text.setReadOnly(True)
-        self._text.setLineWrapMode(QPlainTextEdit.NoWrap)
-        self._text.setFont(kaomoji_font(14))
-        self._text.setStyleSheet(
-            "QPlainTextEdit{background:%s;border:1px solid %s;border-radius:8px;"
-            "padding:10px 12px;color:%s;}"
-            % (t.card, t.card_border, t.text)
-        )
-        root.addWidget(self._text, 1)
+        self._tabs = QTabWidget()
+        root.addWidget(self._tabs, 1)
 
-        # 底部按钮
+        def _page():
+            w = QWidget()
+            lay = QVBoxLayout(w)
+            lay.setContentsMargins(4, 10, 4, 4)
+            edit = QPlainTextEdit()
+            edit.setReadOnly(True)
+            edit.setLineWrapMode(QPlainTextEdit.NoWrap)
+            edit.setFont(kaomoji_font(13))
+            edit.setStyleSheet(
+                "QPlainTextEdit{background:%s;border:1px solid %s;"
+                "border-radius:8px;padding:10px 12px;color:%s;}"
+                % (t.card, t.card_border, t.text)
+            )
+            lay.addWidget(edit, 1)
+            return w, edit
+
+        self._rank_view = None
+        self._hour_view = None
+        self._hist_view = None
+        self._why_view = None
+        for label, attr in (("排行", "_rank_view"), ("时段", "_hour_view"),
+                            ("流水", "_hist_view"), ("推荐理由", "_why_view")):
+            w, edit = _page()
+            setattr(self, attr, edit)
+            self._tabs.addTab(w, label)
+
         bar = QHBoxLayout()
+        # 完整数据导出/导入：给人看的是上面四页文本，
+        # 这两个按钮处理的是**可回灌的原始数据**（换机器迁移用）
+        export_btn = QPushButton("导出数据…")
+        export_btn.setToolTip("导出完整使用记录（可导入到另一台机器）")
+        export_btn.clicked.connect(self._export_data)
+        bar.addWidget(export_btn)
+        import_btn = QPushButton("导入数据…")
+        import_btn.setToolTip("从导出的文件恢复使用记录，与现有数据合并")
+        import_btn.clicked.connect(self._import_data)
+        bar.addWidget(import_btn)
         bar.addStretch(1)
         save_btn = QPushButton("保存为文件")
         save_btn.clicked.connect(self._save)
@@ -78,26 +122,167 @@ class UsageStatsDialog(QDialog):
         # 用完整主题 QSS 覆盖按钮等样式
         self.setStyleSheet(t.style_sheet())
 
-    def _refresh(self):
-        total = self._state.total_inserts()
-        self._total.setText("累计插入：%d 次" % total)
-        top = self._state.top_usage(100)
+    # ------------------------------------------------------------ 各页内容
+    def _text_rank(self, total):
+        top = self._state.top_usage(200)
         if not top:
-            self._text.setPlainText("还没有使用记录，去插入几个颜文字吧～")
-            return
-        lines = ["# 使用统计排行", "累计插入：%d 次" % total, ""]
-        max_text_len = max(len(text) for text, _ in top)
+            return "还没有使用记录，去插入几个颜文字吧～"
+        lines = ["累计插入：%d 次" % total, ""]
+        width = max(len(x) for x, _ in top)
         for i, (text, cnt) in enumerate(top, 1):
-            lines.append("%2d. %s  %d 次" % (i, text.ljust(max_text_len), cnt))
-        self._text.setPlainText("\n".join(lines))
+            lines.append("%3d. %s  %d 次" % (i, text.ljust(width), cnt))
+        return "\n".join(lines)
+
+    def _text_hours(self):
+        """时段分布：每个时段我最爱用的几条。"""
+        try:
+            buckets = self._state.summarize_habits()
+        except Exception:
+            buckets = []
+        if not buckets:
+            return ("还没有足够的时段数据。\n\n"
+                    "用满 %d 次之后才会开始统计——样本太少时"
+                    "「最常用」可能只是顺手用了一次，拿它推荐纯属噪声。"
+                    % _hour_min_samples())
+
+        zh = {
+            "dawn": "清晨 05-09", "morning": "上午 09-12",
+            "noon": "午后 12-14", "afternoon": "下午 14-18",
+            "evening": "夜晚 18-23", "night": "深夜 23-05",
+        }
+        # 按时段的自然顺序展示，不是按次数——
+        # 用户读的是"我的一天"，时间顺序才符合直觉
+        order = ["dawn", "morning", "noon", "afternoon", "evening", "night"]
+        got = {name: items for name, items in buckets}
+        lines = []
+        for key in order:
+            items = got.get(key)
+            if not items:
+                continue
+            lines.append("%s" % zh.get(key, key))
+            for text, cnt in items:
+                lines.append("    %s  %d 次" % (text, cnt))
+            lines.append("")
+        return "\n".join(lines).rstrip() or "暂无数据"
+
+    def _text_history(self, n=50):
+        """注入流水：最近依次用了什么。"""
+        try:
+            recs = self._state.recent_injected(n)
+        except Exception:
+            recs = []
+        if not recs:
+            return "还没有注入记录。"
+        import datetime
+
+        lines = ["最近 %d 条（最新的在上）：" % min(n, len(recs)), ""]
+        for r in recs:
+            try:
+                ts = datetime.datetime.fromtimestamp(float(r.get("ts") or 0))
+                stamp = ts.strftime("%m-%d %H:%M")
+            except Exception:
+                stamp = "--------"
+            src = r.get("source") or ""
+            src_tag = {"picker": "候选条", "repeat": "重复",
+                       "search": "搜索"}.get(src, src)
+            tag = ("  [%s]" % src_tag) if src_tag else ""
+            lines.append("%s  %s%s" % (stamp, r.get("text", ""), tag))
+        return "\n".join(lines)
+
+    def _text_why(self):
+        """推荐理由：把用户常用条目的排序依据摊开。
+
+        只列**真正有理由的**（用过的、收藏的、最近用过的），
+        没理由的条目列出来也没有信息量。
+        """
+        try:
+            top = [t for t, _c in self._state.top_usage(20)]
+        except Exception:
+            top = []
+        if not top:
+            return ("还没有足够的记录来判断你的偏好。\n\n"
+                    "用得越多，这里会越准确地说明「为什么某条排在前面」。")
+
+        lines = []
+        for text in top:
+            try:
+                reasons = self._state.explain(text)
+            except Exception:
+                reasons = []
+            if not reasons:
+                continue
+            lines.append(text)
+            for label, desc in reasons:
+                lines.append("    · %s —— %s" % (label, desc))
+            lines.append("")
+        if not lines:
+            return "暂无推荐理由。"
+        lines.append("——")
+        lines.append("说明：候选条按「频率 + 新近度 + 收藏 + 时段偏好」综合排序，")
+        lines.append("用得越久这个模型越贴合你的习惯。")
+        return "\n".join(lines)
+
+    def _refresh(self):
+        total = self._state.total_inserts() if self._state else 0
+        self._total.setText("累计插入：%d 次" % total)
+        if self._rank_view is not None:
+            self._rank_view.setPlainText(self._text_rank(total))
+        if self._hour_view is not None:
+            self._hour_view.setPlainText(self._text_hours())
+        if self._hist_view is not None:
+            self._hist_view.setPlainText(self._text_history())
+        if self._why_view is not None:
+            self._why_view.setPlainText(self._text_why())
+
+    def _export_data(self):
+        """导出完整使用记录（JSON，可回灌）。"""
+        if self._state is None or not hasattr(self._state, "export_data"):
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出使用数据", "kaomoji-usage-data.json",
+            "数据文件 (*.json);;所有文件 (*.*)",
+        )
+        if not path:
+            return
+        ok, msg = self._state.export_data(path)
+        QMessageBox.information(self, "导出数据",
+                                msg if ok else msg)
+
+    def _import_data(self):
+        """导入并合并使用记录。"""
+        if self._state is None or not hasattr(self._state, "import_data"):
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "导入使用数据", "",
+            "数据文件 (*.json);;所有文件 (*.*)",
+        )
+        if not path:
+            return
+        ok, msg = self._state.import_data(path, merge=True)
+        QMessageBox.information(self, "导入数据", msg)
+        if ok:
+            self._refresh()
 
     def _save(self):
-        total = self._state.total_inserts()
-        top = self._state.top_usage(100)
-        lines = ["累计插入：%d 次" % total, ""]
-        for text, cnt in top:
-            lines.append("%s\t%d" % (text, cnt))
-        text = "\n".join(lines)
+        """把四页内容一起导出成文本。"""
+        total = self._state.total_inserts() if self._state else 0
+        parts = [
+            "使用统计",
+            "=" * 40,
+            "累计插入：%d 次" % total,
+            "",
+            "【排行】",
+            self._text_rank(total),
+            "",
+            "【时段】",
+            self._text_hours(),
+            "",
+            "【流水】",
+            self._text_history(200),
+            "",
+            "【推荐理由】",
+            self._text_why(),
+        ]
         path, _ = QFileDialog.getSaveFileName(
             self, "保存使用统计", "kaomoji-usage-stats.txt",
             "文本文件 (*.txt);;所有文件 (*.*)",
@@ -106,9 +291,18 @@ class UsageStatsDialog(QDialog):
             return
         try:
             with open(path, "w", encoding="utf-8") as f:
-                f.write(text + "\n")
+                f.write("\n".join(parts) + "\n")
         except Exception:  # pragma: no cover
             pass
+
+
+def _hour_min_samples():
+    """取时段统计的最小样本门槛（避免对话框里写死数字）。"""
+    try:
+        from core.user_state import HOUR_MIN_BUCKET_SAMPLES
+        return HOUR_MIN_BUCKET_SAMPLES
+    except Exception:
+        return 8
 
 
 class AboutPage(QWidget):

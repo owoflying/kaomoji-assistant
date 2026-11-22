@@ -69,6 +69,13 @@ class HomePage(QWidget):
 
     def _init_ui(self):
         root = page_layout(self, spacing=24)
+        # 记下**内容布局**：page_layout() 会把内容包进滚动区，所以
+        # `self.layout()` 是外层（只含滚动区），而 content_layout 才是
+        # PageTitle / 卡片所在的那层。
+        #
+        # 插件要往主页插卡片时必须用这个，否则会插到滚动区**外面**
+        # （实测：卡片跑到了滚动区上方，滚不到也看不见）。
+        self.content_layout = root
         root.addWidget(page_title("主页"))
 
         # 时间问候（内置功能，随主页刷新）

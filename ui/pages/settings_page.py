@@ -123,7 +123,7 @@ class SettingsPage(QWidget):
         body = QWidget()
         body.setObjectName("SettingsBody")
         body.setStyleSheet("background:transparent;")
-        v = page_layout(body)
+        v = page_layout(body, scroll=False)  # 外层已自建滚动区
 
         v.addWidget(page_title("设置"))
 
@@ -863,7 +863,17 @@ class SettingsPage(QWidget):
                 t.update_theme(theme_obj)
             except Exception:
                 pass
-        for c in (self.theme_combo, self.method_combo):
+        # ⚠ 这里必须**枚举全部下拉框**。
+        #
+        # 曾经漏了新加的 preset_combo / accent_combo：它们在下拉时用的是
+        # 构造时捕获的旧主题对象，表现为"切到深色后，打开配色方案下拉
+        # 还是浅色白底"——而且只有那一个下拉是错的，别的都正常，
+        # 极容易被当成随机 bug。
+        #
+        # 以后新增下拉框记得加进这个列表；漏了会被
+        # `tests/test_settings_theme_sync.py` 抓到。
+        for c in (self.theme_combo, self.preset_combo, self.accent_combo,
+                  self.method_combo):
             if c is not None:
                 try:
                     c.set_theme(theme_obj)

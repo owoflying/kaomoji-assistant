@@ -341,7 +341,7 @@ class PluginPage(QWidget):
 
     # ---------- UI ----------
     def _init_ui(self):
-        root = page_layout(self)
+        root = page_layout(self, scroll=False)  # 外层已自建滚动区
         root.addWidget(page_title("插件"))
 
         # 顶部说明卡：插件目录 + 操作

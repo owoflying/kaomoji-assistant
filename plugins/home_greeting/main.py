@@ -182,8 +182,23 @@ def _find_host_window(widget):
 
 
 def _home_root_layout(home_page):
-    """主页根布局（主页用 page_layout() 建的就是 QVBoxLayout）。"""
-    lay = home_page.layout() if home_page is not None else None
+    """主页的**内容布局**（PageTitle 与各卡片所在的那一层）。
+
+    ## 为什么要优先取 `content_layout`
+
+    主页用 `page_layout()` 建布局，而它会为了支持滚动把内容包进
+    `QScrollArea`。于是 `home_page.layout()` 拿到的是外层（只有一个
+    滚动区），往它里面插控件会落到滚动区**外面**——卡片跑到顶部、
+    滚不到也看不见。
+
+    主页因此显式暴露了 `content_layout` 指向真正的内容层。
+    取不到时（老版本宿主）退回 `layout()`，保证兼容。
+    """
+    if home_page is None:
+        return None
+    lay = getattr(home_page, "content_layout", None)
+    if lay is None:
+        lay = home_page.layout()
     return lay if isinstance(lay, QVBoxLayout) else None
 
 

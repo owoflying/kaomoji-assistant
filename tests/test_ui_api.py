@@ -1,4 +1,4 @@
-"""`api.ui` 通用界面修改 API 的契约测试。
+﻿"""`api.ui` 通用界面修改 API 的契约测试。
 
 这是本次新增能力的核心保障：**插件对界面的任何修改都必须能被完整回滚**。
 每条用例都遵循同一模式：
@@ -19,6 +19,7 @@ from core.user_kaomoji import UserKaomoji
 from core.user_state import UserState
 from core.user_triggers import UserTriggers
 from ui.plugin_ui_hooks import build_ui_hooks
+from conftest import content_layout  # noqa: E402
 
 
 PLUGINS_DIR = os.path.join(
@@ -199,7 +200,7 @@ def test_insert_and_rollback(env):
 
 def test_remove_and_rollback(env):
     tip = env.registry.resolve("home.tip")
-    root = env.home.layout()
+    root = content_layout(env.home)
     index_before = root.indexOf(tip)
     assert index_before >= 0
 
@@ -217,7 +218,7 @@ def test_replace_render_swaps_container_contents(env):
     from PySide6.QtWidgets import QLabel
 
     greeting = env.registry.resolve("home.greeting")
-    root = env.home.layout()
+    root = content_layout(env.home)
     index_before = root.indexOf(greeting)
 
     marker = QLabel("插件接管了问候卡片内部")
@@ -253,7 +254,7 @@ def test_swap_widget_replaces_whole_widget(env):
     from PySide6.QtWidgets import QLabel
 
     welcome = env.registry.resolve("home.welcome")
-    root = env.home.layout()
+    root = content_layout(env.home)
     index_before = root.indexOf(welcome)
 
     assert env.ui.swap_widget(

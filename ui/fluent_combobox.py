@@ -67,44 +67,72 @@ class FluentComboBox(QComboBox):
         ).format(bg=t.card, fg=t.text, bd=t.card_border, ac=t.accent, hv=t.nav_hover, oa=getattr(t, "on_accent", "#ffffff"))
 
     def showPopup(self):
-        """弹出列表后强制用 Qt QSS 按其应用主题渲染，避免跟随系统原生主题。"""
-        super().showPopup()
+        """弹出下拉列表，并按当前主题着色。
+
+        ## 为什么要"先藏起来、贴好样式、再显示"
+
+        原来的实现是 `super().showPopup()` 之后才贴样式——但 `showPopup()`
+        会**立刻把窗口映射到屏幕**，那一帧用的还是 Qt 原生（浅色）绘制。
+        用户看到的是"先弹出浅色列表，然后闪一下变深色"。
+
+        现在改成：
+          1. 先给视图和容器贴好样式（此时窗口还没显示，不产生可见帧）；
+          2. 再调 `super().showPopup()` 让窗口映射到屏幕。
+
+        这样第一帧就是正确配色，没有闪烁。
+        """
         try:
-            view = self.view()
-            if view is None:
-                return
-            t = self._resolve_theme()
-            qss = self._popup_stylesheet(t)
-            # 1) 列表本体
-            view.setStyleSheet(qss)
-            # 2) 视口（避免透明/原生背景透出）
-            vp = view.viewport()
-            if vp is not None:
-                vp.setStyleSheet(
-                    "background-color: {bg}; color: {fg};".format(bg=t.card, fg=t.text)
-                )
-            # 3) 外层容器（QComboBoxPrivateContainer）：设为不透明、无边框，覆盖原生深底
-            container = view.parent()
-            if isinstance(container, QWidget):
-                container.setStyleSheet(
-                    "background-color: {bg}; border: none;"
-                    "border-radius: 8px;".format(bg=t.card)
-                )
-            # 4) 弹窗顶层窗口本身也强制同色底，Win10 下原生深色框（黑边/黑条）由此盖掉
-            popup = view.window()
-            if isinstance(popup, QWidget) and popup != self.window():
+            self._prepare_popup_theme()
+        except Exception:
+            # 样式准备失败也必须能弹出，退化到原行为
+            pass
+        super().showPopup()
+        # 弹出后再补一次：某些平台会在 show 时重置 popup 的样式表
+        # （Qt 内部给全屏模态容器设过样式）。这一步很便宜，是幂等的。
+        try:
+            self._prepare_popup_theme()
+        except Exception:
+            pass
+
+    def _prepare_popup_theme(self):
+        """把当前主题的配色贴到下拉列表的各个组成部分上（不显示窗口）。
+
+        下拉列表由三层组成，缺一层都会露出系统原生色：
+          1. 列表本体 `view()` —— 条目背景与文字
+          2. 视口 `view.viewport()` —— 避免透明透出原生背景
+          3. 外层容器 `view.parent()`（QComboBoxPrivateContainer）—— 边框与圆角
+          4. 弹窗顶层窗口 `view.window()` —— Win10 下的原生黑边
+        """
+        view = self.view()
+        if view is None:
+            return
+        t = self._resolve_theme()
+        qss = self._popup_stylesheet(t)
+        # 1) 列表本体
+        view.setStyleSheet(qss)
+        # 2) 视口（避免透明/原生背景透出）
+        vp = view.viewport()
+        if vp is not None:
+            vp.setStyleSheet(
+                "background-color: {bg}; color: {fg};".format(
+                    bg=t.card, fg=t.text))
+        # 3) 外层容器
+        container = view.parent()
+        if isinstance(container, QWidget):
+            container.setStyleSheet(
+                "background-color: {bg}; border: none;"
+                "border-radius: 8px;".format(bg=t.card))
+        # 4) 弹窗顶层窗口
+        popup = view.window()
+        if isinstance(popup, QWidget) and popup != self.window():
+            try:
+                popup.setStyleSheet(
+                    "background-color: {bg}; border: none;".format(bg=t.card))
+            except Exception:
+                pass
+            # 5) Win11：DWM 同步外框（Win10 无效也无妨）
+            if _has_dwm:
                 try:
-                    popup.setStyleSheet(
-                        "background-color: {bg}; border: none;".format(bg=t.card)
-                    )
+                    apply_dark_mode(int(popup.winId()), t.dark)
                 except Exception:
                     pass
-                # 5) best-effort：Win11 上用 DWM 同步外框（Win10 无效也无妨）
-                if _has_dwm:
-                    try:
-                        apply_dark_mode(int(popup.winId()), t.dark)
-                    except Exception:
-                        pass
-        except Exception:
-            # 任何异常都不应阻塞下拉框弹出
-            pass

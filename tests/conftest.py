@@ -163,6 +163,36 @@ def keep_widget(widget):
     return widget
 
 
+def content_layout(page):
+    """取页面的**内容布局**（跳过 page_layout 自动加的滚动区）。
+
+    ## 为什么需要
+
+    `page_layout()` 现在会把内容包进 `QScrollArea`（修"内容超出被裁"），
+    所以 `page.layout()` 拿到的是外层布局——里面只有一个滚动区，
+    卡片不在里面。
+
+    插件/测试要往页面里插控件、或检查控件顺序时，必须拿到真正的内容布局。
+    """
+    lay = page.layout() if page is not None else None
+    if lay is None:
+        return None
+    # 外层只有一个 QScrollArea → 进入它的 body
+    try:
+        from PySide6.QtWidgets import QScrollArea
+
+        if lay.count() == 1:
+            item = lay.itemAt(0)
+            w = item.widget() if item is not None else None
+            if isinstance(w, QScrollArea):
+                body = w.widget()
+                if body is not None and body.layout() is not None:
+                    return body.layout()
+    except Exception:
+        pass
+    return lay
+
+
 @pytest.fixture
 def isolated_data(tmp_path):
     """返回一个干净的临时数据目录，供各 store 显式传 path 使用。"""

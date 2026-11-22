@@ -22,6 +22,7 @@ from core.user_kaomoji import UserKaomoji
 from core.user_state import UserState
 from core.user_triggers import UserTriggers
 from ui.plugin_ui_hooks import build_ui_hooks
+from conftest import content_layout  # noqa: E402
 
 
 PLUGIN_ID = "home_greeting"
@@ -73,7 +74,7 @@ def greeting_setup(tmp_path, qapp, quiet_log):
 
 def _home_cards(window):
     """主页根布局里所有 objectName == Card 的控件。"""
-    lay = window.home_page.layout()
+    lay = content_layout(window.home_page)
     out = []
     for i in range(lay.count()):
         w = lay.itemAt(i).widget()
@@ -106,7 +107,8 @@ def test_greeting_card_inserted_into_home(greeting_setup):
 def test_greeting_card_positioned_under_page_title(greeting_setup):
     """插在 PageTitle 之后，而不是页脚或随机位置。"""
     window, _pm, _log = greeting_setup
-    lay = window.home_page.layout()
+    lay = content_layout(window.home_page)
+    assert lay is not None, "拿不到主页内容布局"
     card = _greeting_card(window)
     assert card is not None
     index = lay.indexOf(card)
@@ -116,7 +118,12 @@ def test_greeting_card_positioned_under_page_title(greeting_setup):
         if w is not None and w.objectName() == "PageTitle":
             title_index = i
             break
-    assert title_index is not None
+    assert title_index is not None, (
+        "主页内容布局里没有 PageTitle（共 %d 项：%s）"
+        % (lay.count(),
+           [type(lay.itemAt(i).widget()).__name__
+            if lay.itemAt(i).widget() else "item"
+            for i in range(lay.count())]))
     assert index == title_index + 1
 
 

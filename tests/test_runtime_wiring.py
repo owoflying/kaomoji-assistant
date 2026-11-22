@@ -66,6 +66,17 @@ def shared_runtime(tmp_path_factory):
         cfg["plugins_enabled"] = {}
         rt = AppRuntime(app, cfg)
         app.processEvents()
+        # 标记本模块用到的窗口为「fixture 持有」，避免 conftest 的清理
+        # 夹具销毁它们（否则后续用例访问已销毁对象会 RuntimeError）
+        try:
+            from conftest import keep_widget
+
+            for _w in (getattr(rt, "unified", None),
+                       getattr(rt, "window", None)):
+                if _w is not None:
+                    keep_widget(_w)
+        except Exception:
+            pass
         yield rt, app
     finally:
         rt_mod.app_data_dir = orig

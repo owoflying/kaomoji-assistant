@@ -166,7 +166,7 @@ class AppRuntime:
             self.config.get("theme_mode") or self.config.get("theme", "light"))
         self._apply_app_theme(mode)
         # set_app_theme 供独立弹层（拿不到 config）用；它只关心明暗名
-        set_app_theme(mode)
+        set_app_theme(getattr(self, "theme_obj", None) or mode)
 
     def _apply_app_theme(self, theme_name, chunked=False):
         """全应用 QSS 重贴（幂等）。
@@ -774,7 +774,7 @@ class AppRuntime:
             return
 
         self._apply_app_theme(effective_theme)
-        set_app_theme(effective_theme)
+        set_app_theme(getattr(self, "theme_obj", None) or effective_theme)
         # system 跟随定时器的启停也由所有主题键共同决定
         if theme_changed:
             # 已打开的日志窗口同步换肤（否则它会停留在启动时的主题）
@@ -845,7 +845,7 @@ class AppRuntime:
                 if chunked is not None:
                     for _ in chunked:
                         yield
-                set_app_theme(effective_theme)
+                set_app_theme(getattr(self, "theme_obj", None) or effective_theme)
                 yield
                 # ② 日志窗口（可能开着）
                 self._theme_log_viewer(effective_theme)
@@ -1014,7 +1014,7 @@ class AppRuntime:
         self.app.setStyleSheet(theme.style_sheet())
         if self.menu is not None:
             self.menu.setStyleSheet(theme.menu_style())
-        set_app_theme(current or resolved_mode_of(self.config))
+        set_app_theme(theme)
         if self.window is not None:
             self.window.apply_config(self.config)
         if self.unified is not None:

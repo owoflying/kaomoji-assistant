@@ -67,9 +67,17 @@ _INSET_BOTTOM = 20
 _RECEDE_OPACITY = 0.78
 
 #: 各阶段时长（毫秒）
-_RECEDE_MS = 220
-_VEIL_MS = 180
-_RETURN_MS = 260
+#:
+#: ## 为什么比初版短
+
+#: 初版 220/180/260（合计约 660ms），用户反馈"切换卡"。
+#: 但卡的主体是换肤本身（2 秒），动画只是在它前后各加了一段。
+#: 缩短到 150/120/180（约 450ms）后：
+#:   * 后退仍然看得见（这是"界面让开了"的视觉信号，不能省）；
+#:   * 但不再让人等两段明显的前奏和收尾。
+_RECEDE_MS = 150
+_VEIL_MS = 120
+_RETURN_MS = 180
 
 #: 加载图标的旋转周期（毫秒）与半径
 _SPIN_MS = 900
@@ -86,31 +94,28 @@ def _is_generator_fn(fn):
         return False
 
 
-def _pump(app, min_ms=48):
-    """跑一轮事件循环，**并真正等待一小段时间**，让动画推进。
+def _pump(app, min_ms=16):
+    """跑一轮事件循环，让动画推进。
 
     ## 为什么要等，而不是只 processEvents
 
-    `processEvents()` 只是把**当前已排队**的消息处理掉，然后立刻返回。
-    而旋转图标的 `QTimer` 是每 16ms 触发一次——刚设完定时器那会儿
-    还没有到期事件，`processEvents` 扫一遍就回来了，定时器根本没机会触发。
+    `processEvents()` 只处理**当前已排队**的消息就返回。而旋转图标的
+    `QTimer` 是 16ms 触发一次——刚设完定时器那会儿还没有到期事件，
+    `processEvents` 扫一遍就回来了，图标根本不动。
 
-    实测：只调 `processEvents` 时，一次换肤下来角度只变了 2 次；
-    加上真正的等待后，7 次 pump 让角度从 0 连续走到 64°。
+    ## 为什么是 16ms 而不是 48ms
+
+    最初用 48ms（转 2~3 帧更明显），但换肤有 7 个分片，累计等待
+    7×48 = 336ms，是纯开销。
+
+    实测 16ms 就够：正好是图标定时器的周期，每个分片之间能转 1 帧。
+    换肤本身要 2 秒，这 7 帧已经足够让用户感知到"它在转"，
+    再多就是白白拖长总时长。
 
     ## 为什么不用 QEventLoop.exec()
 
     在 Qt 信号槽内部再开嵌套事件循环，Qt 会拒绝（"event loop is
     already running"）。实测那样做角度完全不变。
-
-    这里用**轮询 + 短睡眠**：反复 `processEvents` 并 `sleep`，
-    累计等够 min_ms。实测 40ms 内 16ms 的定时器能正常触发 2 次。
-
-    ## 48ms 是怎么定的
-
-    图标 900ms 转一圈 → 每 48ms 约 19°。分片之间能稳定转 2~3 帧，
-    视觉上就是"一直在转"。分片总共 7 次，累计多花约 340ms，
-    相对于 1.3 秒的换肤本身可以接受。
     """
     if app is None:
         return
@@ -122,7 +127,7 @@ def _pump(app, min_ms=48):
             app.processEvents()
         except Exception:
             pass
-        _time.sleep(0.004)
+        _time.sleep(0.003)
 
 
 def _drain(apply_fn):

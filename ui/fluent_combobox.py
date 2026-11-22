@@ -12,7 +12,7 @@ DWM 沉浸式深色模式（Win11）仅作为 best-effort 顺带同步外框，�
 """
 from PySide6.QtWidgets import QComboBox, QWidget
 
-from ui.win11_theme import Theme, current_theme_name
+from ui.win11_theme import Theme, current_theme
 from ui.win_style import apply_dark_mode, _has_dwm
 
 
@@ -32,7 +32,7 @@ class FluentComboBox(QComboBox):
             return t
         if isinstance(t, str):
             return Theme(t)
-        return Theme(current_theme_name())
+        return current_theme()
 
     def _popup_stylesheet(self, t):
         """根据主题生成弹窗全套 QSS（显式色值，覆盖原生主题）。"""

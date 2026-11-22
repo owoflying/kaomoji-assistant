@@ -53,21 +53,66 @@ FONT_SUBTITLE = 20
 FONT_TITLE = 28
 
 
-# 全局当前主题名（light/dark）。部分独立窗口/弹出层无法从父级便捷取到主题，
-# 由 main.py 在启动及 apply_settings 时同步，供 FluentComboBox 等控件统一读取。
+#: 全局当前主题名（light/dark）。给只需要明暗的地方用。
 _current_theme_name = "light"
 
+#: 全局当前**完整主题对象**。
+#:
+#: ## 为什么需要这个
 
-def set_app_theme(name):
-    """设置当前应用主题名，供独立对话框/弹出层在无法遍历父窗口时读取。"""
-    global _current_theme_name
-    effective = resolve_theme_name(name)
-    _current_theme_name = effective
+#: `FluentComboBox` 的下拉列表是**独立顶层窗口**，它拿不到父窗口的 config，
+#: 只能读全局状态。原来只有 `_current_theme_name`（一个明暗字符串），
+#: 于是它调 `Theme(名字)` —— 那只会得到 **classic 预设**的配色。
+
+#: 结果：用户选了午夜蓝/暖阳，主窗口变了，**下拉列表还是经典灰**。
+
+#: 所以除了名字，还要把完整色板存一份。`set_app_theme` 收到 Theme 对象时
+#: 一并保存；只收到字符串时（旧调用点）清空缓存，让读取方退回按名字构造。
+_current_theme_obj = None
+
+
+def set_app_theme(name_or_theme, theme_obj=None):
+    """设置当前应用主题，供独立对话框/弹出层在无法取父级时读取。
+
+    :param name_or_theme: 明暗名字符串，或一个 `Theme` 对象
+    :param theme_obj: 显式传入的完整主题（`name_or_theme` 是字符串时用）
+
+    传 Theme 对象时，`current_theme()` 能返回**完整色板**（含预设与强调色）；
+    只传字符串时退回"按名字构造 classic"，行为与旧版一致。
+    """
+    global _current_theme_name, _current_theme_obj
+
+    # 鸭子类型判断而不是 isinstance(Theme)：Theme 类定义在本函数之后，
+    # 模块加载顺序上拿不到这个名字。
+    if hasattr(name_or_theme, "style_sheet") and hasattr(name_or_theme, "bg"):
+        _current_theme_name = getattr(name_or_theme, "name",
+                                      _current_theme_name)
+        _current_theme_obj = name_or_theme
+        return
+    _current_theme_name = resolve_theme_name(name_or_theme)
+    _current_theme_obj = theme_obj
 
 
 def current_theme_name():
     """返回当前应用主题名（light/dark）。"""
     return _current_theme_name
+
+
+def current_theme():
+    """返回当前应用的**完整主题对象**。
+
+    ## 为什么独立弹层该用这个
+
+    `FluentComboBox` 的下拉是独立顶层窗口，拿不到父窗口 config。
+    原来它用 `Theme(current_theme_name())`——那只得到 classic 配色，
+    用户选了午夜蓝后下拉列表还是经典灰。
+
+    这里优先返回缓存的完整对象；没有缓存时才按名字构造（旧行为兜底）。
+    """
+    if _current_theme_obj is not None:
+        return _current_theme_obj
+    # Theme 类在本函数之后才定义，运行时才解析名字——这是安全的
+    return globals()["Theme"](_current_theme_name)
 
 
 def system_theme_name():

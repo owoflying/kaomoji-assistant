@@ -52,6 +52,11 @@ def window():
             _data(), cfg, _state(), _ukao(), _triggers(),
             save_config=lambda c: None, open_log=lambda: None)
         app.processEvents()
+        # 标记为「fixture 持有」：conftest 的清理夹具不会销毁它，
+        # 否则本模块后续用例会访问到已销毁的 C++ 对象
+        from conftest import keep_widget
+
+        keep_widget(w)
         yield w
     finally:
         runtime.app_data_dir = orig

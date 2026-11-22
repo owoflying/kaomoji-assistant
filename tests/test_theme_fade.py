@@ -338,21 +338,28 @@ def test_pump_actually_waits():
 
 
 def test_chunked_qss_actually_applies():
-    """分片贴 QSS 后样式必须完整生效（不能只贴了前半段）。"""
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PySide6.QtWidgets import QApplication
+    """分片贴 QSS 的切分点必须落在规则边界上。
 
-    app = QApplication.instance() or QApplication([])
+    ## ⚠ 这个测试**不实际贴 QSS**
+
+    最初版本用真实 `app.setStyleSheet()` 验证，单次耗时 **43 秒**
+    ——全局 QSS 会让 Qt 重新 polish 所有控件，进程里已经有几百个控件
+    时这是 O(控件数) 的代价。
+
+    但这里要验证的只是"切分点选得对不对"（不能把一条规则切一半），
+    纯字符串逻辑，不需要真贴。测量真实贴 QSS 的成本是 `tools/bench.py`
+    的职责，不该混进单元测试。
+    """
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from ui.win11_theme import Theme
 
-    theme = Theme("dark")
-    ss = theme.style_sheet()
+    ss = Theme("dark").style_sheet()
     mid = len(ss) // 2
     cut = ss.find("}", mid)
     cut = cut + 1 if cut > 0 else len(ss)
-    # 前半段确实短于完整串
+
     assert 0 < cut < len(ss), "切分点不合理"
-    # 分两段贴完，最终状态等于完整串
-    app.setStyleSheet(ss[:cut])
-    app.setStyleSheet(ss)
-    assert app.styleSheet() == ss
+    # 切分点必须紧跟一个 `}`（规则边界），不能切在属性中间
+    assert ss[cut - 1] == "}", "切分点不在规则边界上"
+    # 两段拼起来就是完整串（不能丢字符）
+    assert ss[:cut] + ss[cut:] == ss

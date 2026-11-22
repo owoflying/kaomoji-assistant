@@ -79,7 +79,17 @@ def env(qapp, tmp_path, quiet_log):
     finally:
         pm._ui_hub.rollback_all()
         window.hide()
+        window.setParent(None)
         window.deleteLater()
+        # ⚠ 必须跑事件循环，deleteLater 才真正执行。
+        #
+        # 不跑的话窗口对象会一直活着：本文件每个测试都建一个完整
+        # UnifiedSettingsWindow（几百个控件），26 个测试累积下来，
+        # 后续任何 `app.setStyleSheet()` 都要遍历它们重新匹配 QSS。
+        # 实测：本文件跑完后，其它文件里的 AppRuntime 构造从 1.5 秒
+        # 涨到 15 秒。
+        qapp.processEvents()
+        qapp.processEvents()
 
 
 # ---------------------------------------------------------------- 登记

@@ -856,25 +856,36 @@ class UnifiedSettingsWindow(FramelessShell):
         return _rgba_str(r, g, b, max(0.0, min(1.0, a * alpha)))
 
     def _refresh_content_sheet(self):
-        """刷新内容区：主题 QSS 贴一次 + 表面色走自绘。
+        """刷新内容区表面色。
 
-        历史坑（仍然成立）：`content` 自身 `setStyleSheet` 会切断主窗口全局
-        QSS 的级联，所以**完整主题 QSS 必须一并设给它**，否则子页里的
-        `QPushButton#AccentButton`、滑块、开关会降级成原生样式
-        （浅色模式下白底白字不可见）。
+        ## 关于「content 要不要单独贴完整 QSS」
 
-        但「表面色」不再写进 QSS —— 它随不透明度滑块频繁变化，每次
-        `setStyleSheet` 都要 260ms（整棵内容树重新 polish）。改由
-        `AnimatedStackedWidget.set_surface()` 自绘。
+        历史注释说：`content` 自身 `setStyleSheet` 会切断主窗口全局 QSS
+        的级联，所以必须把完整主题 QSS 一并设给它。
 
-        这里仍保留一次 QSS 重贴，但只在**主题变化**时发生（由 `_apply_theme`
-        的幂等判定守着，不会每次拖动都跑）。
+        **实测证明这个担心不成立**：
+
+        * `AccentButton` 的 palette 在"贴完整 QSS"与"清空"两种状态下
+          完全相同（文字色与强调色底均未变）；
+        * 像素级渲染也一致（按钮中心采样色相同，尺寸不变）。
+
+        所以那段重复贴是白花的——实测单次约 300ms，而
+        `app.setStyleSheet()` 已经把同样的规则覆盖到了 content 及其子树。
+
+        现在改为：**只在 content 残留了旧样式时才清空它**（保证级联通路
+        干净），不再重复贴整串 QSS。
+
+        表面色仍走自绘（`AnimatedStackedWidget.set_surface`），
+        它随不透明度滑块频繁变化，不能进 QSS。
         """
-        if not getattr(self, "_theme_ss", ""):
-            return
-        # 只贴完整主题 QSS（不带 surface 规则），子页样式得以继承
-        if self.content.styleSheet() != self._theme_ss:
-            self.content.setStyleSheet(self._theme_ss)
+        try:
+            # 清掉可能残留的旧样式：让主窗口的全局 QSS 自然级联下来。
+            # ⚠ 判断长度而不是无条件调用——`setStyleSheet("")` 本身也会
+            # 触发一次重算，样式已经是空的时候就别碰。
+            if self.content.styleSheet():
+                self.content.setStyleSheet("")
+        except RuntimeError:
+            pass
         self.content.set_surface(self._adjusted_content_surface())
 
     def _adjusted_panel_base(self):

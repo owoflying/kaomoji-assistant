@@ -49,12 +49,16 @@ class ExtractDialog(QDialog):
     """展示从剪贴板提取到的颜文字，勾选后收藏。"""
 
     def __init__(self, items, theme=None, parent=None, group="收藏",
-                 preexisting=None):
+                 preexisting=None, in_builtin=None):
         super().__init__(parent)
         self._theme = theme
         self._group = group
         self._checks = []
+        #: 已经在「我的颜文字」里的条目 —— 默认不勾（避免重复添加）
         self._preexisting = set(preexisting or ())
+        #: 内置库里已有的条目 —— 仍可勾选（勾了会复制一份进「我的」），
+        #: 只做个标注让用户知道"这条系统自带"
+        self._in_builtin = set(in_builtin or ())
 
         self.setWindowTitle("从剪贴板提取颜文字")
         self.setMinimumWidth(420)
@@ -64,7 +68,8 @@ class ExtractDialog(QDialog):
         root.setContentsMargins(20, 18, 20, 16)
         root.setSpacing(10)
 
-        tip = QLabel("在聊天记录里选中文字 → 复制 → 这里挑要收藏的")
+        tip = QLabel("在聊天记录里选中文字 → 复制 → 勾选要收进"
+                     "「我的颜文字」的条目")
         tip.setObjectName("Caption")
         tip.setWordWrap(True)
         root.addWidget(tip)
@@ -88,11 +93,22 @@ class ExtractDialog(QDialog):
             lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
             row.addWidget(lbl, 1)
 
+            # 标注来源。
+            #
+            # ⚠ 文案要说清楚"点收藏会发生什么"。原来写「已在库中」，
+            # 但用户勾选后其实**不会**加进「我的颜文字」——文案和
+            # 行为对不上，是个实打实的 bug（已修）。
+            #
+            # 现在语义是：勾选 = 加入「我的颜文字」。所以只有
+            # "已经在我的颜文字里"才标灰并默认不勾。
             if text in self._preexisting:
-                # 已经在库里了：默认不勾，并标注出来，
-                # 免得用户重复收藏同一批
                 cb.setChecked(False)
-                mark = QLabel("已在库中")
+                mark = QLabel("已在「我的颜文字」中")
+                mark.setObjectName("Caption")
+                row.addWidget(mark)
+            elif text in self._in_builtin:
+                # 内置库里有，但还没被收进"我的"。勾选后会被复制一份进去。
+                mark = QLabel("内置库已有")
                 mark.setObjectName("Caption")
                 row.addWidget(mark)
 
@@ -118,7 +134,7 @@ class ExtractDialog(QDialog):
         root.addLayout(btns)
 
         bb = QDialogButtonBox()
-        ok = bb.addButton("收藏选中的", QDialogButtonBox.AcceptRole)
+        ok = bb.addButton("加入「我的颜文字」", QDialogButtonBox.AcceptRole)
         bb.addButton("取消", QDialogButtonBox.RejectRole)
         ok.setDefault(True)
         bb.accepted.connect(self.accept)

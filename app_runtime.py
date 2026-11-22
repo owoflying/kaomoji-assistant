@@ -1257,14 +1257,27 @@ class AppRuntime:
         """
         from ui.extract_dialog import ExtractDialog, read_clipboard_items
 
-        # 已知条目：用于在弹窗里标注"已在库中"，默认不重复勾选
+        # 已知条目：用于在弹窗里标注"已在库中"，默认不重复勾选。
+        #
+        # ⚠ 这里**只算「我的颜文字」**，不要把内置库和收藏夹算进来。
+        #
+        # 原来的写法把三种来源混在一起，导致一个真实的 bug：
+        # 用户从聊天里提取到一条**内置库里已有的**颜文字
+        # （比如 `(◕‿◕)`），勾选后却只进了"收藏夹"，
+        # 「我的颜文字」里看不到——但用户的本意就是"把它收进我的列表"。
+        #
+        # 内置库是只读素材，「我的颜文字」才是用户自己的收藏。
+        # 两者不该混为一谈。
         try:
-            known = set(self.data.get_items())
-            if self.user_kao is not None:
-                known.update(self.user_kao.get_all())
-            known.update(self.state.favorites)
+            known = set(self.user_kao.get_all()) if self.user_kao else set()
         except Exception:
             known = set()
+        #: 内置库里的条目。只用于弹窗里的"内置库已有"标注——
+        #: **不阻止**用户把它收进「我的颜文字」。
+        try:
+            builtin = set(self.data.get_items())
+        except Exception:
+            builtin = set()
 
         items, raw = read_clipboard_items()
         if not items:
@@ -1284,7 +1297,8 @@ class AppRuntime:
         dlg = ExtractDialog(items, theme=Theme(
             resolve_theme_name(self.config.get("theme", "light"))),
             parent=self.unified if self.unified.isVisible() else None,
-            preexisting=known)
+            preexisting=known,
+            in_builtin=builtin)
         if dlg.exec() != dlg.DialogCode.Accepted:
             return 0
 
@@ -1294,12 +1308,23 @@ class AppRuntime:
         added = 0
         for text in chosen:
             try:
-                if self.user_kao is not None and text not in known:
-                    self.user_kao.add_item(text, "收藏", "")
+                if self.user_kao is None:
+                    continue
+                # 统一加进「我的颜文字」——这就是用户勾选时的心智模型。
+                #
+                # 不再区分"是否已在内置库/收藏夹"：
+                # 用户点了收藏，东西就该出现在他自己的列表里。
+                # 已在「我的颜文字」里的会被 UserKaomoji 自己去重。
+                before = set(self.user_kao.get_all())
+                self.user_kao.add_item(text, "收藏", "")
+                if text not in before:
                     added += 1
-                elif text not in self.state.favorites:
-                    self.state.toggle_favorite(text)
-                    added += 1
+                # 顺便标记为收藏，让它排在候选条前面
+                try:
+                    if text not in self.state.favorites:
+                        self.state.toggle_favorite(text)
+                except Exception:
+                    pass
             except Exception as e:
                 append_log("warn", "extract", "收藏失败：%r" % (e,))
         append_log("info", "extract", "从剪贴板收藏了 %d 条颜文字" % added)

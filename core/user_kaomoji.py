@@ -25,11 +25,36 @@ def _norm_tags(raw):
     out = []
     seen = set()
     for p in parts:
-        p = p.strip()
+        p = str(p).strip()
         if p and p not in seen:
             seen.add(p)
             out.append(p)
     return out
+
+
+def _norm_tag(tag):
+    """标签比较用的归一化：去首尾空白 + 英文转小写。"""
+    return str(tag or "").strip().lower()
+
+
+def _emotion_tag_keys(emotion):
+    """一个情绪能被哪些标签写法命中。
+
+    标签是用户自由输入的，只认「分类名精确相等」太脆：写 `happy`、
+    `高兴`、`sad` 就全都不生效，看起来像"标签功能没接进推荐"。
+    分类器用的 `EMOTION_KEYWORDS` 本身就是现成的同义词表，直接复用，
+    不用另外维护一份会慢慢过时的别名清单。
+    """
+    keys = {_norm_tag(emotion)}
+    try:
+        from core.emotion import EMOTION_KEYWORDS
+        for kw in EMOTION_KEYWORDS.get(emotion, ()):
+            k = _norm_tag(kw)
+            if k:
+                keys.add(k)
+    except Exception:
+        pass  # 词表不可用时至少保留精确匹配，不能让候选条弹不出来
+    return keys
 
 
 class UserKaomoji(QObject):
@@ -53,6 +78,11 @@ class UserKaomoji(QObject):
                 data = json.load(f)
             self.groups = data.get("groups") or ["默认"]
             self.items = [it for it in (data.get("items") or []) if isinstance(it, dict) and it.get("text")]
+            # 老版本 / 手改 JSON 可能把 tags 写成字符串 "开心, 加油"。
+            # 统一成列表，否则 tags_of() 会把它拆成单字（['开','心',…]），
+            # 界面显示乱、情绪匹配也对不上。
+            for it in self.items:
+                it["tags"] = _norm_tags(it.get("tags"))
             # 保证所有 item.group 都在 groups 里，缺则补回
             for it in self.items:
                 if it.get("group") not in self.groups:
@@ -95,8 +125,41 @@ class UserKaomoji(QObject):
         return [it["text"] for it in self.items if it.get("group") == group]
 
     def items_for_emotion(self, emotion):
-        """标签里包含某情绪的自定义颜文字（用于自动弹出按情绪推荐）。"""
-        return [it["text"] for it in self.items if emotion in it.get("tags", [])]
+        """标签命中某情绪的自定义颜文字（用于自动弹出按情绪推荐）。
+
+        两层匹配：
+
+        1. **词表**：标签精确等于情绪分类名 / 它的同义词（快、确定）；
+        2. **情绪算法**：把标签当一句话交给现成的关键词 + 神经网络分类器，
+           于是「不开心」能归到伤心、「虽然很累但是很开心」能归到开心。
+           分类器自己会挡掉对短标签不可靠的网络外推，详见
+           ``emotion_classifier.emotion_for_tag``。
+
+        两层都不是子串匹配：标签「不开心」不会被当成「开心」；不相关的
+        自由标签（如「加油」）只用于搜索，不会让这条颜文字在所有情绪下乱弹。
+        """
+        keys = _emotion_tag_keys(emotion) - {""}
+        if not keys:
+            return []
+        try:
+            from core.emotion_classifier import emotion_for_tag
+        except Exception:
+            emotion_for_tag = None   # 分类器不可用时仍保留词表匹配
+        out = []
+        for it in self.items:
+            for t in _norm_tags(it.get("tags")):
+                n = _norm_tag(t)
+                if n in keys:
+                    out.append(it["text"])
+                    break
+                if emotion_for_tag is not None:
+                    try:
+                        if emotion_for_tag(n) == emotion:
+                            out.append(it["text"])
+                            break
+                    except Exception:
+                        pass   # 单个标签判不了不影响其它标签与候选条弹出
+        return out
 
     def tags_of(self, text):
         for it in self.items:

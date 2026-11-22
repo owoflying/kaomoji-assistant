@@ -812,15 +812,24 @@ class PickerWindow(QWidget):
 
         :param source_text: 触发该情绪的用户原句。在线学习需要它——
             用户从这个情绪的候选里选了一张，就把这句话当训练样本。
+
+        ## 标签命中的自定义颜文字为什么整段前置
+
+        以前是把它们追加到内置分类后面再一起 `rank()`：一个情绪分类有
+        20~30 条内置项，而 `rank()` 是稳定排序、没用过的自定义项分数为 0，
+        结果自定义项沉在第 30 位以后（默认每页 3 条 = 第 11 页），
+        用户永远翻不到，看起来就像"标签完全没参与推荐"。
+        现在两段各自按使用习惯排序、标签段整体靠前：既保留「常用的稳定在
+        首位」，也让用户主动标了情绪的颜文字真的出现在第一页。
         """
-        items = self.data.get_items(emotion)
-        if self.user_kao is not None:
-            items = items + self.user_kao.items_for_emotion(emotion)
+        builtin = list(self.data.get_items(emotion))
+        tagged = (list(self.user_kao.items_for_emotion(emotion))
+                  if self.user_kao is not None else [])
+        items = self.state.rank(tagged) + self.state.rank(builtin)
         seen = set()
         items = [x for x in items if not (x in seen or seen.add(x))]
         if not items:
             return
-        items = self.state.rank(items)
         self._present(items, emotion=emotion, caret=True, source_text=source_text)
         self.emotion_shown.emit(emotion)
 

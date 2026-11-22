@@ -33,6 +33,7 @@
 """
 import os
 import threading
+from functools import lru_cache
 
 from core import emotion_net as en
 from core.emotion import detect_last as keyword_detect
@@ -909,3 +910,80 @@ def shared():
         if _shared is None:
             _shared = EmotionClassifier()
         return _shared
+
+
+# ---------------------------------------------------------------- 标签归类
+#: 「我的颜文字」的标签是**短文本**，不是聊天句子。实测把标签直接丢给
+#: `detect()` 时，网络会给很高置信但语义明显不对的结论（随包模型，源码态）::
+#:
+#:     加油   → 疲惫 0.64     打气   → 生气 1.00     猫猫 → 疲惫 0.99
+#:     摸鱼   → 伤心 1.00     摸摸头 → 思考 0.90     早安 → 喜欢 1.00
+#:
+#: 原因是网络是用整句训练的，对两三个字的自由标签属于外推。`last_source`
+#: 本来就是给可解释性用的，正好拿它把「纯网络外推 / 启发式猜测」筛掉，
+#: 只留下关键词、网络+关键词一致、否定/转折、隐式情绪这些可信来源。
+_UNRELIABLE_TAG_SOURCES = frozenset({"net", "net(turn)", "heuristic"})
+
+
+@lru_cache(maxsize=512)
+def _emotion_for_tag_cached(tag, use_net):
+    """标签 → 情绪分类名；判不了返回 None。按 (文本, 是否用网络) 缓存。"""
+    if not use_net:
+        # 用户关了「用 AI 判断情绪」：纯关键词层，不推理、不加载模型。
+        # 与 detect() 的纯算法模式行为一致（「不开心」会判成开心）。
+        hit = keyword_detect(tag)
+        return hit[0] if hit else None
+
+    clf = _shared
+    if clf is None or not clf.has_net:
+        hit = keyword_detect(tag)
+        return hit[0] if hit else None
+
+    with clf._lock:                       # RLock 可重入，detect() 内部也会取它
+        prev = (clf.last_source, clf.last_conf, clf.threshold)
+        # 标签是用户写下的明确意图，不该被「推荐灵敏度」左右。
+        clf.threshold = CONFIDENCE_THRESHOLD
+        try:
+            hit = clf.detect(tag)
+            source = clf.last_source
+        finally:
+            # detect() 会改写诊断字段；这里还原，免得开发者页/统计看到
+            # 一次「标签归类」冒充成「打字判定」。
+            clf.last_source, clf.last_conf, clf.threshold = prev
+    if hit is None or source in _UNRELIABLE_TAG_SOURCES:
+        return None
+    return hit[0]
+
+
+def emotion_for_tag(tag):
+    """把「我的颜文字」的标签归类到情绪分类名，归不了返回 ``None``。
+
+    ## 为什么是「部分复用」
+
+    这套「关键词 + 神经网络 + 否定/转折/隐式情绪」的分层判定本来就是给
+    聊天句子用的。标签要复用它，但只取它**擅长的那部分**：
+
+    * 采纳 ``keyword`` / ``net+keyword``：零误报的直白情绪词与同义词；
+    * 采纳 ``net(negation)`` / ``turn-tail``：「不开心」→ 伤心、
+      「虽然很累但是很开心」→ 开心，这正是关键词层必然判反的地方，
+      也是网络最值钱的能力；
+    * 采纳 ``implicit``：「戳我」这类字面没有情绪字的隐式表达；
+    * **不采纳** ``net`` / ``heuristic``：对短标签是外推，实测误判见上。
+
+    这样「加油」「猫猫」这类纯描述性标签仍然只参与搜索，不会因为网络
+    一句高置信的胡猜，就在用户打字时到处乱弹。
+
+    另外：不为标签归类主动创建分类器（用户可能关了 AI），缓存结果，
+    并且不改动主单例的诊断状态与灵敏度配置。
+    """
+    s = str(tag or "").strip().lower()
+    if not s:
+        return None
+    clf = _shared
+    use_net = bool(clf is not None and clf.ai_enabled and clf.has_net)
+    return _emotion_for_tag_cached(s, use_net)
+
+
+def clear_tag_emotion_cache():
+    """清掉标签归类缓存（切换 AI 开关、重置模型、测试隔离时用）。"""
+    _emotion_for_tag_cached.cache_clear()

@@ -411,7 +411,7 @@ class UnifiedSettingsWindow(FramelessShell):
 
         self._lazy_factories = {
             "library": lambda: LibraryPage(self.data),
-            "custom": lambda: CustomKaomojiPage(self.user_kao),
+            "custom": lambda: CustomKaomojiPage(self.user_kao, self.theme),
             "triggers": lambda: TriggerPage(self.triggers, self.theme),
             "search": lambda: SearchPage(self.data, self.user_kao,
                                          self.theme.name),

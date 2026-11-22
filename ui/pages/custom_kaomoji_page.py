@@ -69,7 +69,12 @@ class _ItemEditDialog(QDialog):
         grp_row.addWidget(self.group_combo, 1)
         root.addLayout(grp_row)
 
-        root.addWidget(QLabel("标签（逗号分隔，用于情绪关联与搜索）"))
+        tag_label = QLabel("标签（逗号分隔）：写情绪词或短句，自动判断情绪并优先推荐；也能用于搜索")
+        tag_label.setToolTip(
+            "情绪分类名：开心 / 伤心 / 生气 / 惊讶 / 喜欢 / 思考 / 疲惫 …\n"
+            "也认同义词和口语：高兴、happy、笑死、好累、不开心（→伤心）。\n"
+            "纯描述性标签（如「加油」「猫猫」）只用于搜索，不会触发自动推荐。")
+        root.addWidget(tag_label)
         self.tags_edit = QLineEdit(tags)
         self.tags_edit.setPlaceholderText("例如 开心, 加油")
         root.addWidget(self.tags_edit)
@@ -97,12 +102,25 @@ class _ItemEditDialog(QDialog):
 
 
 class CustomKaomojiPage(QWidget):
-    def __init__(self, user_kao, parent=None):
+    def __init__(self, user_kao, theme=None, parent=None):
         super().__init__(parent)
         self.user_kao = user_kao
+        # 组合器是独立弹窗，拿不到本页的 QSS，需要显式把主题传下去。
+        # 以前这里没定义 _theme，点「组合一个」会抛 AttributeError，
+        # 表现就是按钮"按了没反应"。主题同时可由外壳 set_theme() 广播更新。
+        self._theme = theme
         self._tag_filter = None
         self._init_ui()
         self._refresh_groups()
+
+    def set_theme(self, theme):
+        """外壳换肤时同步主题，供之后打开的组合器 / 编辑对话框使用。"""
+        self._theme = theme
+        # 下拉框的弹出列表是独立顶层窗口，QSS 盖不到，得自己更新主题
+        for combo in (getattr(self, "group_combo", None),
+                      getattr(self, "tag_combo", None)):
+            if combo is not None:
+                combo.set_theme(theme)
 
     def _init_ui(self):
         root = page_layout(self)
@@ -125,7 +143,7 @@ class CustomKaomojiPage(QWidget):
         grp_card = card()
         grp_root = card_layout(grp_card, horizontal=True)
         grp_root.addWidget(QLabel("分组"))
-        self.group_combo = FluentComboBox(None)
+        self.group_combo = FluentComboBox(self._theme)
         self.group_combo.setMinimumWidth(160)
         self.group_combo.currentTextChanged.connect(self._refresh_list)
         grp_root.addWidget(self.group_combo, 1)
@@ -137,7 +155,7 @@ class CustomKaomojiPage(QWidget):
         grp_root.addWidget(self.del_group_btn)
         grp_root.addSpacing(16)
         grp_root.addWidget(QLabel("标签"))
-        self.tag_combo = FluentComboBox(None)
+        self.tag_combo = FluentComboBox(self._theme)
         self.tag_combo.setMinimumWidth(140)
         self.tag_combo.currentIndexChanged.connect(self._on_tag_filter)
         grp_root.addWidget(self.tag_combo)
@@ -263,7 +281,8 @@ class CustomKaomojiPage(QWidget):
 
     def _add_item(self):
         dlg = _ItemEditDialog(self.user_kao.get_groups(),
-                              group=self.group_combo.currentText())
+                              group=self.group_combo.currentText(),
+                              theme=self._theme)
         if dlg.exec() == QDialog.Accepted:
             text, group, tags = dlg.data()
             if text:
@@ -296,7 +315,8 @@ class CustomKaomojiPage(QWidget):
         old = self.list_w.item(row).data(Qt.UserRole)
         tags = ", ".join(self.user_kao.tags_of(old))
         dlg = _ItemEditDialog(self.user_kao.get_groups(), text=old,
-                              group=self._group_of(old), tags=tags)
+                              group=self._group_of(old), tags=tags,
+                              theme=self._theme)
         if dlg.exec() == QDialog.Accepted:
             text, group, tags = dlg.data()
             if text:

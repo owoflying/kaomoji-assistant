@@ -123,6 +123,11 @@ emotion-sampler 线程（wait 阻塞，无输入零 CPU）
 emotion_detected / trigger_detected 信号
 ```
 
+用户标签复用同一套判定：`core/emotion_classifier.emotion_for_tag()` 把标签当短文本走
+完整 `detect()`，再用 `last_source` 只采纳关键词 / 否定 / 转折 / 隐式情绪等可信来源，
+挡掉网络对短标签的高置信外推（如「加油」→疲惫）。情绪候选据此把带标签的自定义
+颜文字整段前置；详见 `UserKaomoji.items_for_emotion()` 与 `PickerWindow.show_for_emotion()`。
+
 ### 4.4 候选条交互
 
 候选条**不抢焦点**（只 `raise_()`），选字靠低层键盘钩子：
@@ -305,7 +310,7 @@ HashWorker(QThread)  下载后 SHA-256 校验
 ## 9. 测试
 
 ```bat
-.venv\Scripts\python.exe -m pytest tests -q      :: 176 个用例，约 80s
+.venv\Scripts\python.exe -m pytest tests -q      :: 530 个用例（529 通过 / 1 跳过），约 3 分钟
 ```
 
 - 全部走 `QT_QPA_PLATFORM=offscreen`，无需显示器；

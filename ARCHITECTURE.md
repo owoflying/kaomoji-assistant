@@ -7,7 +7,8 @@
 |------|------|-----------|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | **设计**：分层、数据流、关键机制、线程模型、开发流程 | 接手项目、改架构、加功能前 |
 | [docs/PLUGIN_GUIDE.md](docs/PLUGIN_GUIDE.md) | **插件开发**：能力清单、`api.ui` 界面修改 API、反面案例 | 写插件、想改内置界面时 |
-| [docs/PITFALLS.md](docs/PITFALLS.md) | **踩坑手册**：20 类根因、症状索引表、提交前自检 | 写代码时、排查诡异 bug 时、提交前 |
+| [docs/emotion_lab_log.md](docs/emotion_lab_log.md) | **情绪模型实验记录**：训练/评测数据与迭代结论 | 调情绪识别、改模型前 |
+| [docs/PITFALLS.md](docs/PITFALLS.md) | **踩坑手册**：按根因分类的症状索引表、提交前自检 | 写代码时、排查诡异 bug 时、提交前 |
 | [PROJECT_ARCHITECTURE.md](PROJECT_ARCHITECTURE.md) | **现状梳理**：逐模块职责、信号接线表、依赖图 | 想快速建立全局认识 |
 | [README.md](README.md) | 用户向：功能、键位、运行与打包 | 第一次接触项目 |
 

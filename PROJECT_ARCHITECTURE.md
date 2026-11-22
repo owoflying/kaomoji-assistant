@@ -1,8 +1,8 @@
 # kaomoji-assistant 项目架构说明
 
 > 颜文字输入辅助器 · Win11 风格常驻托盘工具
-> 技术栈：Python 3.13 + PySide6 + pynput + Win32/COM (ctypes)
-> 规模：61 个 Python 文件 / 约 15k 行（core 5.2k · ui 7.4k · 装配层 0.65k · tests 1.0k）
+> 技术栈：Python 3.10+ + PySide6 + pynput + Win32/COM (ctypes)
+> 规模：约 121 个 Python 文件 / 约 36k 行（core 11.9k · ui 11.2k · tests 7.6k · tools 2.8k · 装配层 1.6k · plugins 0.8k）
 > 本文档基于当前代码实测梳理。**设计说明**见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)，
 > **踩坑手册**见 [`docs/PITFALLS.md`](docs/PITFALLS.md)（本文已被拆分，定位是"现状梳理"）。
 
@@ -110,7 +110,7 @@ kaomoji-assistant/
 │   ├── example_kaomoji/       #   API v2 全能力演示插件
 │   └── startup_notice/        #   启动提示示例插件
 │
-├── tests/                     # ★ pytest 离屏用例（100 个，约 10s）
+├── tests/                     # ★ pytest 离屏用例（530 个，约 3 分钟）
 │   ├── conftest.py            #   把 APPDATA 重定向到临时目录，绝不写工作区
 │   ├── test_config_store.py   #   类型/枚举/范围校验 + 测试功能门禁
 │   ├── test_plugins.py        #   插件生命周期、异常隔离、分层不变式
@@ -556,7 +556,7 @@ build.py
 | **插件权限边界清晰** | manager 只登记不持 widget、异常全隔离、路径前缀校验、数据不落盘 |
 | **踩坑知识沉淀** | `docs/PITFALLS.md` 记录 19 类根因（ctypes 常量、QSS 级联、亚克力 alpha 语义、线程复活、插件生命周期…）+ 症状索引表 + 提交前自检清单 |
 | **分层可被强制执行** | `tests/test_plugins.py::test_core_does_not_import_ui` 静态扫描 `core/`，任何人加回反向依赖都会立刻失败 |
-| **测试隔离** | `tests/conftest.py` 把 `APPDATA` 重定向到临时目录；176 个用例跑完后工作区零污染 |
+| **测试隔离** | `tests/conftest.py` 把 `APPDATA` 重定向到临时目录；530 个用例跑完后工作区零污染 |
 
 ---
 
@@ -569,7 +569,7 @@ build.py
 | 1 | `core → ui` 反向依赖（`plugins.py` import `ui.plugin_dialog`/`ui.win11_theme`） | 新增 `core/ui_hooks.py` 声明协议（`UiHooks`/`NullUiHooks`），`ui/plugin_ui_hooks.py` 提供实现，`app_runtime` 注入 | `test_core_does_not_import_ui` 静态扫描 + `test_null_ui_hooks_degrade_gracefully` |
 | 2 | `unified_window.py` 1172 行、职责过多 | 拆出 `ui/frameless_shell.py`（窗口机械）与 `ui/unified_nav.py`（导航调度），原文件降至 559 行 | `test_unified_window.py` 覆盖拆分边界 |
 | 3 | 插件回调无保护，卡界面难定位 | `PluginManager._timed_call` 对超 50ms 的回调记 warn（带插件 id 与耗时） | `test_slow_transform_emits_warning` |
-| 4 | 无 `tests/` 目录 | 建 `tests/`，100 个离屏用例（配置/插件/情绪/数据/窗口） | 本身即守护 |
+| 4 | 无 `tests/` 目录 | 建 `tests/` 离屏用例体系（现已 530 个，覆盖配置/插件/情绪/数据/窗口） | 本身即守护 |
 | 5 | 文档设计与经验混杂（49 KB 单文件） | 拆为 `docs/ARCHITECTURE.md`（设计）+ `docs/PITFALLS.md`（踩坑）+ 根 `ARCHITECTURE.md`（索引） | — |
 | 6 | 配置无 schema 校验 | `config_store.validate_config()` 校验类型/枚举/范围并回退默认；未依赖默认值的键保留；数值项拒绝 bool | `test_config_store.py`（15 个用例） |
 | 7 | 缺 `.gitattributes` | 新增：仓库存 LF、`.bat` 用 CRLF、二进制文件禁止转换 | — |

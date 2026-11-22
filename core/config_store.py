@@ -20,7 +20,14 @@ from core import runtime
 
 DEFAULT_CONFIG = {
     "hotkey": "<ctrl>+<shift>+k",
-    "theme": "light",
+    # ---- 主题（新结构：三个正交维度）----
+    # theme_mode 决定明暗，theme_preset 决定配色方案，两者可自由组合。
+    # 旧的 "theme" 键保留可读（迁移用），见 migrate_theme_config()。
+    "theme": "light",                  # 兼容旧配置/旧调用方
+    "theme_mode": "light",             # light | dark | system
+    "theme_preset": "classic",         # classic | midnight | warm | contrast | custom
+    "accent_mode": "preset",           # preset | system | custom
+    "accent_custom": "#0067c0",        # accent_mode=custom 时的颜色
     "panel_alpha": 0.92,
     "opacity": 0.98,
     "input_method": "direct",
@@ -66,7 +73,16 @@ TEST_FEATURE_DEFAULTS = {}
 ALWAYS_AVAILABLE_INPUT_METHODS = frozenset({"direct", "clipboard", "type"})
 
 # 取值受约束的配置项：值不在集合内即视为非法（回退默认）。
-_CONFIG_ENUMS = {    "theme": ("light", "dark", "system"),
+#
+# ⚠ theme 保留 ("light","dark","system") 是**旧配置的合法值**，
+# 新代码统一读 theme_mode；校验时两者都要认，否则老配置会被判非法。
+_CONFIG_ENUMS = {
+    "theme": ("light", "dark", "system"),
+    "theme_mode": ("light", "dark", "system"),
+    # ⚠ theme_preset 不写死枚举：用户自定义主题/未来新增预设的 id 是任意的，
+    # 由 theme_presets.resolve_palette() 负责"找不到就回退 classic"。
+    # 这里只校验类型（字符串），避免老预设 id 被误判非法。
+    "accent_mode": ("preset", "system", "custom"),
     "input_method": ("clipboard", "direct", "type"),
 }
 
@@ -145,15 +161,68 @@ def validate_config(raw, defaults=None):
 _SHARED_SENTINEL = object()             # 「默认表里没有这个键」的哨兵
 
 
+def migrate_theme_config(cfg):
+    """把旧配置里的 `theme` 迁移到新的三键结构（就地修改，幂等）。
+
+    ## 为什么需要
+
+    旧版只有一个 `theme` 键，取值 light/dark/system，同时承担了
+    "明暗"和"配色"两个语义。新的主题系统把两者拆开：
+
+        theme       (旧)  → theme_mode      (明暗)
+                         → theme_preset    (配色，默认 classic)
+                         → accent_mode    (强调色来源，默认 preset)
+
+    ## 幂等性
+
+    用 `theme_mode` 是否存在来判断"是否已迁移"。已迁移过的配置
+    （哪怕用户又手改了 theme_mode）不会被旧 theme 覆盖。
+    这样重复调用、升级后再降级都不会丢设置。
+
+    ## 为什么保留旧键
+
+    `theme` 仍在 DEFAULT_CONFIG 里、仍参与校验：
+      * 老版本程序读这份配置时不会因缺 theme 而回退；
+      * 大量既有代码/测试仍读 `config["theme"]`。
+    `resolve_theme_name()` 会优先用新结构。
+    """
+    if not isinstance(cfg, dict):
+        return cfg
+    # 已有新键 = 已迁移，不再动
+    if "theme_mode" in cfg:
+        return cfg
+
+    old = cfg.get("theme", "light")
+    if old in ("light", "dark", "system"):
+        cfg["theme_mode"] = old
+    else:
+        cfg["theme_mode"] = "light"
+    cfg.setdefault("theme_preset", "classic")
+    cfg.setdefault("accent_mode", "preset")
+    cfg.setdefault("accent_custom", "#0067c0")
+    return cfg
+
+
 def load_config():
-    """读磁盘配置，经类型校验后与默认值合并（缺失项补默认，非法项回退默认）。"""
+    """读磁盘配置，经类型校验后与默认值合并（缺失项补默认，非法项回退默认）。
+
+    迁移发生在**校验之前**：旧配置只有 theme，校验时 theme_mode 会被
+    默认值补齐，随后迁移把 theme 的值写进 theme_mode，不会被覆盖。
+    """
     try:
         with open(runtime.config_path(), "r", encoding="utf-8") as f:
             data = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        return dict(DEFAULT_CONFIG)
+        return migrate_theme_config(dict(DEFAULT_CONFIG))
     except OSError:
-        return dict(DEFAULT_CONFIG)
+        return migrate_theme_config(dict(DEFAULT_CONFIG))
+
+    # ⚠ 迁移必须在 validate_config **之前**：校验会用 DEFAULT_CONFIG
+    # 补齐所有缺省键（包括 theme_mode），那样迁移函数看到
+    # "theme_mode 已存在" 就会跳过，老配置里的 "dark" 永远迁不过来。
+    # 所以先在原始 dict 上迁移，再交给校验。
+    if isinstance(data, dict):
+        migrate_theme_config(data)
 
     cfg, issues = validate_config(data)
     if issues:

@@ -184,3 +184,142 @@ def test_stylesheet_is_valid_qss(theme_qss):
         "QSS 大括号不配平（%d 个 { vs %d 个 }）" % (
             theme_qss.count("{"), theme_qss.count("}"))
     assert theme_qss.strip(), "主题 QSS 是空的"
+
+
+# ====================================================================
+# 二、硬编码颜色防复发
+# ====================================================================
+#: 允许保留硬编码颜色的位置（语义固定，不该跟主题走）。
+#:
+#: 判定标准：换个配色预设，这个颜色**依然应该**是这个值。
+_ALLOWED_HARDCODED = {
+    # 语义色：错误/危险/成功在任何主题下都该是同一个颜色语义
+    ("ui/win11_theme.py", "shape"),          # 文件内注释与文档
+    ("ui/dev/dev_page.py", "danger_button"),  # 危险操作按钮的规范红
+    ("ui/toggle_switch.py", "thumb"),         # 开关滑块永远是白的
+    ("ui/fluent_checkbox.py", "check_mark"),  # 对勾永远是白的
+    ("ui/fluent_icons.py", "icon_default"),   # 图标默认灰
+}
+
+
+def _ui_sources():
+    """ui/ 下所有 .py 源码路径（相对项目根）。"""
+    out = []
+    d = os.path.join(HERE, "ui")
+    for root, _dirs, files in os.walk(d):
+        for f in files:
+            if f.endswith(".py"):
+                rel = os.path.relpath(os.path.join(root, f), HERE)
+                out.append(rel.replace("\\", "/"))
+    return out
+
+
+def test_no_stray_hardcoded_colors():
+    """ui/ 里不允许有"忘了收敛到主题"的硬编码颜色。
+
+    ## 为什么这条重要
+
+    主题系统的完整度取决于**所有**颜色都跟着主题走。
+    只要有一处写死，换配色预设那里就不变——表现为"某个控件没变色"，
+    而且这类遗漏肉眼极难发现（和 QSS 漏样式是同一类问题）。
+
+    `ui/win11_theme.py` 豁免：它就是主题色的定义处。
+    语义色（危险红、开关白滑块）也在白名单里，它们**本来就不该**跟着变。
+    """
+    import re
+
+    #: 允许豁免的文件（主题定义处 + 有明确语义的固定色）
+    exempt_files = {"ui/win11_theme.py", "ui/theme_manager.py"}
+    #: 允许豁免的具体行特征（危险按钮 / 滑块 / 对勾 / 图标默认灰）
+    exempt_markers = (
+        "#d13438", "#b62a2e",   # 危险按钮规范红
+        "#ffffff",              # 白滑块/白对勾/危险按钮文字
+        "#000000",              # 纯黑兜底
+        "#888888",              # 图标默认灰
+        "#0067c0", "#60cdff",   # picker 的兜底色板（极端情况才用）
+        "#1f1f1f", "#f0f0f0",
+        "#8a8a8e", "#a0a0a6", "#6b6b70", "#b8b8be",
+        "255,255,255", "43,43,43",
+    )
+    pat = re.compile(r"#[0-9a-fA-F]{6}\b")
+    offenders = []
+    for rel in _ui_sources():
+        if rel in exempt_files:
+            continue
+        path = os.path.join(HERE, rel)
+        try:
+            with open(path, encoding="utf-8") as f:
+                for lineno, line in enumerate(f, 1):
+                    s = line.strip()
+                    if s.startswith("#"):        # 纯注释行
+                        continue
+                    for m in pat.finditer(line):
+                        col = m.group(0).lower()
+                        if col in exempt_markers:
+                            continue
+                        offenders.append("%s:%d %s" % (rel, lineno, col))
+        except Exception:
+            continue
+
+    assert not offenders, (
+        "以下硬编码颜色没有收敛到主题（换配色预设时它们不会变）：\n  "
+        + "\n  ".join(offenders)
+        + "\n\n应该改成 theme.xxx；若确实是语义固定色，"
+          "把它加到本测试的 exempt_markers 里并说明理由。"
+    )
+
+
+def test_picker_palette_follows_theme(qapp):
+    """候选条配色必须跟随主题预设，不能再用静态色板。
+
+    这是实测踩过的坑：主窗口换成午夜蓝，候选条还是经典灰，
+    看起来像两个程序拼在一起。
+    """
+    from core.theme_presets import resolve_palette
+    from ui.picker_window import _palette_from_theme
+    from ui.win11_theme import Theme
+
+    for preset in ("classic", "midnight", "warm"):
+        palette = resolve_palette(preset, "dark")
+        theme = Theme("dark", palette=palette)
+        pal = _palette_from_theme(theme)
+        # 候选条背景必须与主题 card 一致（RGB 数值相同）
+        from core.theme_presets import parse_color
+
+        want = parse_color(theme.card)
+        got = [int(x) for x in pal["bg"].split(",")]
+        assert got == list(want[:3]), (
+            "预设 %s 的候选条背景 %r 与主题 card %r 不一致"
+            % (preset, got, want[:3]))
+
+
+def test_semantic_colors_differ_by_mode(qapp):
+    """语义色必须随明暗切换——警告橙在深色背景上看不见。"""
+    from core.theme_presets import semantic
+
+    light = semantic(False)
+    dark = semantic(True)
+    for key in ("warning", "success", "danger", "info"):
+        assert key in light and key in dark
+        assert light[key] != dark[key], \
+            "%s 在深浅主题下用了同一个值，总有一边看不清" % key
+
+
+def test_on_accent_contrasts(qapp):
+    """强调色上的文字要能看清。
+
+    高对比度深色预设的强调色是亮黄 `#ffff00`——白字在上面完全看不见。
+    所以 `on_accent` 必须按强调色亮度自动选黑或白。
+    """
+    from core.theme_presets import luminance, resolve_palette
+    from ui.win11_theme import Theme
+
+    for preset in ("classic", "midnight", "warm", "contrast"):
+        for mode in ("light", "dark"):
+            palette = resolve_palette(preset, mode)
+            theme = Theme(mode, palette=palette)
+            accent_lum = luminance(theme.accent)
+            on_lum = luminance(theme.on_accent)
+            assert abs(accent_lum - on_lum) > 0.35, (
+                "%s/%s 的强调色 %s 与文字色 %s 对比不足"
+                % (preset, mode, theme.accent, theme.on_accent))

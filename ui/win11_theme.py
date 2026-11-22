@@ -22,6 +22,8 @@ WinUI 3 的圆角是有层级的，不是随便取：
 """
 from PySide6.QtGui import QFont
 
+from core.theme_presets import ALL_COLOR_KEYS
+
 
 # ====================================================================
 # 设计令牌（单位 px，遵循 WinUI 3 规范）
@@ -95,69 +97,79 @@ def resolve_theme_name(name):
     return "dark" if n == "dark" else "light"
 
 
-class Theme:
-    """当前主题色板；根据名称 light/dark 返回对应颜色。"""
+def theme_mode_of(config):
+    """从配置 dict 里取明暗模式名（兼容旧 theme 键），不解析 system。
 
-    def __init__(self, name="light"):
-        self.name = name
-        self.dark = name == "dark"
-        if self.dark:
-            # 深色：纯净暗色石英风格 —— 减淡灰度、提升质感
-            self.bg = "#1a1a1a"                # 内容区底色
-            self.sidebar = "transparent"       # 侧边栏跟随窗口 Mica 底
-            self.card = "#2a2a2a"              # 卡片背景
-            self.card_hover = "#303030"
-            self.card_border = "#3d3d3d"
-            self.text = "#ffffff"
-            self.text_secondary = "#c5c5c5"
-            self.text_tertiary = "#8b8b8b"
-            self.accent = "#60cdff"            # Win11 强调蓝（深色模式）
-            self.accent_hover = "#7bd4ff"
-            self.accent_bg = "rgba(96,205,255,0.15)"
-            self.nav_hover = "rgba(255,255,255,0.06)"
-            self.nav_selected = "rgba(255,255,255,0.08)"
-            self.input_bg = "rgba(255,255,255,0.06)"
-            self.input_border = "rgba(255,255,255,0.12)"
-            self.divider = "rgba(255,255,255,0.08)"
-            self.shadow = "0,0,0"
-            self.toggle_off = "#5e5e5e"      # 开关未选中时的轨道灰
-            # 无边框窗口：亚克力基底（半透明 tint，让 DWM 亚克力模糊透出）
-            self.window_tint = "rgba(30,30,30,0.85)"
-            self.window_grad_top = "rgba(255,255,255,0.04)"
-            self.window_grad_bottom = "rgba(0,0,0,0.10)"
-            self.window_border = "rgba(255,255,255,0.10)"
-            self.shadow_color = "rgba(0,0,0,0.30)"
-            self.content_surface = "rgba(40,40,40,0.60)"   # 内容区表面（比侧栏亚克力略实）
-        else:
-            # 浅色：纯白石英风格 —— 更纯净的白色、柔和阴影、细腻质感
-            self.bg = "#ffffff"
-            self.sidebar = "transparent"
-            self.card = "#ffffff"
-            self.card_hover = "#f7f7f7"
-            self.card_border = "#e8e8e8"
-            self.text = "#1f1f1f"
-            self.text_secondary = "#5c5c5c"
-            self.text_tertiary = "#9ca3af"
-            self.accent = "#0067c0"            # Win11 强调蓝（浅色模式）
-            self.accent_hover = "#0a72cf"
-            self.accent_bg = "rgba(0,103,192,0.10)"
-            self.nav_hover = "rgba(0,0,0,0.04)"
-            self.nav_selected = "rgba(0,0,0,0.06)"
-            self.input_bg = "rgba(255,255,255,0.85)"
-            self.input_border = "rgba(0,0,0,0.10)"
-            self.divider = "rgba(0,0,0,0.06)"
-            self.shadow = "0,0,0"
-            self.toggle_off = "#b6b6b6"      # 开关未选中时的轨道灰
-            # 无边框窗口：亚克力基底（更白的 tint，让 DWM 亚克力模糊透出）
-            self.window_tint = "rgba(255,255,255,0.88)"
-            self.window_grad_top = "rgba(255,255,255,0.08)"
-            self.window_grad_bottom = "rgba(0,0,0,0.03)"
-            self.window_border = "rgba(0,0,0,0.08)"
-            self.shadow_color = "rgba(0,0,0,0.12)"
-            self.content_surface = "rgba(255,255,255,0.70)"   # 内容区表面（比侧栏亚克力略实）
+    给那些只关心"用户选了什么"而不关心"当前实际是什么"的地方用
+    （比如判断要不要启动 system 跟随定时器）。
+
+    :return: "light" / "dark" / "system"
+    """
+    c = config or {}
+    v = c.get("theme_mode") or c.get("theme", "light")
+    v = str(v).lower()
+    return v if v in ("light", "dark", "system") else "light"
+
+
+def resolved_mode_of(config):
+    """从配置 dict 里取**解析后**的明暗（system 已跟随系统）。
+
+    绝大部分 UI 代码该用这个：它保证拿到的永远是 light 或 dark。
+    """
+    return resolve_theme_name(theme_mode_of(config))
+
+
+class Theme:
+    """当前主题色板。
+
+    ## 两种构造方式（都支持）
+
+        Theme("light")                     # 旧调用：明暗名，走 classic 预设
+        Theme("dark", preset="midnight")  # 指定预设
+        Theme(palette=full_dict)          # 直接给完整色板（系统强调色/自定义）
+
+    ## 为什么改成数据驱动
+
+    原来色板写死在 `if self.dark:` 分支里，加一套主题要改类、改设置页、
+    改配置枚举、改测试。现在颜色来自 `core/theme_presets.py` +
+    `data/themes.json`，`Theme` 只负责把它们挂成属性并渲染成 QSS。
+
+    所有 `self.xxx` 颜色属性保持不变——10+ 个调用方不用动。
+    """
+
+    def __init__(self, name="light", preset=None, palette=None):
+        # 解析明暗：name 可能是 "light"/"dark"/"system"
+        resolved = resolve_theme_name(name)
+        self.name = resolved
+        self.dark = resolved == "dark"
+
+        if palette is None:
+            from core.theme_presets import resolve_palette
+
+            palette = resolve_palette(preset or "classic", resolved)
+        self._palette = palette
+        self.preset = palette.get("preset", preset or "classic")
+        self.preset_name = palette.get("name", self.preset)
+
+        # 把色板里的每个颜色挂成同名属性（保持旧接口）
+        for key in ALL_COLOR_KEYS:
+            setattr(self, key, palette.get(key, "#808080"))
+        # 语义状态色（警告/成功/失败/提示）：随明暗变化，不随配色方案变化
+        from core.theme_presets import semantic
+
+        for k, v in semantic(resolved == "dark").items():
+            setattr(self, k, v)
+        # dark 以传入的明暗为准（palette 里可能带，但 name 优先级更高）
+        self.dark = resolved == "dark"
 
     def hex(self, key):
-        return getattr(self, key)
+        return getattr(self, key, "#808080")
+
+    def copy_with(self, **overrides):
+        """基于当前主题派生一个新主题（换强调色时不用重建整条链）。"""
+        p = dict(self._palette)
+        p.update(overrides)
+        return Theme(self.name, palette=p)
 
     def style_sheet(self):
         """返回应用到统一窗口根 widget 的全局 QSS。"""
@@ -248,7 +260,7 @@ class Theme:
         }}
         QPushButton#AccentButton {{
             background: {t.accent};
-            color: #ffffff;
+            color: {t.on_accent};
             border: 1px solid rgba(0,0,0,0.12);
             font-weight: 600;
         }}
@@ -470,7 +482,7 @@ class Theme:
             padding: 6px;
             outline: none;
             selection-background-color: {t.accent};
-            selection-color: #ffffff;
+            selection-color: {t.on_accent};
         }}
         QComboBox QAbstractItemView::item {{
             background-color: transparent;
@@ -484,7 +496,7 @@ class Theme:
         }}
         QComboBox QAbstractItemView::item:selected {{
             background-color: {t.accent};
-            color: #ffffff;
+            color: {t.on_accent};
         }}
         QFrame#Divider {{
             background: {t.divider};
@@ -510,7 +522,7 @@ class Theme:
         }}
         QMenu::item:selected {{
             background: {t.accent};
-            color: #ffffff;
+            color: {t.on_accent};
         }}
         QMenu::separator {{
             height: 1px;
@@ -561,6 +573,15 @@ class Theme:
         QStackedWidget {{
             background: transparent;
         }}
+        /* 调色板对话框：QColorDialog 是系统级对话框，主体配色由系统决定，
+           但标题栏与按钮文字要跟随主题，否则深色下白底白字。 */
+        QColorDialog {{
+            background: {t.bg};
+        }}
+        QColorDialog QLabel {{
+            color: {t.text};
+            background: transparent;
+        }}
         """
 
 
@@ -587,7 +608,7 @@ class Theme:
         }}
         QMenu::item:selected {{
             background: {t.accent};
-            color: #ffffff;
+            color: {t.on_accent};
         }}
         QMenu::separator {{
             height: 1px;

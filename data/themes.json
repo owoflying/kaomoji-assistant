@@ -1,0 +1,103 @@
+{
+  "_note": "内置主题预设。每套提供 light/dark 两份核心色板；其余颜色由 core/theme_presets.py 自动派生。新增一套主题只需在这里加一个对象，不用改 Python 代码。",
+  "_core_keys": ["bg", "card", "card_border", "text", "text_secondary", "accent", "window_tint", "content_surface"],
+  "presets": {
+    "classic": {
+      "name": "经典",
+      "description": "Windows 11 风格，冷调中性灰",
+      "light": {
+        "bg": "#ffffff",
+        "card": "#ffffff",
+        "card_border": "#e8e8e8",
+        "text": "#1f1f1f",
+        "text_secondary": "#5c5c5c",
+        "accent": "#0067c0",
+        "window_tint": "rgba(255,255,255,0.88)",
+        "content_surface": "rgba(255,255,255,0.70)"
+      },
+      "dark": {
+        "bg": "#1a1a1a",
+        "card": "#2a2a2a",
+        "card_border": "#3d3d3d",
+        "text": "#ffffff",
+        "text_secondary": "#c5c5c5",
+        "accent": "#60cdff",
+        "window_tint": "rgba(30,30,30,0.85)",
+        "content_surface": "rgba(40,40,40,0.60)"
+      }
+    },
+    "midnight": {
+      "name": "午夜蓝",
+      "description": "冷蓝底 + 青色强调，适合夜间长时间使用",
+      "light": {
+        "bg": "#f2f6fb",
+        "card": "#fbfdff",
+        "card_border": "#d5e2f0",
+        "text": "#16283d",
+        "text_secondary": "#52677f",
+        "accent": "#1a6fc4",
+        "window_tint": "rgba(244,249,255,0.90)",
+        "content_surface": "rgba(240,247,255,0.72)"
+      },
+      "dark": {
+        "bg": "#0e1622",
+        "card": "#17243a",
+        "card_border": "#2c3d58",
+        "text": "#eaf2ff",
+        "text_secondary": "#a9bdd6",
+        "accent": "#5ad1e6",
+        "window_tint": "rgba(14,24,38,0.88)",
+        "content_surface": "rgba(22,36,58,0.66)"
+      }
+    },
+    "warm": {
+      "name": "暖阳",
+      "description": "米白 / 暖灰底 + 琥珀强调，柔和不刺眼",
+      "light": {
+        "bg": "#faf6f0",
+        "card": "#fffcf7",
+        "card_border": "#e8ded0",
+        "text": "#33291f",
+        "text_secondary": "#75685a",
+        "accent": "#c26a1c",
+        "window_tint": "rgba(252,247,240,0.90)",
+        "content_surface": "rgba(250,244,235,0.72)"
+      },
+      "dark": {
+        "bg": "#1e1913",
+        "card": "#2b241b",
+        "card_border": "#443829",
+        "text": "#f7efe4",
+        "text_secondary": "#c9b9a3",
+        "accent": "#f0ad5a",
+        "window_tint": "rgba(32,26,19,0.88)",
+        "content_surface": "rgba(44,36,26,0.66)"
+      }
+    },
+    "contrast": {
+      "name": "高对比度",
+      "description": "纯黑纯白 + 清晰边界，无障碍场景（禁用所有半透明）",
+      "contrast": true,
+      "light": {
+        "bg": "#ffffff",
+        "card": "#ffffff",
+        "card_border": "#000000",
+        "text": "#000000",
+        "text_secondary": "#000000",
+        "accent": "#0000ee",
+        "window_tint": "#ffffff",
+        "content_surface": "#ffffff"
+      },
+      "dark": {
+        "bg": "#000000",
+        "card": "#000000",
+        "card_border": "#ffffff",
+        "text": "#ffffff",
+        "text_secondary": "#ffffff",
+        "accent": "#ffff00",
+        "window_tint": "#000000",
+        "content_surface": "#000000"
+      }
+    }
+  }
+}

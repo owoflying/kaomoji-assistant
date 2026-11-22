@@ -185,7 +185,7 @@ class _PluginCard(QFrame):
             placeholder.setObjectName("Caption")
             placeholder.setWordWrap(True)
             placeholder.setStyleSheet(
-                "color:%s;" % ("#ff99a4" if self._theme.dark else "#c42b1c"))
+                "color:%s;" % self._theme.danger)
             self._settings_layout.addWidget(placeholder)
             self._host.forget_settings(self.rec["id"])
 
@@ -210,7 +210,7 @@ class _PluginCard(QFrame):
         这里统一走 `_set_qss`：样式串相同就跳过。
         """
         self._theme = t
-        err_color = "#ff99a4" if t.dark else "#c42b1c"
+        err_color = t.danger
         state_color, state_bg = {
             STATE_LOADED: (t.accent, t.accent_bg),
             STATE_DISABLED: (t.text_tertiary, "transparent"),

@@ -83,7 +83,7 @@ class LogPanel(QWidget):
         self._text.setStyleSheet(
             "QPlainTextEdit{background:%s;border:1px solid %s;border-radius:8px;"
             "padding:8px 10px;color:%s;}"
-            % (("#2a2a2a" if t.dark else "#ffffff"), t.card_border, t.text)
+            % (t.card, t.card_border, t.text)
         )
 
     def _on_auto(self, state):
@@ -159,7 +159,7 @@ class EventStream(QWidget):
         self._text.setStyleSheet(
             "QPlainTextEdit{background:%s;border:1px solid %s;border-radius:8px;"
             "padding:8px 10px;color:%s;}"
-            % (("#2a2a2a" if t.dark else "#ffffff"), t.card_border, t.text)
+            % (t.card, t.card_border, t.text)
         )
 
     def _toggle_pause(self):

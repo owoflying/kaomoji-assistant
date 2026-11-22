@@ -34,7 +34,7 @@ from ui.frameless_shell import FramelessShell
 from ui.win_style import _has_dwm
 from core.applog import append_log
 from ui.win11_theme import (
-    Theme, apply_child_theme, parse_color, resolve_theme_name,
+    apply_child_theme, parse_color, resolved_mode_of,
 )
 from ui.fluent_icons import icon_label, recolor
 from ui.animated_stack import AnimatedStackedWidget
@@ -203,7 +203,12 @@ class UnifiedSettingsWindow(FramelessShell):
         # 避免与设置页自动保存时的字典替换/刷新相互干扰。
         self._developer_mode = bool(config.get("developer_mode", False))
 
-        self.theme = Theme(resolve_theme_name(config.get("theme", "light")))
+        # 主题从统一入口构造：预设 / 强调色模式都在里面解析，
+        # 避免主窗口用一套配色、候选条用另一套。
+        from ui.theme_manager import build_theme, theme_signature
+
+        self.theme = build_theme(config)
+        self._theme_signature = theme_signature(config)
         self._shadow_color = parse_color(self.theme.shadow_color)
         self._theme_ss = ""          # 缓存当前主题的完整 QSS，供 _refresh_content_sheet 复用
         self._content_surface = None  # 缓存内容区表面色，QSS 重贴的幂等判据之一
@@ -758,23 +763,30 @@ class UnifiedSettingsWindow(FramelessShell):
         换肤动作包在自己的淡出里，会设置 `_in_theme_fade` 标记，
         这里就不要再套一层动画（否则会淡出两次、肉眼可见地闪）。
         """
-        old_theme = getattr(self.theme, "name", None)
-        new_theme = resolve_theme_name(config.get("theme", "light"))
+        # 主题是否真的变了：比较完整签名（明暗 + 预设 + 强调色模式），
+        # 而不是只比明暗名。改预设/强调色时也要走换肤，否则配色会突变。
+        from ui.theme_manager import theme_signature
+
+        old_sig = getattr(self, "_theme_signature", None)
+        new_sig = theme_signature(config)
+        # dark 参数只决定遮罩颜色，用解析后的明暗
+        new_mode = resolved_mode_of(config)
         _do = lambda: self._apply_config_now(config)      # noqa: E731
         if getattr(self, "_in_theme_fade", False):
             _do()
             return
-        if old_theme is not None and old_theme != new_theme:
-            # 只有深浅色真的换了才做动画。
-            # 遮罩颜色要按**目标**主题选，避免深色遮罩闪在浅色界面上。
-            self._theme_fader.run(_do, dark=(new_theme == "dark"))
+        if old_sig is not None and old_sig != new_sig:
+            self._theme_fader.run(_do, dark=(new_mode == "dark"))
         else:
             _do()
 
     def _apply_config_now(self, config):
         """真正执行配置应用（不含过渡动画）。"""
+        from ui.theme_manager import build_theme, theme_signature
+
         self.config = config
-        self.theme = Theme(resolve_theme_name(config.get("theme", "light")))
+        self.theme = build_theme(config)
+        self._theme_signature = theme_signature(config)
         self._acrylic_on = _has_dwm
         self._shadow_color = parse_color(self.theme.shadow_color)
         self._apply_theme()

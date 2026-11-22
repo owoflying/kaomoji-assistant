@@ -52,3 +52,7 @@ update_selftest.txt
 
 # 调试残留
 %LOG%
+
+# 用户学习权重与自定义主题（按用户生成，不随包分发）
+data/rank_net.json
+data/user_theme.json

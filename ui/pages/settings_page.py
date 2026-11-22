@@ -6,7 +6,7 @@
 """
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QSlider, QSpinBox, QFrame, QSizePolicy, QScrollArea,
+    QSlider, QSpinBox, QFrame, QSizePolicy, QScrollArea, QDialog,
 )
 from PySide6.QtCore import Qt, QTimer, Signal
 
@@ -16,7 +16,7 @@ from ui.fluent_combobox import FluentComboBox
 from ui.pages._scaffold import card as make_card
 from ui.pages._scaffold import page_layout, page_title, section_title
 from ui.toggle_switch import ToggleSwitch
-from ui.win11_theme import Theme, resolve_theme_name
+from ui.win11_theme import resolve_theme_name
 
 # pynput 的 Key 枚举名 -> RegisterHotKey 的 fsModifiers 位。
 # 左右修饰键（ctrl_l / ctrl_r …）与通用名（ctrl）必须一并收录：pynput 在 Windows
@@ -98,7 +98,10 @@ class SettingsPage(QWidget):
         # 新功能默认归入此分组，确认上线后才移出。
         self._test_widgets = []
         self._test_section_title = None
-        self._theme = Theme(resolve_theme_name(config.get("theme", "light")))
+        # 走统一入口：预设 / 强调色 / 语义色都一次配齐
+        from ui.theme_manager import build_theme
+
+        self._theme = build_theme(config)
         self._init_ui()
         self.refresh_from_config()
 
@@ -164,6 +167,8 @@ class SettingsPage(QWidget):
         croot.setContentsMargins(16, 14, 16, 14)
         croot.setSpacing(12)
         self._add_row(croot, "主题", self._theme_combo())
+        self._add_row(croot, "配色方案", self._preset_combo())
+        self._add_row(croot, "强调色", self._accent_combo())
         self._add_row(croot, "面板不透明度", self._panel_alpha_row())
         self._add_row(croot, "候选条不透明度", self._opacity_row())
         v.addWidget(card)
@@ -381,12 +386,116 @@ class SettingsPage(QWidget):
         return container
 
     def _theme_combo(self):
+        """明暗模式（light / dark / system）。"""
         self.theme_combo = FluentComboBox(self._theme)
         self.theme_combo.addItem("浅色", "light")
         self.theme_combo.addItem("深色", "dark")
         self.theme_combo.addItem("跟随系统", "system")
+        self.theme_combo.setToolTip(
+            "明暗与配色方案是分开的：这里只管深浅，"
+            "下面「配色方案」决定具体色调")
         self.theme_combo.setMinimumWidth(140)
         return self.theme_combo
+
+    def _preset_combo(self):
+        """配色方案：从 data/themes.json 动态读取，不写死列表。"""
+        from core.theme_presets import preset_choices
+
+        self.preset_combo = FluentComboBox(self._theme)
+        for pid, name in preset_choices():
+            self.preset_combo.addItem(name, pid)
+        # 「自定义…」放在最后：选中它会打开主题编辑器
+        self.preset_combo.addItem("自定义…", "custom")
+        self.preset_combo.setToolTip(
+            "每套配色都有浅色/深色两份，与上面的明暗自由组合")
+        self.preset_combo.currentIndexChanged.connect(
+            lambda *_a: self._on_preset_changed())
+        self.preset_combo.setMinimumWidth(140)
+        return self.preset_combo
+
+    def _accent_combo(self):
+        """强调色来源。"""
+        self.accent_combo = FluentComboBox(self._theme)
+        self.accent_combo.addItem("配色方案自带", "preset")
+        self.accent_combo.addItem("跟随 Windows", "system")
+        self.accent_combo.addItem("自定义颜色…", "custom")
+        self.accent_combo.setToolTip(
+            "「跟随 Windows」读取系统强调色并自动调整到当前明暗下可用；"
+            "「自定义颜色」会弹调色板选一个")
+        self.accent_combo.currentIndexChanged.connect(
+            lambda *_a: self._on_accent_changed())
+        self.accent_combo.setMinimumWidth(140)
+        return self.accent_combo
+
+    def _on_accent_changed(self):
+        """选「自定义颜色」时弹调色板；取消则回到原来的选项。"""
+        mode = self.accent_combo.currentData()
+        if mode != "custom":
+            self._on_apply()
+            return
+        from core.theme_presets import parse_color
+        from PySide6.QtGui import QColor
+        from PySide6.QtWidgets import QColorDialog
+
+        cur = parse_color(self.config.get("accent_custom", "#0067c0"))
+        col = QColorDialog.getColor(
+            QColor(cur[0], cur[1], cur[2]) if cur else QColor("#0067c0"),
+            self, "选择强调色")
+        if not col.isValid():
+            # 用户取消：回退到当前配置里的来源，不留在"自定义"这个空状态
+            idx = self.accent_combo.findData(
+                self.config.get("accent_mode", "preset"))
+            self._loading = True
+            try:
+                self.accent_combo.setCurrentIndex(idx if idx >= 0 else 0)
+            finally:
+                self._loading = False
+            return
+        self.config["accent_custom"] = col.name()
+        self._on_apply()
+
+    def _on_preset_changed(self):
+        """选「自定义…」预设时打开主题编辑器。"""
+        pid = self.preset_combo.currentData()
+        if pid != "custom":
+            self._on_apply()
+            return
+        self._open_theme_editor()
+
+    def _open_theme_editor(self):
+        """打开主题编辑器；保存后写 user_theme.json 并应用。"""
+        from core.theme_presets import save_user_theme
+        from ui.theme_editor import ThemeEditorDialog
+
+        before = dict(self.config)
+
+        # config_applied 是 Signal；emit 一下就走正式应用链路，
+        # 这样预览和最终保存的效果完全一致（不会"预览好看、保存后不一样"）
+        preview_emit = (lambda c: self.config_applied.emit(c)) \
+            if hasattr(self, "config_applied") else None
+
+        dlg = ThemeEditorDialog(self.config, on_preview=preview_emit,
+                                parent=self)
+        if dlg.exec() != QDialog.Accepted:
+            # 取消：恢复到打开前的主题
+            if preview_emit is not None:
+                preview_emit(before)
+            idx = self.preset_combo.findData(
+                before.get("theme_preset", "classic"))
+            self._loading = True
+            try:
+                self.preset_combo.setCurrentIndex(idx if idx >= 0 else 0)
+            finally:
+                self._loading = False
+            return
+
+        data = dlg.result_data()
+        ok, msg = save_user_theme(data)
+        if not ok:
+            self._refresh_rank_stats(msg)     # 借用现有的提示位
+            return
+        self.config["theme_preset"] = "custom"
+        self._on_apply()
 
     def _panel_alpha_row(self):
         row = QHBoxLayout()
@@ -711,7 +820,7 @@ class SettingsPage(QWidget):
         # 源码态：明确说明不支持，而不是显示"需要管理员"
         if not _elevate.is_supported():
             self.uia_status.setText("⚠ " + _elevate.unsupported_reason())
-            self.uia_status.setStyleSheet("color:#a06000;")
+            self.uia_status.setStyleSheet("color:%s;" % self._theme.warning)
             return
 
         if not uia_elevation.is_user_admin():
@@ -721,7 +830,7 @@ class SettingsPage(QWidget):
             else:
                 self.uia_status.setText(
                     "开启后将弹窗申请管理员权限（无需手动以管理员身份运行）。")
-            self.uia_status.setStyleSheet("color:#a06000;")
+            self.uia_status.setStyleSheet("color:%s;" % self._theme.warning)
             return
         if not self.config.get("use_uia_elevation", False):
             self.uia_status.setText("")
@@ -729,10 +838,10 @@ class SettingsPage(QWidget):
             return
         if uia_elevation.has_uiaccess():
             self.uia_status.setText("✓ 已生效：候选栏已成为 UIAccess 顶级窗口，可与屏幕键盘互相覆盖。")
-            self.uia_status.setStyleSheet("color:#107c10;")
+            self.uia_status.setStyleSheet("color:%s;" % self._theme.success)
         else:
             self.uia_status.setText("⚠ 已开启但本次未生效，请以管理员身份重启本程序。")
-            self.uia_status.setStyleSheet("color:#c0392b;")
+            self.uia_status.setStyleSheet("color:%s;" % self._theme.danger)
 
     # ---------- 读取/写入 ----------
     def set_theme(self, theme_obj):
@@ -770,9 +879,16 @@ class SettingsPage(QWidget):
         try:
             self._captured = None
             self._update_hotkey_label(cfg.get("hotkey", "<ctrl>+<shift>+k"))
-            theme = cfg.get("theme", "light")
+            theme = cfg.get("theme_mode") or cfg.get("theme", "light")
             idx = self.theme_combo.findData(theme)
             self.theme_combo.setCurrentIndex(idx if idx >= 0 else 0)
+            # 配色方案 / 强调色来源
+            preset = cfg.get("theme_preset", "classic")
+            pidx = self.preset_combo.findData(preset)
+            self.preset_combo.setCurrentIndex(pidx if pidx >= 0 else 0)
+            accent = cfg.get("accent_mode", "preset")
+            aidx = self.accent_combo.findData(accent)
+            self.accent_combo.setCurrentIndex(aidx if aidx >= 0 else 0)
             pa = int(float(cfg.get("panel_alpha", 0.92)) * 100)
             self.panel_alpha_slider.setValue(pa)
             self.panel_alpha_value.setText("%d%%" % pa)
@@ -1031,7 +1147,11 @@ class SettingsPage(QWidget):
         if self._captured is not None:
             new_cfg["hotkey"] = win_utils.format_hotkey(self._captured)
             self._captured = None
-        new_cfg["theme"] = self.theme_combo.currentData()
+        mode = self.theme_combo.currentData()
+        new_cfg["theme_mode"] = mode
+        new_cfg["theme"] = mode          # 旧键同步写，兼容降级/旧调用方
+        new_cfg["theme_preset"] = self.preset_combo.currentData()
+        new_cfg["accent_mode"] = self.accent_combo.currentData()
         new_cfg["panel_alpha"] = self.panel_alpha_slider.value() / 100.0
         new_cfg["opacity"] = self.opacity_slider.value() / 100.0
         new_cfg["input_method"] = self.method_combo.currentData()

@@ -45,7 +45,7 @@ class FluentComboBox(QComboBox):
             "  padding: 6px;"
             "  outline: none;"
             "  selection-background-color: {ac};"
-            "  selection-color: #ffffff;"
+            "  selection-color: {oa};"
             "}}"
             "QAbstractItemView::item {{"
             "  background-color: transparent;"
@@ -57,14 +57,14 @@ class FluentComboBox(QComboBox):
             "QAbstractItemView::item:disabled {{ color: {bd}; }}"
             "QAbstractItemView::item:hover {{ background-color: {hv}; }}"
             "QAbstractItemView::item:selected {{"
-            "  background-color: {ac}; color: #ffffff;"
+            "  background-color: {ac}; color: {oa};"
             "}}"
             "QScrollBar:vertical {{ background: {bg}; width: 10px; margin: 2px; }}"
             "QScrollBar::handle:vertical {{"
             "  background: {bd}; border-radius: 5px; min-height: 24px;"
             "}}"
             "QScrollBar::corner {{ background: {bg}; }}"
-        ).format(bg=t.card, fg=t.text, bd=t.card_border, ac=t.accent, hv=t.nav_hover)
+        ).format(bg=t.card, fg=t.text, bd=t.card_border, ac=t.accent, hv=t.nav_hover, oa=getattr(t, "on_accent", "#ffffff"))
 
     def showPopup(self):
         """弹出列表后强制用 Qt QSS 按其应用主题渲染，避免跟随系统原生主题。"""

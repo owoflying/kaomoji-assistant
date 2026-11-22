@@ -42,7 +42,7 @@ from core.global_keys import GlobalKeyInterceptor
 from core.global_mouse import GlobalMouseInterceptor
 from ui.win_style import apply_backdrop, apply_dark_mode, DWMSBT_TRANSIENTWINDOW
 from ui.frameless_panel import paint_frameless_panel
-from ui.win11_theme import resolve_theme_name
+from ui.win11_theme import resolved_mode_of
 
 # 顶层窗口向外留白，用于自绘柔和阴影（阴影画在窗口矩形内，避免 UpdateLayeredWindow 越界报错）
 SHADOW_PAD = 12
@@ -54,6 +54,42 @@ DISMISS_COOLDOWN = 0.4
 # 淡入淡出时长（毫秒）
 FADE_MS = 130
 
+def _palette_from_theme(theme):
+    """把统一主题色板转成候选条需要的字段。
+
+    ## 为什么不再用静态 PALETTES
+
+    原来这里写死了两套色板（light/dark），换主题预设时**候选条不会跟着变**
+    ——主窗口是午夜蓝、候选条还是经典灰，看起来像两个程序。
+
+    现在从 `Theme` 派生，任何预设/强调色都自动一致。
+
+    三个特殊字段说明：
+      * `bg` 要 "r,g,b" 形式（给 `setWindowOpacity` 之外的透明度算法用）
+      * `border` 是 0~255 的 alpha 整数（QSS 里拼进 rgba）
+      * `shadow` 是 "r,g,b,a" 给阴影绘制用
+    """
+    from core.theme_presets import parse_color
+
+    bg_rgb = parse_color(theme.card) or (255, 255, 255, 1.0)
+    # 候选条比卡片略实一点，边缘才清晰
+    accent = theme.accent
+    return {
+        "bg": "%d,%d,%d" % (bg_rgb[0], bg_rgb[1], bg_rgb[2]),
+        "text": theme.text,
+        "num": theme.text_tertiary,
+        "accent": accent,
+        # 选中/悬停都用主题派生的半透明叠加，深浅自动适配
+        "active_bg": theme.accent_bg if not theme.dark
+                     else theme.accent_bg,
+        "hover_bg": theme.nav_hover,
+        "nav": theme.text_secondary,
+        "border": "70" if theme.dark else "18",
+        "shadow": "0,0,0,110" if theme.dark else "0,0,0,40",
+    }
+
+
+#: 兜底色板：万一拿不到 Theme（极端情况）仍能画出来。
 PALETTES = {
     "light": {
         "bg": "255,255,255",
@@ -293,6 +329,9 @@ class PickerWindow(QWidget):
         由 AppRuntime.apply_settings 调用，保证设置页改动实时生效。
         """
         self.config = config
+        # ⚠ 必须失效缓存的主题对象：否则换配色预设後候选条还在用旧色板，
+        # 表现为"主窗口变了、候选条没变"。
+        self._theme_obj = None
         new_size = max(1, int(config.get("page_size", 3)))
         if new_size != len(self._chips):
             self.page_size = new_size
@@ -320,12 +359,32 @@ class PickerWindow(QWidget):
         hwnd = int(self.winId())
         # 亚克力模糊为窗口核心视觉效果，始终启用（DWM 不可用时为 no-op）
         apply_backdrop(hwnd, DWMSBT_TRANSIENTWINDOW)
-        apply_dark_mode(hwnd, resolve_theme_name(self.config.get("theme", "light")) == "dark")
+        apply_dark_mode(hwnd, resolved_mode_of(self.config) == "dark")
 
     def _apply_style(self):
-        theme = resolve_theme_name(self.config.get("theme", "light"))
-        pal = PALETTES.get(theme, PALETTES["light"])
-        self._applied_theme = theme      # 供 _prepare_show 判断主题是否已同步
+        """按当前主题重贴候选条样式。
+
+        ## 现在从统一主题派生
+
+        原来读静态 `PALETTES`，换配色预设时候选条不跟着变——主窗口
+        变成午夜蓝、候选条还是经典灰，像两个程序拼在一起。
+
+        现在优先用 `build_theme()` 的完整色板派生；只有极端情况
+        （主题模块导入失败）才回退静态表，保证候选条永远画得出来。
+        """
+        mode = resolved_mode_of(self.config)
+        if not hasattr(self, "_theme_obj") or self._theme_obj is None:
+            try:
+                from ui.theme_manager import build_theme
+                self._theme_obj = build_theme(self.config,
+                                              mode_override=mode)
+            except Exception:
+                self._theme_obj = None
+        if self._theme_obj is not None:
+            pal = _palette_from_theme(self._theme_obj)
+        else:
+            pal = PALETTES.get(mode, PALETTES["light"])
+        self._applied_theme = mode    # 供 _prepare_show 判断主题是否已同步
         self.setStyleSheet(_style(pal))
         r, g, b = [int(x) for x in pal["bg"].split(",")]
         # 不透明度与亚克力解耦：亚克力只负责底层玻璃质感，透明度永远听配置的
@@ -339,8 +398,8 @@ class PickerWindow(QWidget):
         self._border_color = QColor(0, 0, 0, alpha) if alpha <= 40 else QColor(255, 255, 255, alpha)
 
         # 候选项高亮色：由 chip 在 paintEvent 里自绘（不再走 QSS polish）
-        accent = pal.get("accent") or pal.get("fg") or "0067c0"
-        chip_color = QColor("#" + accent.lstrip("#"))
+        accent = pal.get("accent") or "#0067c0"
+        chip_color = QColor(accent)
         if not chip_color.isValid():
             chip_color = QColor("#0067c0")
         for chip in getattr(self, "_chips", []):
@@ -771,7 +830,7 @@ class PickerWindow(QWidget):
         self.setWindowOpacity(0.0)
         # 兜底：万一 config 被外部直接改过（没走 apply_config），这里补一次同步，
         # 保证「显示出来的第一帧」就是当前主题，不会先浅后深或先深后浅。
-        if resolve_theme_name(self.config.get("theme", "light")) != getattr(self, "_applied_theme", None):
+        if resolved_mode_of(self.config) != getattr(self, "_applied_theme", None):
             self._apply_config_visuals()
 
     def _present(self, items, *, emotion, caret, trigger_word="",

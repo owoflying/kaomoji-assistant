@@ -37,8 +37,10 @@ from ui.picker_window import PickerWindow
 from ui.plugin_ui_hooks import build_ui_hooks
 from ui.unified_window import UnifiedSettingsWindow
 from ui.win11_theme import (
-    Theme, resolve_theme_name, set_app_theme, system_theme_name,
+    resolve_theme_name, set_app_theme, system_theme_name,
+    resolved_mode_of,
 )
+from ui.theme_manager import build_theme
 
 try:                                    # 判断窗口 C++ 对象是否仍然有效
     from shiboken6 import isValid as shiboken_is_valid
@@ -159,8 +161,12 @@ class AppRuntime:
 
     def _apply_initial_theme(self):
         """应用级样式表：让独立对话框与统一面板视觉一致（含 "system" 解析）。"""
-        self._apply_app_theme(resolve_theme_name(self.config.get("theme", "light")))
-        set_app_theme(self.config.get("theme", "light"))
+        # mode_override 传解析后的明暗，避免 build_theme 里再读一次注册表
+        mode = resolve_theme_name(
+            self.config.get("theme_mode") or self.config.get("theme", "light"))
+        self._apply_app_theme(mode)
+        # set_app_theme 供独立弹层（拿不到 config）用；它只关心明暗名
+        set_app_theme(mode)
 
     def _apply_app_theme(self, theme_name, chunked=False):
         """全应用 QSS 重贴（幂等）。
@@ -183,7 +189,12 @@ class AppRuntime:
         先贴（样式立即生效但屏幕上还是旧帧），下一帧再强制重绘。
         用户看到的是"一帧之后换好了"，中间那一帧由遮罩盖着。
         """
-        theme = Theme(theme_name)
+        # 统一走 theme_manager：解析 mode / preset / accent_mode，
+        # 保证所有窗口拿到的是同一套色板（不会再有某个弹窗漏配色）。
+        from ui.theme_manager import build_theme
+
+        theme = build_theme(self.config, mode_override=theme_name)
+        self.theme_obj = theme
         ss = theme.style_sheet()
         if ss == self._applied_style:
             return None
@@ -226,12 +237,11 @@ class AppRuntime:
             log=append_log,
             settings_dir=runtime.plugin_settings_dir(),
             # 主题提供者：插件弹窗据此取当前深浅色（避免 core 反向依赖 ui）
-            theme_provider=lambda: resolve_theme_name(self.config.get("theme", "light")),
+            theme_provider=lambda: resolved_mode_of(self.config),
             # UI 能力注入点：core 只声明协议，实现留在 ui/（见 core/ui_hooks.py）。
             # 托盘尚未创建，notify 由 _build_tray 用 set_ui_hooks 后置补齐。
             ui_hooks=build_ui_hooks(
-                theme_provider=lambda: resolve_theme_name(
-                    self.config.get("theme", "light"))),
+                theme_provider=lambda: resolved_mode_of(self.config)),
             ui_registry=self.ui_registry,
         )
         self.plugins.discover()
@@ -411,7 +421,8 @@ class AppRuntime:
         self.tray = QSystemTrayIcon(icon, self.app)
         self.menu = QMenu()
         self.menu.setStyleSheet(
-            Theme(resolve_theme_name(self.config.get("theme", "light"))).menu_style())
+            (getattr(self, "theme_obj", None)
+             or build_theme(self.config)).menu_style())
 
         show_action = QAction("唤起面板", self.app)
         show_action.triggered.connect(self.window.toggle)
@@ -473,7 +484,7 @@ class AppRuntime:
         try:
             from ui.welcome_dialog import WelcomeDialog
             chosen = WelcomeDialog.maybe_show(
-                theme_name=resolve_theme_name(self.config.get("theme", "light")),
+                theme_name=resolved_mode_of(self.config),
                 config=self.config,
                 parent=self.unified)
         except Exception as e:
@@ -742,8 +753,14 @@ class AppRuntime:
             ok, msg = autostart.set_autostart(want, use_task=want and use_task)
             append_log("info" if ok else "warn", "autostart", msg)
 
-        effective_theme = resolve_theme_name(self.config.get("theme", "light"))
-        theme_changed = "theme" in changed
+        effective_theme = resolve_theme_name(
+            self.config.get("theme_mode") or self.config.get("theme", "light"))
+        # ⚠ 新主题系统有四个相关键，任何一个变了都要走换肤。
+        # 原来只判断 "theme" in changed —— 改预设/强调色时不会重贴 QSS，
+        # 用户会以为设置没生效。
+        _THEME_KEYS = ("theme", "theme_mode", "theme_preset",
+                       "accent_mode", "accent_custom")
+        theme_changed = bool(set(_THEME_KEYS) & changed)
         # 幂等：样式串没变就不重贴（详见 _apply_app_theme 注释）
         #
         # ⚠ 深色↔浅色切换时，这一整套工作（本函数后续的 app 级 QSS 重贴
@@ -757,8 +774,9 @@ class AppRuntime:
             return
 
         self._apply_app_theme(effective_theme)
-        set_app_theme(self.config.get("theme", "light"))
-        if "theme" in changed:
+        set_app_theme(effective_theme)
+        # system 跟随定时器的启停也由所有主题键共同决定
+        if theme_changed:
             # 已打开的日志窗口同步换肤（否则它会停留在启动时的主题）
             self._theme_log_viewer(effective_theme)
             self._update_system_theme_watcher()
@@ -827,7 +845,7 @@ class AppRuntime:
                 if chunked is not None:
                     for _ in chunked:
                         yield
-                set_app_theme(self.config.get("theme", "light"))
+                set_app_theme(effective_theme)
                 yield
                 # ② 日志窗口（可能开着）
                 self._theme_log_viewer(effective_theme)
@@ -964,28 +982,59 @@ class AppRuntime:
     # 主题跟随
     # ------------------------------------------------------------------
     def _check_system_theme(self):
-        """轮询系统深浅色；仅在配置为「跟随系统」时生效。"""
-        if self.config.get("theme", "light") != "system":
+        """轮询系统深浅色与系统强调色；只有相关配置开启时才生效。
+
+        ## 为什么要同时盯两个
+
+        `theme_mode=system` 时用户改系统深浅色，界面要跟着变；
+        `accent_mode=system` 时用户在 Windows 设置里换了个强调色，
+        按钮/选中态也要跟着变。
+
+        两者独立，所以定时器在任一模式开启时都要跑。用"上次签名"
+        比较，避免每 2 秒无谓地重贴 QSS（那东西一次 0.4~1 秒）。
+        """
+        from ui.theme_manager import system_accent_color
+
+        need_mode = (self._theme_mode() == "system")
+        need_accent = (self.config.get("accent_mode") == "system")
+        if not need_mode and not need_accent:
             return
-        current = system_theme_name()
-        if current == self._last_system_theme:
+
+        current = system_theme_name() if need_mode else None
+        accent = system_accent_color() if need_accent else None
+        sig = (current, accent)
+        if sig == getattr(self, "_last_system_signature", None):
             return
-        self._last_system_theme = current
-        effective = resolve_theme_name("system")
-        self.app.setStyleSheet(Theme(effective).style_sheet())
+        self._last_system_signature = sig
+        if need_mode:
+            self._last_system_theme = current
+
+        theme = build_theme(self.config, mode_override=current)
+        self.theme_obj = theme
+        self.app.setStyleSheet(theme.style_sheet())
         if self.menu is not None:
-            self.menu.setStyleSheet(Theme(effective).menu_style())
-        set_app_theme("system")
+            self.menu.setStyleSheet(theme.menu_style())
+        set_app_theme(current or resolved_mode_of(self.config))
         if self.window is not None:
             self.window.apply_config(self.config)
         if self.unified is not None:
             self.unified.apply_config(self.config)
-        self._theme_log_viewer(effective)
+        self._theme_log_viewer(current or resolved_mode_of(self.config))
+
+    def _theme_mode(self):
+        """当前配置的明暗模式（兼容旧 theme 键）。"""
+        return (self.config.get("theme_mode")
+                or self.config.get("theme", "light"))
 
     def _update_system_theme_watcher(self):
-        if self.config.get("theme", "light") == "system":
+        # 任一"跟随系统"开启就要轮询：明暗变了、或系统强调色变了，
+        # 都要重新构建主题。两者都关掉时定时器完全不跑（零开销）。
+        need = (self._theme_mode() == "system"
+                or self.config.get("accent_mode") == "system")
+        if need:
             if not self._system_theme_timer.isActive():
                 self._last_system_theme = system_theme_name()
+                self._last_system_signature = None   # 强制首帧同步一次
                 self._system_theme_timer.start()
         else:
             self._system_theme_timer.stop()
@@ -1294,8 +1343,7 @@ class AppRuntime:
                 QSystemTrayIcon.MessageIcon.Information, 4000)
             return 0
 
-        dlg = ExtractDialog(items, theme=Theme(
-            resolve_theme_name(self.config.get("theme", "light"))),
+        dlg = ExtractDialog(items, theme=build_theme(self.config),
             parent=self.unified if self.unified.isVisible() else None,
             preexisting=known,
             in_builtin=builtin)
@@ -1433,7 +1481,7 @@ class AppRuntime:
 
     def open_log_viewer(self):
         """打开（或复用）日志窗口。"""
-        name = resolve_theme_name(self.config.get("theme", "light"))
+        name = resolved_mode_of(self.config)
         w = self._log_viewer
         # 关闭时窗口自带 WA_DeleteOnClose，destroyed 会把引用置空；这里再兜一层
         # 有效性判断，防止极端时序下拿到已销毁的 C++ 对象。
@@ -1456,7 +1504,7 @@ class AppRuntime:
             from ui.update_dialog import UpdateDialog
             UpdateDialog.maybe_show(
                 parent=self.unified,
-                theme_name=resolve_theme_name(self.config.get("theme", "light")))
+                theme_name=resolved_mode_of(self.config))
         except Exception as e:
             append_log("warn", "update", "更新弹窗失败：%s" % e)
 

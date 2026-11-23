@@ -155,6 +155,14 @@ def build_theme(config=None, mode_override=None, preview_palette=None):
         core = dict(preview_palette.get("dark" if dark else "light") or {})
         if preview_palette.get("contrast"):
             core["_contrast"] = True
+        # 强调色**一律**由设置页的 accent_mode 决定。
+        #
+        # 编辑器里已经没有强调色这一项了（见 theme_editor._ACCENT_NOTE），
+        # 所以这里无条件覆盖不是"打架"，而是明确的唯一来源：
+        #   accent_mode=preset → 用配色方案自带的
+        #   accent_mode=system → 用系统强调色
+        #   accent_mode=custom → 用用户选的那个颜色
+        # 用户若想在自定义主题下换强调色，改设置页即可，立即生效。
         if accent:
             core["accent"] = accent
         palette = derive(core, dark)

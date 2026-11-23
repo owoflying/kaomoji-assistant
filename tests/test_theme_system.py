@@ -265,3 +265,64 @@ def test_validate_palette_reports_bad_colors():
 
     ok, errs = validate_palette({"bg": "#ffffff"})
     assert ok and not errs
+
+
+# ====================================================================
+# 六、强调色只能有一个来源
+# ====================================================================
+def test_editor_does_not_expose_accent():
+    """主题编辑器里**不能**再出现强调色输入项。
+
+    ## 真实 bug
+
+    原来编辑器里也有一个「强调色」色块，于是同一件事有三处入口：
+
+        设置页「强调色」下拉（preset / system / custom + accent_custom）
+        编辑器里的「强调色」色块（写进 user_theme.json）
+        theme_manager 的 `core["accent"] = accent`（用设置页的值覆盖）
+
+    第三行让编辑器那个输入框**在多数情况下完全无效**，而且生效与否
+    取决于设置页另一个下拉选了什么——无法向用户解释。
+
+    实测：设置页选「自定义颜色」时，编辑器里设的 #8b5cf6 被静默
+    覆盖成设置页的 #ff3366；只有选「配色方案自带」时编辑器的才生效。
+
+    现在强调色唯一来源是设置页，编辑器不再提供该项。
+    """
+    from core.theme_presets import CORE_KEYS
+    from ui.theme_editor import EDITABLE_KEYS
+
+    assert "accent" in CORE_KEYS, "前提变了：CORE_KEYS 已不含 accent"
+    assert "accent" not in EDITABLE_KEYS, \
+        "编辑器又暴露了强调色输入，会和设置页打架"
+
+
+def test_accent_always_from_settings(qapp, tmp_path, monkeypatch):
+    """自定义主题下，强调色也必须跟着设置页走。
+
+    编辑器里即使塞了一个 accent（老文件可能还带着），
+    渲染时也要被 accent_mode 覆盖——保证"改设置页立即生效"。
+    """
+    from core import theme_presets as TP
+    from ui.theme_manager import build_theme
+
+    monkeypatch.setattr(TP, "user_theme_path",
+                        lambda: str(tmp_path / "ut.json"))
+    # 模拟老版本留下的、自带 accent 的自定义主题
+    TP.save_user_theme({
+        "name": "旧主题",
+        "light": {"bg": "#ffffff", "accent": "#8b5cf6"},
+        "dark": {"bg": "#111111", "accent": "#8b5cf6"},
+    })
+
+    # 设置页选「自定义颜色」
+    t = build_theme({"theme_mode": "light", "theme_preset": "custom",
+                     "accent_mode": "custom", "accent_custom": "#ff3366"})
+    assert t.accent == "#ff3366", \
+        "设置页选的自定义强调色没生效（被主题文件覆盖了）：%s" % t.accent
+
+    # 设置页选「配色方案自带」→ 此时才用文件里那个
+    t2 = build_theme({"theme_mode": "light", "theme_preset": "custom",
+                      "accent_mode": "preset"})
+    assert t2.accent == "#8b5cf6", \
+        "preset 模式下应当使用主题自带的强调色：%s" % t2.accent

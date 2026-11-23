@@ -51,10 +51,33 @@ _FIELD_LABELS = {
     "card_border": ("边框色", "卡片与输入框的描边"),
     "text": ("主文字", "正文与标题"),
     "text_secondary": ("次要文字", "说明、提示"),
-    "accent": ("强调色", "按钮、选中态、链接"),
     "window_tint": ("窗口基底", "无边框窗口的亚克力色（支持透明度）"),
     "content_surface": ("内容表面", "内容区比侧栏略实的那层"),
 }
+
+#: 强调色**不在这里调**，由设置页的「强调色」下拉统一决定。
+#:
+#: ## 为什么移除
+#:
+#: 原来编辑器里也有一个「强调色」色块，于是同一件事有三处入口：
+#:
+#:     设置页「强调色」下拉（preset / system / custom + accent_custom）
+#:     编辑器里的「强调色」色块（写进 user_theme.json）
+#:     theme_manager 的 `core["accent"] = accent`（用设置页的值覆盖）
+#:
+#: 第三行让编辑器那个输入框**在多数情况下完全无效**——用户改了颜色
+#: 却没反应，还以为是 bug。更糟的是它的生效与否取决于设置页另一个
+#: 下拉框选了什么（选"配色方案自带"才生效），这是无法向用户解释的行为。
+#:
+#: 现在强调色只有一个权威来源（设置页），编辑器不再碰它。
+_ACCENT_NOTE = ("强调色由设置页的「强调色」统一管理，"
+                "这里不重复设置——避免两处打架。")
+
+#: 编辑器里**可调**的字段 = 核心色去掉 accent。
+#:
+#: accent 仍属于 `CORE_KEYS`（主题系统需要它才能渲染），
+#: 但编辑器不让人在这里改它。
+EDITABLE_KEYS = tuple(k for k in CORE_KEYS if k != "accent")
 
 
 class _ColorRow(QWidget):
@@ -188,12 +211,18 @@ class ThemeEditorDialog(QDialog):
         grid.setContentsMargins(14, 10, 14, 10)
         grid.setSpacing(2)
         self._rows = {}
-        for i, key in enumerate(CORE_KEYS):
+        for i, key in enumerate(EDITABLE_KEYS):
             row = _ColorRow(key, self._data[self._mode].get(key, _fallback_color()),
                             self._on_color_changed)
             grid.addWidget(row, i, 0)
             self._rows[key] = row
         root.addWidget(holder)
+
+        # 说明强调色不在这里调——否则用户会找不到、或以为改了没生效
+        accent_tip = QLabel(_ACCENT_NOTE)
+        accent_tip.setObjectName("Caption")
+        accent_tip.setWordWrap(True)
+        root.addWidget(accent_tip)
 
         # ---- 名称 ----
         name_row = QHBoxLayout()
@@ -233,7 +262,7 @@ class ThemeEditorDialog(QDialog):
         for mode in ("light", "dark"):
             base = resolve_palette("classic", mode)
             cur = self._data[mode]
-            for k in CORE_KEYS:
+            for k in EDITABLE_KEYS:
                 if not cur.get(k):
                     cur[k] = base.get(k, _fallback_color())
 
@@ -331,7 +360,7 @@ class ThemeEditorDialog(QDialog):
         for mode in ("light", "dark"):
             src = data.get(mode)
             if isinstance(src, dict):
-                for k in CORE_KEYS:
+                for k in EDITABLE_KEYS:
                     if src.get(k):
                         self._data[mode][k] = src[k]
         if data.get("name"):

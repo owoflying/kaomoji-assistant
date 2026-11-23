@@ -486,23 +486,34 @@ class SettingsPage(QWidget):
         self._open_theme_editor()
 
     def _open_theme_editor(self):
-        """打开主题编辑器；保存后写 user_theme.json 并应用。"""
+        """打开主题编辑器；保存后写 user_theme.json 并应用。
+
+        ## 预览为什么不能走 `config_applied`
+
+        `config_applied` 是 `Signal(dict)`，只吃一个配置字典。而预览需要
+        额外带上**编辑中的色板**（它还没落盘，不在配置里）。
+
+        所以走 `_theme_preview_cb`——由 AppRuntime 注入，签名是
+        `(config, palette_or_None)`。传 None 表示"退出预览，回到已保存的主题"。
+        """
         from core.theme_presets import save_user_theme
         from ui.theme_editor import ThemeEditorDialog
 
         before = dict(self.config)
+        cb = getattr(self, "_theme_preview_cb", None)
 
-        # config_applied 是 Signal；emit 一下就走正式应用链路，
-        # 这样预览和最终保存的效果完全一致（不会"预览好看、保存后不一样"）
-        preview_emit = (lambda c: self.config_applied.emit(c)) \
-            if hasattr(self, "config_applied") else None
+        def _preview(cfg, palette=None):
+            if cb is not None:
+                cb(cfg, palette)
+            elif hasattr(self, "config_applied"):
+                self.config_applied.emit(cfg)
 
-        dlg = ThemeEditorDialog(self.config, on_preview=preview_emit,
+        dlg = ThemeEditorDialog(self.config, on_preview=_preview,
                                 parent=self)
         if dlg.exec() != QDialog.Accepted:
-            # 取消：恢复到打开前的主题
-            if preview_emit is not None:
-                preview_emit(before)
+            # 取消：退出预览，回到打开前的主题
+            if cb is not None:
+                cb(before, None)
             idx = self.preset_combo.findData(
                 before.get("theme_preset", "classic"))
             self._loading = True
@@ -517,6 +528,10 @@ class SettingsPage(QWidget):
         if not ok:
             self._refresh_rank_stats(msg)     # 借用现有的提示位
             return
+        # 保存后退出预览态：让主题系统去读刚落盘的文件，
+        # 保证"预览的效果"和"保存后的效果"是同一条路径产生的
+        if cb is not None:
+            cb(before, None)
         self.config["theme_preset"] = "custom"
         self._on_apply()
 

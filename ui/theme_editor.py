@@ -249,13 +249,36 @@ class ThemeEditorDialog(QDialog):
         self._preview()
 
     def _preview(self):
-        """把当前编辑中的色板应用到界面（不落盘）。"""
+        """把当前编辑中的色板应用到界面（不落盘）。
+
+        ## ⚠ 必须把色板本身传出去
+
+        原来只把 `theme_preset` 设成 `"custom"` 就交给主题系统，
+        而 `custom` 走的是 `load_user_theme()`——**读磁盘**。
+        编辑中的颜色只存在于 `self._data` 这个内存字典里，从来没被用到。
+
+        后果：编辑器里改任何颜色都不生效，界面一直显示磁盘上那份旧数据。
+        用户看到的是"无论设成什么都变成同一个诡异的颜色"。
+
+        现在通过 `preview_palette` 把编辑中的值直接喂给 `build_theme()`。
+        """
         if self._on_preview is None:
             return
         cfg = dict(self._config)
         cfg["theme_preset"] = "custom"
+        payload = {
+            "name": (self._name_edit.text().strip() or "我的主题"),
+            "light": dict(self._data["light"]),
+            "dark": dict(self._data["dark"]),
+        }
         try:
-            self._on_preview(cfg)
+            self._on_preview(cfg, payload)
+        except TypeError:
+            # 兼容只接受一个参数的旧回调
+            try:
+                self._on_preview(cfg)
+            except Exception:
+                pass
         except Exception:
             pass
 

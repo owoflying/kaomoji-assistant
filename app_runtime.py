@@ -223,6 +223,54 @@ class AppRuntime:
         """
         uia_elevation.ensure_uiaccess(self.config, append_log)
 
+    def _preview_theme_palette(self, cfg, palette=None):
+        """主题编辑器的实时预览：按编辑中的色板重贴 QSS，**不落盘**。
+
+        :param cfg: 预览用的配置（`theme_preset` 已被设为 "custom"）
+        :param palette: 编辑中的色板 `{"name","light","dark"}`；
+            传 None 表示退出预览，回到已保存的主题
+
+        ## 为什么不走 apply_settings
+
+        `apply_settings` 会落盘、会触发换肤动画、会广播给所有窗口——
+        拖动调色板时每秒几十次，那样会把磁盘和界面都打爆。
+
+        这里只做"重贴 QSS"这一件事，路径和正式应用一致（同一个
+        `_apply_app_theme`），所以预览看到的和保存后看到的是同一套规则。
+        """
+        try:
+            mode = resolved_mode_of(cfg or self.config)
+            # 预览期间把 theme_preset 临时设为 custom，让 build_theme 走自定义分支
+            saved = self.config.get("theme_preset")
+            self.config["theme_preset"] = "custom"
+            try:
+                self._apply_app_theme(mode, preview=palette)
+            finally:
+                # 配置本身不改：恢复原值，避免影响其它读取 config 的地方
+                if saved is None:
+                    self.config.pop("theme_preset", None)
+                else:
+                    self.config["theme_preset"] = saved
+            # 主窗口与候选条也要跟着预览
+            try:
+                if self.unified is not None:
+                    from ui.theme_manager import build_theme
+
+                    self.unified.theme = build_theme(
+                        self.config, mode_override=mode,
+                        preview_palette=palette)
+                    self.unified._apply_theme()
+            except Exception:
+                pass
+            try:
+                if self.window is not None:
+                    self.window._theme_obj = None      # 失效缓存，强制重算
+                    self.window.apply_config(self.config)
+            except Exception:
+                pass
+        except Exception as e:
+            append_log("warn", "theme", "主题预览失败：%r" % (e,))
+
     def _apply_initial_theme(self):
         """应用级样式表：让独立对话框与统一面板视觉一致（含 "system" 解析）。"""
         # mode_override 传解析后的明暗，避免 build_theme 里再读一次注册表
@@ -232,7 +280,7 @@ class AppRuntime:
         # set_app_theme 供独立弹层（拿不到 config）用；它只关心明暗名
         set_app_theme(getattr(self, "theme_obj", None) or mode)
 
-    def _apply_app_theme(self, theme_name, chunked=False):
+    def _apply_app_theme(self, theme_name, chunked=False, preview=None):
         """全应用 QSS 重贴（幂等）。
 
         `QApplication.setStyleSheet` 会触发所有控件重新 polish，代价随控件数量
@@ -255,9 +303,13 @@ class AppRuntime:
         """
         # 统一走 theme_manager：解析 mode / preset / accent_mode，
         # 保证所有窗口拿到的是同一套色板（不会再有某个弹窗漏配色）。
+        #
+        # `preview` 是主题编辑器的实时预览色板：给了就直接用它，
+        # 不读磁盘上的 user_theme.json（详见 build_theme 的说明）。
         from ui.theme_manager import build_theme
 
-        theme = build_theme(self.config, mode_override=theme_name)
+        theme = build_theme(self.config, mode_override=theme_name,
+                            preview_palette=preview)
         self.theme_obj = theme
         ss = theme.style_sheet()
         if ss == self._applied_style:
@@ -446,6 +498,8 @@ class AppRuntime:
             page.opacity_preview.connect(self._preview_picker_opacity)
             # 录制热键期间临时停用全局热键（其余时间热键始终可用）
             page.hotkey_capture_changed.connect(self._on_hotkey_capture)
+            # 主题编辑器的实时预览：直接改样式，不落盘
+            page._theme_preview_cb = self._preview_theme_palette
             page._runtime_connected = True
         except Exception as e:
             append_log("warn", "app", "设置页信号连接失败：%r" % (e,))

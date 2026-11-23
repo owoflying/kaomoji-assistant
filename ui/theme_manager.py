@@ -106,17 +106,24 @@ def effective_accent(config, dark):
     return None
 
 
-def build_theme(config=None, mode_override=None):
+def build_theme(config=None, mode_override=None, preview_palette=None):
     """把配置解析成一个 `ui.win11_theme.Theme`。
 
     :param config: 配置 dict；None 时从 config_store 读
     :param mode_override: 强制明暗（system 跟随定时器用）
+    :param preview_palette: 主题编辑器的**实时预览**色板
+        （`{"light": {...}, "dark": {...}}`）。给了就直接用它，
+        不读磁盘上的 user_theme.json。
     :return: Theme 实例
 
-    ## 为什么要 mode_override
+    ## 为什么需要 preview_palette
 
-    `theme_mode=system` 时，AppRuntime 的定时器已经算出了当前系统明暗。
-    传进来避免重复读注册表，也保证"这一帧里所有窗口用的是同一个明暗"。
+    主题编辑器改颜色时只改了内存里的 `_data`，而 `theme_preset="custom"`
+    走的是 `load_user_theme()`——**读磁盘**。两者完全脱节，于是编辑器里
+    无论怎么调，界面显示的都是磁盘上那份旧数据（用户看到的是"改什么
+    都变成同一个诡异颜色"）。
+
+    预览必须显式把当前编辑中的色板传进来，才能做到所见即所得。
     """
     from ui.win11_theme import Theme, resolve_theme_name
 
@@ -141,8 +148,23 @@ def build_theme(config=None, mode_override=None):
     presets = load_presets()
     palette = None
 
+    # 预览优先：编辑器传进来的色板直接生效，不碰磁盘
+    if preview_palette is not None and preset_id == "custom":
+        from core.theme_presets import derive
+
+        core = dict(preview_palette.get("dark" if dark else "light") or {})
+        if preview_palette.get("contrast"):
+            core["_contrast"] = True
+        if accent:
+            core["accent"] = accent
+        palette = derive(core, dark)
+        palette["preset"] = "custom"
+        palette["name"] = preview_palette.get("name", "自定义")
+        palette["dark"] = dark
+        palette["mode"] = mode
+
     # 自定义主题：用用户的色板替换掉该预设的对应明暗
-    if preset_id == "custom":
+    if palette is None and preset_id == "custom":
         user = load_user_theme()
         if user:
             from core.theme_presets import derive
@@ -169,20 +191,35 @@ def build_theme(config=None, mode_override=None):
     return Theme(mode, palette=palette)
 
 
-def theme_signature(config=None, mode_override=None):
+def theme_signature(config=None, mode_override=None, preview_palette=None):
     """当前主题的"指纹"，用于判断是否需要重贴 QSS。
 
     app_runtime 用 `_applied_style` 做幂等短路，但那是比较 QSS 字符串。
     这里给一个更轻量的比较键，配置没变时连 QSS 都不用生成。
+
+    ⚠ `preview_palette` 必须参与指纹计算：编辑器里改一个颜色，
+    配置 dict 本身没变，只有预览色板变了。漏掉它会导致
+    "调了颜色但预览不刷新"（被误判成没有变化）。
     """
     if config is None:
         from core.config_store import load_config
         config = load_config()
     config = config or {}
+    # 预览色板转成可比较的不可变形式
+    pv = None
+    if preview_palette is not None:
+        try:
+            pv = tuple(sorted(
+                (k, tuple(sorted((str(a), str(b))
+                                 for a, b in (v or {}).items())))
+                for k, v in preview_palette.items()))
+        except Exception:
+            pv = repr(preview_palette)
     return (
         config.get("theme_mode") or config.get("theme"),
         config.get("theme_preset"),
         config.get("accent_mode"),
         config.get("accent_custom"),
         mode_override,
+        pv,
     )

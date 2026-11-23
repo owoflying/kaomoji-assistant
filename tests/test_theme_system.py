@@ -271,30 +271,43 @@ def test_validate_palette_reports_bad_colors():
 # 六、强调色只能有一个来源
 # ====================================================================
 def test_editor_does_not_expose_accent():
-    """主题编辑器里**不能**再出现强调色输入项。
+    """强调色只能有**一个**入口：主题编辑器。设置页不该再提供。
 
     ## 真实 bug
 
-    原来编辑器里也有一个「强调色」色块，于是同一件事有三处入口：
+    曾经强调色同时存在于设置页下拉和编辑器色块里，两边互相覆盖：
 
-        设置页「强调色」下拉（preset / system / custom + accent_custom）
-        编辑器里的「强调色」色块（写进 user_theme.json）
-        theme_manager 的 `core["accent"] = accent`（用设置页的值覆盖）
+        设置页选「自定义颜色」时，编辑器里设的 #8b5cf6 被静默覆盖成设置页的值
+        设置页选「配色方案自带」时，编辑器的才生效
 
-    第三行让编辑器那个输入框**在多数情况下完全无效**，而且生效与否
-    取决于设置页另一个下拉选了什么——无法向用户解释。
+    同一个输入框生效与否取决于另一个下拉框选了什么——用户完全无法理解。
 
-    实测：设置页选「自定义颜色」时，编辑器里设的 #8b5cf6 被静默
-    覆盖成设置页的 #ff3366；只有选「配色方案自带」时编辑器的才生效。
+    ## 现在的设计
 
-    现在强调色唯一来源是设置页，编辑器不再提供该项。
+    强调色收敛到**主题编辑器**（它本来就是"调整个性化配色"的地方），
+    提供三个来源：配色方案自带 / 跟随系统 / 自定义。设置页不再有这一项。
     """
-    from core.theme_presets import CORE_KEYS
-    from ui.theme_editor import EDITABLE_KEYS
+    from ui.theme_editor import EDITABLE_KEYS, _ACCENT_MODES
 
-    assert "accent" in CORE_KEYS, "前提变了：CORE_KEYS 已不含 accent"
+    # 编辑器里有强调色（作为特殊行，不在普通色块里）
     assert "accent" not in EDITABLE_KEYS, \
-        "编辑器又暴露了强调色输入，会和设置页打架"
+        "强调色应该是编辑器里的特殊行，不该混进普通色块"
+    modes = [m for m, _label in _ACCENT_MODES]
+    assert modes == ["preset", "system", "custom"], \
+        "编辑器应提供 自带/跟随系统/自定义 三个来源：%r" % (modes,)
+
+
+def test_settings_page_has_no_accent_combo(qapp):
+    """设置页**不能**再有强调色下拉。
+
+    这是上一个 bug 的另一半：两个入口必然打架。现在只留编辑器。
+    """
+    from core.config_store import load_config
+    from ui.pages.settings_page import SettingsPage
+
+    page = SettingsPage(load_config())
+    assert not hasattr(page, "accent_combo"), \
+        "设置页又出现强调色下拉了，会和编辑器里的设置打架"
 
 
 def test_accent_always_from_settings(qapp, tmp_path, monkeypatch):

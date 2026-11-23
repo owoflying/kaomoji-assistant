@@ -22,6 +22,7 @@
 """
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QColorDialog, QDialog, QDialogButtonBox, QFrame, QGridLayout,
     QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
@@ -55,28 +56,32 @@ _FIELD_LABELS = {
     "content_surface": ("内容表面", "内容区比侧栏略实的那层"),
 }
 
-#: 强调色**不在这里调**，由设置页的「强调色」下拉统一决定。
+#: 强调色是**编辑器里的一个特殊行**：三选一 + 可选的自定义色。
 #:
-#: ## 为什么移除
+#: ## 为什么强调色单独处理，不与其它 7 个色块并列
 #:
-#: 原来编辑器里也有一个「强调色」色块，于是同一件事有三处入口：
+#: 其它 7 个颜色都是"从色板里挑一个值"。强调色不同——它有三个来源：
 #:
-#:     设置页「强调色」下拉（preset / system / custom + accent_custom）
-#:     编辑器里的「强调色」色块（写进 user_theme.json）
-#:     theme_manager 的 `core["accent"] = accent`（用设置页的值覆盖）
+#:     配色方案自带   —— 用当前预设的强调色
+#:     跟随 Windows   —— 读系统强调色并自动适配明暗
+#:     自定义         —— 用户选一个具体颜色
 #:
-#: 第三行让编辑器那个输入框**在多数情况下完全无效**——用户改了颜色
-#: 却没反应，还以为是 bug。更糟的是它的生效与否取决于设置页另一个
-#: 下拉框选了什么（选"配色方案自带"才生效），这是无法向用户解释的行为。
+#: 前两个压根没有"颜色值"可填，所以不能做成一个纯色块。
 #:
-#: 现在强调色只有一个权威来源（设置页），编辑器不再碰它。
-_ACCENT_NOTE = ("强调色由设置页的「强调色」统一管理，"
-                "这里不重复设置——避免两处打架。")
+#: ## 历史教训
+#:
+#: 曾经把强调色同时放在设置页和编辑器里，两边互相覆盖：设置页选
+#: 「自定义颜色」时编辑器里设的值被静默盖掉，只有选「配色方案自带」
+#: 才生效——用户完全无法理解。
+#:
+#: 现在只有一个入口：**这里**。设置页不再重复提供。
+_ACCENT_MODES = (
+    ("preset", "配色方案自带"),
+    ("system", "跟随系统"),
+    ("custom", "自定义"),
+)
 
-#: 编辑器里**可调**的字段 = 核心色去掉 accent。
-#:
-#: accent 仍属于 `CORE_KEYS`（主题系统需要它才能渲染），
-#: 但编辑器不让人在这里改它。
+#: 普通色块字段（强调色单独一行处理，不在其中）。
 EDITABLE_KEYS = tuple(k for k in CORE_KEYS if k != "accent")
 
 
@@ -218,11 +223,8 @@ class ThemeEditorDialog(QDialog):
             self._rows[key] = row
         root.addWidget(holder)
 
-        # 说明强调色不在这里调——否则用户会找不到、或以为改了没生效
-        accent_tip = QLabel(_ACCENT_NOTE)
-        accent_tip.setObjectName("Caption")
-        accent_tip.setWordWrap(True)
-        root.addWidget(accent_tip)
+        # ---- 强调色（三选一 + 可选自定义色）----
+        root.addWidget(self._build_accent_row())
 
         # ---- 名称 ----
         name_row = QHBoxLayout()
@@ -254,6 +256,146 @@ class ThemeEditorDialog(QDialog):
 
         self._switch(self._mode)
 
+    def _build_accent_row(self):
+        """强调色一行：三选一（自带 / 跟随系统 / 自定义）+ 色块。
+
+        ## 为什么不是一个普通色块
+
+        前两个选项根本没有"颜色值"可填：
+          * 配色方案自带 → 用当前预设的强调色
+          * 跟随系统     → 读 Windows 强调色，还会按明暗自动提亮/压暗
+
+        所以做成"模式选择 + 仅在自定义时露出的色块"。非自定义时色块
+        显示的是**实际会用的颜色**（只读预览），让用户知道当前是什么色。
+        """
+        wrap = QFrame()
+        wrap.setObjectName("Card")
+        lay = QVBoxLayout(wrap)
+        lay.setContentsMargins(14, 10, 14, 10)
+        lay.setSpacing(6)
+
+        # 第一行：标题 + 模式按钮
+        row = QHBoxLayout()
+        title = QLabel("强调色")
+        title.setMinimumWidth(72)
+        lay_title = QHBoxLayout()
+        lay_title.addWidget(title)
+
+        self._accent_btns = {}
+        for mode, label in _ACCENT_MODES:
+            b = QPushButton(label)
+            b.setCheckable(True)
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _c=False, m=mode: self._set_accent_mode(m))
+            lay_title.addWidget(b)
+            self._accent_btns[mode] = b
+        lay_title.addStretch(1)
+        row.addLayout(lay_title)
+        lay.addLayout(row)
+
+        # 第二行：色块 + 当前值说明
+        sw_row = QHBoxLayout()
+        sw_row.addSpacing(72 + 10)
+        self._accent_swatch = QPushButton()
+        self._accent_swatch.setFixedSize(46, 24)
+        self._accent_swatch.setCursor(Qt.PointingHandCursor)
+        self._accent_swatch.clicked.connect(self._pick_accent)
+        sw_row.addWidget(self._accent_swatch)
+        self._accent_lbl = QLabel("")
+        self._accent_lbl.setObjectName("Caption")
+        sw_row.addWidget(self._accent_lbl, 1)
+        lay.addLayout(sw_row)
+
+        # 当前模式与自定义色：从已有配置/主题文件里读
+        self._accent_mode = self._config.get("accent_mode", "preset")
+        if self._accent_mode not in ("preset", "system", "custom"):
+            self._accent_mode = "preset"
+        self._accent_custom = self._config.get("accent_custom", "#0067c0")
+        return wrap
+
+    def _set_accent_mode(self, mode):
+        """切强调色的三个来源之一。
+
+        ⚠ **不要在这里自动弹调色板**。
+
+        最初写成"切到自定义就直接弹 QColorDialog"，想省一次点击。结果：
+        任何程序化调用 `_set_accent_mode("custom")` 都会弹出一个模态窗口
+        等用户点击——在测试/自动化环境里会直接卡死，在真实界面里也会
+        让用户莫名其妙地看到调色板跳出来。
+
+        改成：切到自定义只是选中模式，用户点色块才弹。
+        """
+        self._accent_mode = mode
+        if mode == "custom" and not self._accent_custom:
+            self._accent_custom = "#0067c0"
+        self._refresh_accent_row()
+        self._preview()
+
+    def _pick_accent(self):
+        """选自定义强调色。"""
+        from PySide6.QtWidgets import QColorDialog
+
+        from core.theme_presets import parse_color
+
+        cur = parse_color(self._accent_custom) or (0, 103, 192, 1.0)
+        col = QColorDialog.getColor(
+            QColor(int(cur[0]), int(cur[1]), int(cur[2])), self, "选择强调色")
+        if not col.isValid():
+            return
+        self._accent_custom = col.name()
+        self._accent_mode = "custom"
+        self._refresh_accent_row()
+        self._preview()
+
+    def _accent_display_color(self):
+        """当前模式下实际会用的强调色（用于色块预览与说明文字）。"""
+        try:
+            from ui.theme_manager import effective_accent
+
+            cfg = {
+                "accent_mode": self._accent_mode,
+                "accent_custom": self._accent_custom,
+            }
+            dark = (self._mode == "dark")
+            got = effective_accent(cfg, dark)
+            if got:
+                return got
+            # preset 模式（或系统色读取失败）：用当前预设自带的
+            from core.theme_presets import resolve_palette
+
+            preset = self._config.get("theme_preset", "classic")
+            if preset == "custom":
+                preset = "classic"
+            return resolve_palette(preset, "dark" if dark else "light")["accent"]
+        except Exception:
+            return self._accent_custom or "#0067c0"
+
+    def _refresh_accent_row(self):
+        """刷新模式按钮选中态、色块颜色与说明文字。"""
+        for m, b in self._accent_btns.items():
+            b.setChecked(m == self._accent_mode)
+        color = self._accent_display_color()
+        self._accent_swatch.setStyleSheet(
+            "QPushButton{background:%s;border:1px solid rgba(128,128,128,0.6);"
+            "border-radius:4px;}" % color)
+        # 色块只有在"自定义"时才能点
+        self._accent_swatch.setEnabled(self._accent_mode == "custom")
+        tips = {
+            "preset": "使用当前配色方案自带的强调色",
+            "system": "跟随 Windows 系统强调色（会自动适配明暗）",
+            "custom": color,
+        }
+        self._accent_lbl.setText(tips.get(self._accent_mode, color))
+
+    def accept(self):
+        """保存前把强调色设置写回配置，随主题一起生效。"""
+        try:
+            self._config["accent_mode"] = self._accent_mode
+            self._config["accent_custom"] = self._accent_custom
+        except Exception:
+            pass
+        super().accept()
+
     # ------------------------------------------------------------ 内部
     def _fill_missing(self):
         """缺的字段用当前预设的对应明暗补齐，保证 8 个都有值。"""
@@ -272,6 +414,11 @@ class ThemeEditorDialog(QDialog):
         self._btn_dark.setChecked(mode == "dark")
         for k, row in self._rows.items():
             row.set_value(self._data[mode].get(k, _fallback_color()))
+        # 强调色的实际值随明暗变化（跟随系统时尤其明显），要一起刷新
+        try:
+            self._refresh_accent_row()
+        except Exception:
+            pass
 
     def _on_color_changed(self, key, value):
         self._data[self._mode][key] = value
@@ -295,6 +442,9 @@ class ThemeEditorDialog(QDialog):
             return
         cfg = dict(self._config)
         cfg["theme_preset"] = "custom"
+        # 强调色也一起预览：它在编辑器里改，改完要立刻看到效果
+        cfg["accent_mode"] = self._accent_mode
+        cfg["accent_custom"] = self._accent_custom
         payload = {
             "name": (self._name_edit.text().strip() or "我的主题"),
             "light": dict(self._data["light"]),

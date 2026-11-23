@@ -260,7 +260,7 @@ def test_no_popup_on_programmatic_restore(qapp):
     os.environ["APPDATA"] = tmp
     try:
         cfg = load_config()
-        # 模拟"上次选过自定义"的配置
+        # 模拟"上次选过自定义主题"的配置（accent 已归编辑器管，这里不再涉及）
         cfg["accent_mode"] = "custom"
         cfg["accent_custom"] = "#ff3366"
         cfg["theme_preset"] = "custom"
@@ -270,8 +270,10 @@ def test_no_popup_on_programmatic_restore(qapp):
         qapp.processEvents()
 
         # 值要正确回填（说明确实走了 setCurrentIndex 那条路）
-        assert page.accent_combo.currentData() == "custom"
         assert page.preset_combo.currentData() == "custom"
+        # 强调色不归设置页管，不该有对应下拉
+        assert not hasattr(page, "accent_combo"), \
+            "设置页又出现强调色下拉了——强调色应只在主题编辑器里设置"
         # 回填结束后 _loading 必须复位，否则后续用户操作全被吞掉
         assert page._loading is False, \
             "回填后 _loading 没有复位，后续用户操作会被静默忽略"

@@ -168,7 +168,6 @@ class SettingsPage(QWidget):
         croot.setSpacing(12)
         self._add_row(croot, "主题", self._theme_combo())
         self._add_row(croot, "配色方案", self._preset_combo())
-        self._add_row(croot, "强调色", self._accent_combo())
         self._add_row(croot, "面板不透明度", self._panel_alpha_row())
         self._add_row(croot, "候选条不透明度", self._opacity_row())
         v.addWidget(card)
@@ -412,60 +411,6 @@ class SettingsPage(QWidget):
             lambda *_a: self._on_preset_changed())
         self.preset_combo.setMinimumWidth(140)
         return self.preset_combo
-
-    def _accent_combo(self):
-        """强调色来源。"""
-        self.accent_combo = FluentComboBox(self._theme)
-        self.accent_combo.addItem("配色方案自带", "preset")
-        self.accent_combo.addItem("跟随 Windows", "system")
-        self.accent_combo.addItem("自定义颜色…", "custom")
-        self.accent_combo.setToolTip(
-            "「跟随 Windows」读取系统强调色并自动调整到当前明暗下可用；"
-            "「自定义颜色」会弹调色板选一个")
-        self.accent_combo.currentIndexChanged.connect(
-            lambda *_a: self._on_accent_changed())
-        self.accent_combo.setMinimumWidth(140)
-        return self.accent_combo
-
-    def _on_accent_changed(self):
-        """选「自定义颜色」时弹调色板；取消则回到原来的选项。
-
-        ## ⚠ 必须先检查 `_loading`
-
-        程序化回填配置时（`refresh_from_config`）会 `setCurrentIndex`，
-        这会触发 `currentIndexChanged`。如果用户上次存的正是
-        `accent_mode=custom`，启动后一打开设置页就会**自动弹出调色板**
-        ——用户根本没点任何东西。
-
-        在离屏/自动化环境里更糟：模态对话框会一直等在那里，
-        测试直接卡死。
-        """
-        if getattr(self, "_loading", False):
-            return
-        mode = self.accent_combo.currentData()
-        if mode != "custom":
-            self._on_apply()
-            return
-        from core.theme_presets import parse_color
-        from PySide6.QtGui import QColor
-        from PySide6.QtWidgets import QColorDialog
-
-        cur = parse_color(self.config.get("accent_custom", "#0067c0"))
-        col = QColorDialog.getColor(
-            QColor(cur[0], cur[1], cur[2]) if cur else QColor("#0067c0"),
-            self, "选择强调色")
-        if not col.isValid():
-            # 用户取消：回退到当前配置里的来源，不留在"自定义"这个空状态
-            idx = self.accent_combo.findData(
-                self.config.get("accent_mode", "preset"))
-            self._loading = True
-            try:
-                self.accent_combo.setCurrentIndex(idx if idx >= 0 else 0)
-            finally:
-                self._loading = False
-            return
-        self.config["accent_custom"] = col.name()
-        self._on_apply()
 
     def _on_preset_changed(self):
         """选「自定义…」预设时打开主题编辑器。
@@ -923,8 +868,7 @@ class SettingsPage(QWidget):
         #
         # 以后新增下拉框记得加进这个列表；漏了会被
         # `tests/test_settings_theme_sync.py` 抓到。
-        for c in (self.theme_combo, self.preset_combo, self.accent_combo,
-                  self.method_combo):
+        for c in (self.theme_combo, self.preset_combo, self.method_combo):
             if c is not None:
                 try:
                     c.set_theme(theme_obj)
@@ -947,9 +891,8 @@ class SettingsPage(QWidget):
             preset = cfg.get("theme_preset", "classic")
             pidx = self.preset_combo.findData(preset)
             self.preset_combo.setCurrentIndex(pidx if pidx >= 0 else 0)
-            accent = cfg.get("accent_mode", "preset")
-            aidx = self.accent_combo.findData(accent)
-            self.accent_combo.setCurrentIndex(aidx if aidx >= 0 else 0)
+            # 强调色不在这里设置——它由主题编辑器统一管理，
+            # 这里既不回填也不写入，避免覆盖用户在编辑器里的选择。
             pa = int(float(cfg.get("panel_alpha", 0.92)) * 100)
             self.panel_alpha_slider.setValue(pa)
             self.panel_alpha_value.setText("%d%%" % pa)
@@ -1212,7 +1155,8 @@ class SettingsPage(QWidget):
         new_cfg["theme_mode"] = mode
         new_cfg["theme"] = mode          # 旧键同步写，兼容降级/旧调用方
         new_cfg["theme_preset"] = self.preset_combo.currentData()
-        new_cfg["accent_mode"] = self.accent_combo.currentData()
+        # ⚠ 不写 accent_mode / accent_custom：强调色归主题编辑器管。
+        # new_cfg 是从 self.config 拷来的，原值会自然保留。
         new_cfg["panel_alpha"] = self.panel_alpha_slider.value() / 100.0
         new_cfg["opacity"] = self.opacity_slider.value() / 100.0
         new_cfg["input_method"] = self.method_combo.currentData()

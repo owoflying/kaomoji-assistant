@@ -10,7 +10,7 @@ Windows（尤其 Win10）上 QComboBox 的弹出列表是一个独立的顶层�
 
 DWM 沉浸式深色模式（Win11）仅作为 best-effort 顺带同步外框，失败也无妨。
 """
-from PySide6.QtWidgets import QComboBox, QWidget
+from PySide6.QtWidgets import QApplication, QComboBox, QWidget
 
 from ui.win11_theme import Theme, current_theme
 from ui.win_style import apply_dark_mode, _has_dwm
@@ -93,6 +93,25 @@ class FluentComboBox(QComboBox):
             self._prepare_popup_theme()
         except Exception:
             pass
+        # 再排一次到事件循环的下一个周期。
+        #
+        # ⚠ 实测那层裸 QWidget（见 _prepare_popup_theme 第 6 步）在
+        # `super().showPopup()` 返回时**还没被创建**，前两次调用都看不见它，
+        # 于是它始终带着系统默认的黑色背景。用 QTimer.singleShot(0) 推到
+        # 下一轮事件循环就能抓住它。
+        try:
+            from PySide6.QtCore import QTimer
+
+            QTimer.singleShot(0, self._safe_prepare_popup_theme)
+        except Exception:
+            pass
+
+    def _safe_prepare_popup_theme(self):
+        """包一层异常保护，供 QTimer 回调使用。"""
+        try:
+            self._prepare_popup_theme()
+        except Exception:
+            pass
 
     def _prepare_popup_theme(self):
         """把当前主题的配色贴到下拉列表的各个组成部分上（不显示窗口）。
@@ -136,3 +155,43 @@ class FluentComboBox(QComboBox):
                     apply_dark_mode(int(popup.winId()), t.dark)
                 except Exception:
                     pass
+        # 6) ⚠ 最外层那个裸 QWidget 也要上色
+        #
+        # Windows 上 QComboBox 的下拉是**两层独立顶层窗口**叠在一起的：
+        #
+        #     QWidget   ← 无父窗口、无样式，系统默认绘制（黑色！）
+        #     QFrame    ← view.window() 返回这一层
+        #         └── QListView
+        #
+        # 只给 QFrame 设样式时，外面那层裸 QWidget 仍是黑的——实测表现为
+        # 下拉旁边露出一条黑边/黑条，浅色主题下极其刺眼。
+        #
+        # 这两层不是父子关系（都是 top-level），只能从
+        # `QApplication.topLevelWidgets()` 里按位置尺寸匹配找出来。
+        try:
+            import os as _os
+
+            if _os.name == "nt" and isinstance(popup, QWidget):
+                geo = popup.geometry()
+                for w in QApplication.topLevelWidgets():
+                    if w is popup or w is self.window():
+                        continue
+                    if not isinstance(w, QWidget):
+                        continue
+                    # 判据：同位置同尺寸（容差 2px，窗口边框各平台有差异）、
+                    # 且是裸 QWidget（不是 QFrame/QLabel 之类）、自己没设过样式
+                    near = (abs(w.x() - geo.x()) <= 2
+                            and abs(w.y() - geo.y()) <= 2
+                            and abs(w.width() - geo.width()) <= 2
+                            and abs(w.height() - geo.height()) <= 2)
+                    if near and type(w) is QWidget and not (w.styleSheet() or ""):
+                        w.setStyleSheet(
+                            "background-color: {bg}; border: none;".format(
+                                bg=t.card))
+                        if _has_dwm:
+                            try:
+                                apply_dark_mode(int(w.winId()), t.dark)
+                            except Exception:
+                                pass
+        except Exception:
+            pass

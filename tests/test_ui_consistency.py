@@ -74,6 +74,144 @@ def test_all_comboboxes_get_theme_on_switch(settings_page):
     )
 
 
+def test_all_toggles_get_theme_on_switch(settings_page):
+    """`set_theme()` 必须覆盖页面里的**每一个** ToggleSwitch。
+
+    ## 真实 bug
+
+    原来 `set_theme()` 写死更新 4 个开关（auto/autostart/blur_hide/
+    uia_elevation），而「情绪推荐」那组的三个开关
+    （emotion_check / emotion_ai_check / rank_learn_check）漏了。
+
+    用户切强调色后看到：上面几个开关变成了新颜色，下面三个还是旧的
+    ——而且下面那组的轨道色是上个强调色的青色，非常显眼。
+
+    根因同样是**手写枚举**：新增控件时没有任何提示。
+    现在改成 `findChildren(ToggleSwitch)` 自动收集。
+    """
+    from ui.theme_manager import build_theme
+    from ui.toggle_switch import ToggleSwitch
+
+    page = settings_page
+    toggles = page.findChildren(ToggleSwitch)
+    assert len(toggles) >= 8, \
+        "设置页开关数量异常（只有 %d 个），测试数据不足" % len(toggles)
+
+    target = build_theme({"theme_mode": "dark", "accent_mode": "custom",
+                          "accent_custom": "#ff3366"})
+    page.set_theme(target)
+
+    stale = []
+    for t in toggles:
+        got = getattr(t, "_theme", None)
+        if got is not target:
+            stale.append(getattr(t, "objectName", lambda: "")() or
+                         type(t).__name__)
+    assert not stale, (
+        "以下开关没有被 set_theme() 覆盖，切强调色后它们保持旧颜色：\n  "
+        + "\n  ".join(stale))
+
+
+def test_theme_update_is_collected_automatically(settings_page):
+    """开关/下拉的同步必须是**自动收集**，不能靠手写列表。
+
+    ## 为什么守这个
+
+    手写枚举列表的毛病是"新增控件时没有任何提示"——设置页就因此出过
+    两次 bug：
+
+      * `preset_combo` / `accent_combo` 漏了 → 切深色后某个下拉还是浅色；
+      * `emotion_check` 那组开关漏了 → 切强调色后下面三个不跟着变。
+
+    这里直接验证 `set_theme()` 之后**每一个**子控件都被覆盖到。
+    """
+    from ui.fluent_combobox import FluentComboBox
+    from ui.theme_manager import build_theme
+    from ui.toggle_switch import ToggleSwitch
+
+    page = settings_page
+    target = build_theme({"theme_mode": "dark"})
+    page.set_theme(target)
+
+    stale = []
+    for w in page.findChildren(ToggleSwitch):
+        if getattr(w, "_theme", None) is not target:
+            stale.append("开关 %s" % (w.objectName() or type(w).__name__))
+    for w in page.findChildren(FluentComboBox):
+        if getattr(w, "_theme", None) is not target:
+            stale.append("下拉 %s" % (w.objectName() or type(w).__name__))
+
+    assert not stale, (
+        "以下控件没被 set_theme() 同步（换主题后会保持旧配色）：\n  "
+        + "\n  ".join(stale))
+
+
+# ====================================================================
+# 五、悬浮提示（QToolTip）必须跟随主题
+# ====================================================================
+def test_tooltip_palette_follows_theme(qapp):
+    """QToolTip 的调色板必须跟着主题走。
+
+    ## 真实 bug
+
+    浅色主题下悬浮提示是**黑底黑字**——界面上冒出一条突兀的黑框。
+
+    根因：`QToolTip` 是**原生弹出窗口**，不是普通子控件。Qt 绘制它时
+    优先取 `QPalette` 的 `ToolTipBase` / `ToolTipText`，QSS 里的
+    `QToolTip {{ }}` 规则在不少情况下**根本不生效**。
+
+    实测系统默认 `ToolTipBase` 是 `#ffffdc`（浅黄），但窗口背景被画成
+    黑色，与主题完全脱节。
+
+    所以必须显式改 palette。
+    """
+    from PySide6.QtGui import QPalette
+
+    from app_runtime import _apply_tooltip_palette
+    from core.theme_presets import parse_color
+    from ui.theme_manager import build_theme
+
+    for mode in ("light", "dark"):
+        t = build_theme({"theme_mode": mode})
+        _apply_tooltip_palette(qapp, t)
+        pal = qapp.palette()
+        base = pal.color(QPalette.ToolTipBase).name()
+        text = pal.color(QPalette.ToolTipText).name()
+
+        want_bg = parse_color(t.card)
+        want_fg = parse_color(t.text)
+        expect_bg = "#%02x%02x%02x" % want_bg[:3]
+        expect_fg = "#%02x%02x%02x" % want_fg[:3]
+
+        assert base == expect_bg, \
+            "%s 主题下 tooltip 背景 %s，期望 %s（主题 card）" % (
+                mode, base, expect_bg)
+        assert text == expect_fg, \
+            "%s 主题下 tooltip 文字 %s，期望 %s（主题 text）" % (
+                mode, text, expect_fg)
+
+
+def test_tooltip_contrasts(qapp):
+    """tooltip 的前景与背景必须能区分开。
+
+    防止将来把 tooltip 背景改成跟文字一个颜色（黑底黑字），
+    那等于提示完全看不见。
+    """
+    from PySide6.QtGui import QPalette
+
+    from app_runtime import _apply_tooltip_palette
+    from core.theme_presets import luminance
+    from ui.theme_manager import build_theme
+
+    for mode in ("light", "dark"):
+        _apply_tooltip_palette(qapp, build_theme({"theme_mode": mode}))
+        pal = qapp.palette()
+        bg = pal.color(QPalette.ToolTipBase).name()
+        fg = pal.color(QPalette.ToolTipText).name()
+        assert abs(luminance(bg) - luminance(fg)) > 0.4, \
+            "%s 主题下 tooltip 明暗对比不足：bg=%s fg=%s" % (mode, bg, fg)
+
+
 def test_combobox_theme_is_full_palette(settings_page):
     """下拉框拿到的是**完整色板**，不只是明暗名。
 
@@ -92,6 +230,56 @@ def test_combobox_theme_is_full_palette(settings_page):
     assert t.preset == "midnight", \
         "下拉框拿到的是 %s 预设，不是当前的 midnight" % t.preset
     assert t.card == dark.card
+
+
+def test_no_popup_on_programmatic_restore(qapp):
+    """程序化回填配置时**不能弹出任何模态窗口**。
+
+    ## 真实 bug
+
+    用户上次把强调色设成「自定义」后，`accent_mode` 存为 `custom`。
+    下次启动、打开设置页时，`refresh_from_config()` 会
+    `setCurrentIndex(...)` 到「自定义」那一项——这会触发
+    `currentIndexChanged`，进而弹出调色板。
+
+    用户根本没点任何东西，窗口自己跳出来。
+
+    `theme_preset=custom` 同理（会弹主题编辑器）。
+
+    根因是**程序化赋值被当成了用户操作**。所有"会弹窗口"的槽函数
+    都必须先检查 `_loading`。
+    """
+    import os
+    import tempfile
+
+    from core.config_store import load_config
+    from ui.pages.settings_page import SettingsPage
+
+    tmp = tempfile.mkdtemp()
+    old = os.environ.get("APPDATA")
+    os.environ["APPDATA"] = tmp
+    try:
+        cfg = load_config()
+        # 模拟"上次选过自定义"的配置
+        cfg["accent_mode"] = "custom"
+        cfg["accent_custom"] = "#ff3366"
+        cfg["theme_preset"] = "custom"
+
+        # 构造过程中若弹模态窗口，QT_QPA_PLATFORM=offscreen 下会卡住
+        page = SettingsPage(cfg)
+        qapp.processEvents()
+
+        # 值要正确回填（说明确实走了 setCurrentIndex 那条路）
+        assert page.accent_combo.currentData() == "custom"
+        assert page.preset_combo.currentData() == "custom"
+        # 回填结束后 _loading 必须复位，否则后续用户操作全被吞掉
+        assert page._loading is False, \
+            "回填后 _loading 没有复位，后续用户操作会被静默忽略"
+    finally:
+        if old is None:
+            os.environ.pop("APPDATA", None)
+        else:
+            os.environ["APPDATA"] = old
 
 
 # ====================================================================
@@ -180,3 +368,97 @@ def test_page_content_taller_than_viewport_scrolls(qapp):
     assert body.sizeHint().height() > area.viewport().height(), \
         "内容没有超出视口，测试数据不足"
     page.hide()
+
+
+# ====================================================================
+# 四、复合控件必须有完整样式（含子控件）
+# ====================================================================
+#: 需要检查子控件样式的复合控件 → 必须出现的伪状态选择器。
+#:
+#: ## 为什么单独检查
+
+#: 只写 `QSpinBox {{...}}` 时，**输入框部分**会用主题色，但上下按钮和
+#: 箭头仍走 Qt 原生绘制。原生箭头颜色随焦点/hover 状态变化，
+#: 于是同类型的两个 SpinBox 看起来颜色不一样。
+
+#: 实测：设置页「最大最近记录」的箭头是强调青色，「每页候选数」是灰色
+#: ——用户以为是样式坏了。
+
+#: 这类"子控件漏样式"和之前「QTabBar 白底」是同一类问题。
+_COMPOUND_WIDGETS = {
+    "QSpinBox": ("::up-button", "::down-button", "::up-arrow", "::down-arrow"),
+    "QComboBox": ("::drop-down", "::down-arrow"),
+    "QScrollBar": ("::handle", "::add-line", "::sub-line"),
+    "QTabBar": ("::tab",),
+    "QCheckBox": ("::indicator",),
+    "QSlider": ("::groove", "::handle"),
+}
+
+
+def test_compound_widgets_have_subcontrol_styles(qapp):
+    from ui.win11_theme import Theme
+
+    theme_qss = Theme('dark').style_sheet()
+    """复合控件的**子控件**必须有显式样式。
+
+    Qt 不会因为父控件有 QSS 就自动接管子控件的绘制——按钮、箭头、
+    滑块手柄这些都要单独写。漏了就会退回原生绘制，颜色不再受主题控制。
+    """
+    missing = []
+    for widget, subs in _COMPOUND_WIDGETS.items():
+        for sub in subs:
+            sel = widget + sub
+            if sel not in theme_qss:
+                missing.append(sel)
+    assert not missing, (
+        "以下子控件没有样式，会退回 Qt 原生绘制（颜色随状态变化，"
+        "同类型控件看起来不一致）：\n  " + "\n  ".join(missing))
+
+
+def test_spinboxes_render_identically(qapp):
+    """同类型的两个 SpinBox 渲染结果必须一致。
+
+    这是用户实际看到的问题：设置页里两个数字框的箭头颜色不一样。
+    """
+    import os
+    import tempfile
+
+    from PySide6.QtWidgets import QSpinBox
+
+    from core.config_store import load_config
+    from ui.pages.settings_page import SettingsPage
+
+    tmp = tempfile.mkdtemp()
+    old = os.environ.get("APPDATA")
+    os.environ["APPDATA"] = tmp
+    try:
+        page = SettingsPage(load_config())
+        page.resize(900, 700)
+        page.show()
+        qapp.processEvents()
+
+        a, b = page.recent_spin, page.page_spin
+        assert isinstance(a, QSpinBox) and isinstance(b, QSpinBox)
+
+        def button_colors(w):
+            img = w.grab().toImage()
+            if img.isNull():
+                return None
+            x = max(0, img.width() - 8)
+            return sorted({
+                img.pixelColor(x, y).name()
+                for y in range(img.height())
+                if img.pixelColor(x, y).alpha() > 0
+            })
+
+        ca, cb = button_colors(a), button_colors(b)
+        page.hide()
+        assert ca is not None and cb is not None, "渲染失败"
+        assert ca == cb, (
+            "两个 SpinBox 的按钮区颜色不一致：%r vs %r\n"
+            "通常是 QSpinBox 的 up/down-button 样式缺失" % (ca, cb))
+    finally:
+        if old is None:
+            os.environ.pop("APPDATA", None)
+        else:
+            os.environ["APPDATA"] = old

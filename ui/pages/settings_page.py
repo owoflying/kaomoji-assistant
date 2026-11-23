@@ -428,7 +428,20 @@ class SettingsPage(QWidget):
         return self.accent_combo
 
     def _on_accent_changed(self):
-        """选「自定义颜色」时弹调色板；取消则回到原来的选项。"""
+        """选「自定义颜色」时弹调色板；取消则回到原来的选项。
+
+        ## ⚠ 必须先检查 `_loading`
+
+        程序化回填配置时（`refresh_from_config`）会 `setCurrentIndex`，
+        这会触发 `currentIndexChanged`。如果用户上次存的正是
+        `accent_mode=custom`，启动后一打开设置页就会**自动弹出调色板**
+        ——用户根本没点任何东西。
+
+        在离屏/自动化环境里更糟：模态对话框会一直等在那里，
+        测试直接卡死。
+        """
+        if getattr(self, "_loading", False):
+            return
         mode = self.accent_combo.currentData()
         if mode != "custom":
             self._on_apply()
@@ -455,7 +468,17 @@ class SettingsPage(QWidget):
         self._on_apply()
 
     def _on_preset_changed(self):
-        """选「自定义…」预设时打开主题编辑器。"""
+        """选「自定义…」预设时打开主题编辑器。
+
+        ## ⚠ 同样必须先检查 `_loading`
+
+        用户上次存的是 `theme_preset=custom` 时，启动后回填配置会
+        `setCurrentIndex` 到「自定义…」，进而触发本函数——编辑器窗口
+        自己弹出来。和 `_on_accent_changed` 是同一类 bug：
+        **程序化赋值被当成了用户操作**。
+        """
+        if getattr(self, "_loading", False):
+            return
         pid = self.preset_combo.currentData()
         if pid != "custom":
             self._on_apply()
@@ -857,10 +880,23 @@ class SettingsPage(QWidget):
         那些控件自己没实现 update_theme，不是整页的问题。
         """
         self._theme = theme_obj
-        for t in (self.auto_check, self.autostart_check,
-                  self.blur_hide_check, self.uia_elevation_check):
+        # 开关：**自动收集**页面上所有 ToggleSwitch，不再手写枚举列表。
+        #
+        # 原来写死 4 个（auto/autostart/blur_hide/uia_elevation），
+        # 结果「情绪推荐」那三个开关漏了——切强调色后下面三个还是旧颜色，
+        # 上面几个已经变了。用户一眼就看出来"底下的开关不会更新"。
+        #
+        # 手写枚举的问题在于**新增控件时没有任何提示**。
+        for t in self.findChildren(ToggleSwitch):
             try:
                 t.update_theme(theme_obj)
+            except Exception:
+                pass
+        # 下拉框同理：手写枚举曾漏掉 preset_combo / accent_combo，
+        # 表现为"切到深色后某个下拉还是浅色白底"。
+        for c in self.findChildren(FluentComboBox):
+            try:
+                c.set_theme(theme_obj)
             except Exception:
                 pass
         # ⚠ 这里必须**枚举全部下拉框**。

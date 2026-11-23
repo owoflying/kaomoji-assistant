@@ -410,6 +410,80 @@ class Theme:
         QLineEdit:focus, QComboBox:focus, QSpinBox:focus {{
             border: 1px solid {t.accent};
         }}
+        /* ---------- QSpinBox 的上下按钮 ----------
+
+           ⚠ 必须显式给样式。全局 QSS 里只写了 `QSpinBox {{...}}` 时，
+           **按钮和箭头仍走 Qt 原生绘制**——而原生箭头的颜色随控件状态
+           变化（焦点/hover/禁用各不相同）。
+
+           实测表现：设置页里「最大最近记录」的箭头是强调青色，
+           而下面「每页候选数」的是灰色，两个同类型控件看起来不一致，
+           像是样式坏了。
+
+           这里把按钮区画成与输入框同底的透明块，箭头用主题次要文字色，
+           并用一个内联 SVG 三角形保证任何 DPI 下都清晰。
+           `subcontrol-position` 显式靠右，避免与 padding 冲突。 */
+        QSpinBox {{
+            padding-right: 22px;   /* 给按钮区留位置，别让数字压到箭头下 */
+        }}
+        QSpinBox::up-button {{
+            subcontrol-origin: border;
+            subcontrol-position: top right;
+            width: 20px;
+            border: none;
+            border-top-right-radius: {RADIUS_CONTROL}px;
+            background: transparent;
+        }}
+        QSpinBox::down-button {{
+            subcontrol-origin: border;
+            subcontrol-position: bottom right;
+            width: 20px;
+            border: none;
+            border-bottom-right-radius: {RADIUS_CONTROL}px;
+            background: transparent;
+        }}
+        QSpinBox::up-button:hover, QSpinBox::down-button:hover {{
+            background: {t.nav_hover};
+        }}
+        QSpinBox::up-button:pressed, QSpinBox::down-button:pressed {{
+            background: {t.nav_selected};
+        }}
+        /* ⚠ 箭头用 border 画三角形，**不要改成内联 SVG**。
+           实测 `image: url("data:image/svg+xml;utf8,...")` 在 Qt 6.11 上
+           不渲染——QImageReader 明明报告支持 svg，但 QSS 的 `image`
+           属性就是不认 data URL，箭头直接消失。
+           若将来要换成图标，请用磁盘上的 .svg 文件路径，不要用 data URL。 */
+        QSpinBox::up-arrow {{
+            image: none;
+            width: 0px;
+            height: 0px;
+            border-left: 4px solid transparent;
+            border-right: 4px solid transparent;
+            border-bottom: 5px solid {t.text_secondary};
+        }}
+        QSpinBox::down-arrow {{
+            image: none;
+            width: 0px;
+            height: 0px;
+            border-left: 4px solid transparent;
+            border-right: 4px solid transparent;
+            border-top: 5px solid {t.text_secondary};
+        }}
+        QSpinBox::up-arrow:hover {{
+            border-bottom-color: {t.text};
+        }}
+        QSpinBox::down-arrow:hover {{
+            border-top-color: {t.text};
+        }}
+        QSpinBox:disabled {{
+            color: {t.text_tertiary};
+        }}
+        QSpinBox::up-arrow:disabled {{
+            border-bottom-color: {t.text_tertiary};
+        }}
+        QSpinBox::down-arrow:disabled {{
+            border-top-color: {t.text_tertiary};
+        }}
         QListWidget {{
             background: transparent;
             border: none;

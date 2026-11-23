@@ -133,8 +133,131 @@ def task_autostart_enabled():
         return False
 
 
+#: 计划任务的 XML 模板。
+#:
+#: ## 为什么不再用 `schtasks /create` 的简化参数
+#:
+#: `schtasks /create /tr ...` 默认生成的任务**没有 `<Hidden>`**，而且会带上
+#: `<DisallowStartIfOnBatteries>true</DisallowStartIfOnBatteries>`。实测后果：
+#:
+#: * 登录时任务启动的那一瞬间，Windows 会在屏幕上闪一个**控制台窗口**
+#:   （用户报的就是"开机自启弹一个命令行窗口"）。目标 exe 本身是 GUI 子系统
+#:   （已核实 PE 头 Subsystem=2），所以黑框不是程序画的，而是任务宿主在
+#:   拉起它之前短暂显示的。
+#: * 笔记本用电池开机时**根本不会启动**。
+#:
+#: 用 `/xml` 直接给出完整定义就能规避：显式 `<Hidden>true</Hidden>`
+#: 加上电源策略全设为 false。
+_TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>颜文字输入辅助器：登录时自动启动</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>{user}</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>{user}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>false</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>true</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{exe}</Command>
+    </Exec>
+  </Actions>
+</Task>
+"""
+
+
+def _current_user_sid():
+    """取当前用户的 SID 字符串（任务 XML 的 `<UserId>` 要它）。
+
+    ## 为什么不能直接用用户名
+
+    任务计划服务接受 `DOMAIN\\User` 或 `S-1-5-21-...` 两种形式，但
+    **XML 里用 `%USERDOMAIN%\\%USERNAME%` 这种环境变量写法是不展开的**
+    ——它会当成一个字面量用户名，创建失败或建出一条指向不存在账号的任务。
+
+    ## 读取方式
+
+    `HKCU\\...\\Authentication\\Volatile\\UserSidString` 是最直接的来源，
+    但该键在部分系统上不存在。所以再退一步用 `whoami /user`（系统自带，
+    输出形如 `用户 SID`，取最后一段）。
+    """
+    # 1) 注册表（最快，通常可用）
+    try:
+        import winreg
+
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                             r"Software\Microsoft\Windows\CurrentVersion"
+                             r"\Authentication\Volatile")
+        try:
+            sid, _ = winreg.QueryValueEx(key, "UserSidString")
+            sid = str(sid).strip()
+            if sid.startswith("S-1-"):
+                return sid
+        finally:
+            winreg.CloseKey(key)
+    except Exception:
+        pass
+
+    # 2) whoami /user（稳定可用，约 40ms）
+    try:
+        proc = subprocess.run(
+            ["whoami", "/user", "/fo", "csv", "/nh"],
+            capture_output=True, text=True, timeout=5,
+            creationflags=_NO_WINDOW,
+        )
+        out = (proc.stdout or "").strip()
+        if out:
+            # CSV 形如 "host\user","S-1-5-21-..."
+            parts = [p.strip('"') for p in out.replace('"', '').split(",")]
+            for p in parts:
+                if p.startswith("S-1-"):
+                    return p
+    except Exception:
+        pass
+
+    # 3) 兜底：DOMAIN\Username 形式（计划任务服务认这个）
+    try:
+        dom = os.environ.get("USERDOMAIN", "")
+        usr = os.environ.get("USERNAME", "")
+        if dom and usr:
+            return "%s\\%s" % (dom, usr)
+        if usr:
+            return usr
+    except Exception:
+        pass
+    return ""
+
+
 def enable_task_autostart():
-    """创建/覆盖「登录时以最高权限启动」的计划任务。
+    """创建/覆盖「登录时以最高权限、**隐藏**启动」的计划任务。
 
     返回 (成功, 消息)。需要管理员权限——非管理员时 Windows 返回
     `Access is denied`，这里原样带回给调用方用于提示。
@@ -145,22 +268,46 @@ def enable_task_autostart():
     if not exe:
         return False, "仅打包后的 exe 形态支持开机自启"
 
-    # /rl HIGHEST 是关键：以当前用户最高权限运行，登录时由任务计划服务
-    # 启动，不会弹 UAC。
-    ok, out = _run_schtasks([
-        "/create", "/tn", TASK_NAME,
-        "/tr", '"%s"' % exe,
-        "/sc", "onlogon",
-        "/rl", "HIGHEST",
-        "/f",
-    ])
-    # 任务状态变了，缓存必须失效
+    user = _current_user_sid()
+    if not user:
+        return False, "无法获取当前用户标识，创建计划任务失败"
+
+    xml = _TASK_XML.format(user=user, exe=exe)
+
+    # 用 /xml 创建：能带 <Hidden>true</Hidden> 与电源策略，
+    # 避免登录时闪出控制台窗口（详见 _TASK_XML 的说明）。
+    ok, out = _create_task_from_xml(xml)
     _invalidate_task_cache()
     if ok:
-        return True, "已创建开机自启计划任务（登录时以管理员权限运行）"
+        return True, "已创建开机自启计划任务（登录时以管理员权限静默运行）"
     if "denied" in out.lower() or "拒绝访问" in out:
         return False, "创建计划任务需要管理员权限，请先以管理员身份运行本程序"
     return False, "创建计划任务失败：%s" % (out or "未知错误")
+
+
+def _create_task_from_xml(xml):
+    """把 XML 写到临时文件，用 `schtasks /create /xml` 导入。
+
+    `/xml` 要求文件是 **UTF-16 LE 带 BOM**（Task Scheduler 的硬要求），
+    写成 UTF-8 会报 "无法分析" 或乱码，所以这里显式编码。
+    """
+    import tempfile
+
+    path = ""
+    try:
+        fd, path = tempfile.mkstemp(suffix=".xml")
+        os.close(fd)
+        with open(path, "w", encoding="utf-16") as f:
+            f.write(xml)
+        return _run_schtasks(["/create", "/tn", TASK_NAME, "/xml", path, "/f"])
+    except Exception as e:
+        return False, "%r" % (e,)
+    finally:
+        if path:
+            try:
+                os.remove(path)
+            except Exception:
+                pass
 
 
 def disable_task_autostart():

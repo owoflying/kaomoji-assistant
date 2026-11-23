@@ -73,6 +73,70 @@ _LIGHT_CHANGE_KEYS = frozenset({
 })
 
 
+def _apply_tooltip_palette(app, theme):
+    """把主题交给自绘 tooltip（并保留调色板兜底）。
+
+    ## 为什么最后改成完全自绘
+
+    原生 `QToolTip` 在 Windows 上有两个治不好的毛病，前前后后试了三种方案：
+
+    1. **QSS 的 `QToolTip {{}}` 规则不生效** —— 它是原生弹出窗口，
+       Qt 绘制时优先取 QPalette，QSS 被跳过。改 QPalette 能救文字，
+       但救不了背景。
+
+    2. **系统阴影变成黑块** —— 实测枚举窗口能看到：
+
+           Qt6111QWindowToolTipDropShadowSaveBits   423x33
+           SysShadow                                428x38
+
+       `SysShadow` 是 Windows 给带 `CS_DROPSHADOW` 风格的窗口画的系统阴影。
+       Qt 的 tooltip 默认带这个风格，同时又设半透明背景，两边打架，
+       阴影就变成**一条纯黑块**露在提示框外面。
+
+       试过用事件过滤器在显示后补 `Qt.NoDropShadowWindowHint`——**无效**，
+       窗口类风格在创建时就定了，改 flag 不会让 Windows 收回阴影。
+
+    所以最终方案是 `ui/fluent_tooltip.py` 的**完全自绘气泡**：
+    纯 Qt 绘制、无边框、无系统阴影，颜色 100% 由主题决定。
+    事件过滤器会吃掉原生 tooltip（返回 True），业务代码的
+    `setToolTip(...)` 一行都不用改。
+
+    ## 这里还要设 palette 吗
+
+    要。有些老路径（比如插件里自己 new 的 QToolTip）可能绕过过滤器；
+    设了调色板至少不会出现"黑底黑字"这种完全看不见的情况。
+    """
+    try:
+        from PySide6.QtGui import QColor, QPalette
+        from core.theme_presets import parse_color
+
+        pal = app.palette()
+        bg = parse_color(theme.card) or (255, 255, 255, 1.0)
+        fg = parse_color(theme.text) or (0, 0, 0, 1.0)
+        pal.setColor(QPalette.ToolTipBase,
+                     QColor(int(bg[0]), int(bg[1]), int(bg[2])))
+        pal.setColor(QPalette.ToolTipText,
+                     QColor(int(fg[0]), int(fg[1]), int(fg[2])))
+        # ⚠ 只改 ToolTipBase / ToolTipText，**不要**动 Window / WindowText：
+        # 那两个是全局窗口色，改了会影响所有没写样式的原生窗口
+        # （包括文件对话框、消息框），副作用远大于收益。
+        app.setPalette(pal)
+    except Exception:
+        # 调色板设置失败不该影响主题切换本身
+        pass
+
+    # 装自绘 tooltip（幂等）。provider 每次取**当前**主题对象，
+    # 所以主题切换后新弹出的提示自动是新配色，不用重新安装。
+    try:
+        from ui.fluent_tooltip import install_tooltips
+
+        install_tooltips(app, lambda: getattr(app, "_kao_theme_obj", None)
+                         or theme)
+        app._kao_theme_obj = theme
+    except Exception:
+        pass
+
+
 def _valid_item_pool(data, user_kao, triggers):
     """「合法条目」集合：内置库 + 插件数据源 + 我的颜文字 + 快捷短语输出。
 
@@ -200,6 +264,7 @@ class AppRuntime:
             return None
         if not chunked:
             self.app.setStyleSheet(ss)
+            _apply_tooltip_palette(self.app, theme)
             if self.menu is not None:
                 self.menu.setStyleSheet(theme.menu_style())
             self._applied_style = ss
@@ -208,6 +273,7 @@ class AppRuntime:
         def _steps():
             # 贴 QSS：一次性完成（这是唯一必须同步做的一步）
             self.app.setStyleSheet(ss)
+            _apply_tooltip_palette(self.app, theme)
             self._applied_style = ss
             yield                      # 让事件循环跑一轮（遮罩/图标能刷一帧）
             if self.menu is not None:

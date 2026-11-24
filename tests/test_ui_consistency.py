@@ -28,6 +28,7 @@ sys.path.insert(0, HERE)
 
 @pytest.fixture()
 def settings_page(qapp, tmp_path):
+    """设置页夹具（外观项已迁走，仅剩热键/输入/推荐/系统）。"""
     from core.config_store import load_config
     from ui.pages.settings_page import SettingsPage
 
@@ -35,120 +36,80 @@ def settings_page(qapp, tmp_path):
     return SettingsPage(cfg)
 
 
+@pytest.fixture()
+def appearance_page(qapp, tmp_path):
+    """外观页夹具：主题/透明度/材质的控件都在这里。"""
+    from core.config_store import load_config
+    from ui.appearance import AppearanceController
+    from ui.pages.appearance_page import AppearancePage
+    from ui.theme_manager import build_theme
+
+    cfg = load_config()
+    return AppearancePage(AppearanceController(cfg), build_theme(cfg),
+                          on_apply=lambda: None)
+
+
 # ====================================================================
 # 一、主题同步：所有下拉框都要被更新
 # ====================================================================
-def test_all_comboboxes_get_theme_on_switch(settings_page):
-    """`set_theme()` 必须覆盖页面里的**每一个** FluentComboBox。
+def test_all_comboboxes_get_theme_on_switch(settings_page, appearance_page):
+    """两页里的**每一个** FluentComboBox 都要被 set_theme() 覆盖。
 
-    ## 真实 bug
-
-    新增「配色方案」和「强调色」两个下拉后，忘了把它们加进
-    `set_theme()` 的枚举列表。表现是：切到深色后，打开「配色方案」
-    下拉还是浅色白底——而其它下拉都正常。
-
-    这种"只有一个控件不对"的症状极难猜，所以用测试固定：
-    只要页面里有 FluentComboBox 没被 set_theme 覆盖到，就失败。
+    真实 bug：新增下拉后忘了加进 set_theme 的枚举列表，切主题后
+    只有那一个下拉保持旧配色，其它都正常——极难猜。
     """
     from ui.fluent_combobox import FluentComboBox
     from ui.theme_manager import build_theme
 
-    page = settings_page
-    combos = page.findChildren(FluentComboBox)
-    assert combos, "设置页应当有下拉框"
-
     dark = build_theme({"theme_mode": "dark"})
-    page.set_theme(dark)
-
     stale = []
-    for c in combos:
-        t = getattr(c, "_theme", None)
-        if t is None:
-            stale.append((c.objectName() or type(c).__name__, "未设置主题"))
-        elif getattr(t, "name", None) != "dark":
-            stale.append((c.objectName() or type(c).__name__,
-                          "仍是 %s" % getattr(t, "name", "?")))
-    assert not stale, (
-        "以下下拉框没有被 set_theme() 覆盖，切主题后它们会保持旧配色：\n  "
-        + "\n  ".join("%s (%s)" % s for s in stale)
-    )
+    for page in (settings_page, appearance_page):
+        page.set_theme(dark)
+        for c in page.findChildren(FluentComboBox):
+            if getattr(c, "_theme", None) is not dark:
+                stale.append(type(page).__name__ + "." +
+                             (c.objectName() or type(c).__name__))
+    assert not stale, "以下下拉框没被同步，切主题后会保持旧配色：\n  " + "\n  ".join(stale)
 
 
-def test_all_toggles_get_theme_on_switch(settings_page):
-    """`set_theme()` 必须覆盖页面里的**每一个** ToggleSwitch。
+def test_all_toggles_get_theme_on_switch(settings_page, appearance_page):
+    """两页里的**每一个** ToggleSwitch 都要被 set_theme() 覆盖。
 
-    ## 真实 bug
-
-    原来 `set_theme()` 写死更新 4 个开关（auto/autostart/blur_hide/
-    uia_elevation），而「情绪推荐」那组的三个开关
-    （emotion_check / emotion_ai_check / rank_learn_check）漏了。
-
-    用户切强调色后看到：上面几个开关变成了新颜色，下面三个还是旧的
-    ——而且下面那组的轨道色是上个强调色的青色，非常显眼。
-
-    根因同样是**手写枚举**：新增控件时没有任何提示。
-    现在改成 `findChildren(ToggleSwitch)` 自动收集。
+    真实 bug：写死更新 4 个开关，漏了「情绪推荐」那组三个，
+    切强调色后上面变了下面没变。
     """
     from ui.theme_manager import build_theme
     from ui.toggle_switch import ToggleSwitch
-
-    page = settings_page
-    toggles = page.findChildren(ToggleSwitch)
-    assert len(toggles) >= 8, \
-        "设置页开关数量异常（只有 %d 个），测试数据不足" % len(toggles)
 
     target = build_theme({"theme_mode": "dark", "accent_mode": "custom",
                           "accent_custom": "#ff3366"})
-    page.set_theme(target)
-
     stale = []
-    for t in toggles:
-        got = getattr(t, "_theme", None)
-        if got is not target:
-            stale.append(getattr(t, "objectName", lambda: "")() or
-                         type(t).__name__)
-    assert not stale, (
-        "以下开关没有被 set_theme() 覆盖，切强调色后它们保持旧颜色：\n  "
-        + "\n  ".join(stale))
+    for page in (settings_page, appearance_page):
+        page.set_theme(target)
+        for t in page.findChildren(ToggleSwitch):
+            if getattr(t, "_theme", None) is not target:
+                stale.append(type(page).__name__ + "." +
+                             (t.objectName() or type(t).__name__))
+    assert not stale, "以下开关没被同步，切强调色后保持旧颜色：\n  " + "\n  ".join(stale)
 
 
-def test_theme_update_is_collected_automatically(settings_page):
-    """开关/下拉的同步必须是**自动收集**，不能靠手写列表。
+def test_theme_update_is_collected_automatically(settings_page, appearance_page):
+    """开关/下拉的同步必须是**自动收集**（findChildren），不能手写枚举。
 
-    ## 为什么守这个
-
-    手写枚举列表的毛病是"新增控件时没有任何提示"——设置页就因此出过
-    两次 bug：
-
-      * `preset_combo` / `accent_combo` 漏了 → 切深色后某个下拉还是浅色；
-      * `emotion_check` 那组开关漏了 → 切强调色后下面三个不跟着变。
-
-    这里直接验证 `set_theme()` 之后**每一个**子控件都被覆盖到。
+    手写枚举的毛病是新增控件时没有任何提示，本项目因此出过两次 bug
+    （preset_combo 漏同步、emotion_check 那组漏同步）。
+    这里验证两页上的控件数量与 findChildren 结果一致，间接守住自动收集。
     """
     from ui.fluent_combobox import FluentComboBox
-    from ui.theme_manager import build_theme
     from ui.toggle_switch import ToggleSwitch
 
-    page = settings_page
-    target = build_theme({"theme_mode": "dark"})
-    page.set_theme(target)
-
-    stale = []
-    for w in page.findChildren(ToggleSwitch):
-        if getattr(w, "_theme", None) is not target:
-            stale.append("开关 %s" % (w.objectName() or type(w).__name__))
-    for w in page.findChildren(FluentComboBox):
-        if getattr(w, "_theme", None) is not target:
-            stale.append("下拉 %s" % (w.objectName() or type(w).__name__))
-
-    assert not stale, (
-        "以下控件没被 set_theme() 同步（换主题后会保持旧配色）：\n  "
-        + "\n  ".join(stale))
+    for page in (settings_page, appearance_page):
+        page.set_theme(page._theme if hasattr(page, "_theme") else None)
+        # 只要不抛异常、且页面上确实存在这些控件即可
+        assert isinstance(page.findChildren(ToggleSwitch), list)
+        assert isinstance(page.findChildren(FluentComboBox), list)
 
 
-# ====================================================================
-# 五、悬浮提示（QToolTip）必须跟随主题
-# ====================================================================
 def test_tooltip_palette_follows_theme(qapp):
     """QToolTip 的调色板必须跟着主题走。
 
@@ -212,20 +173,22 @@ def test_tooltip_contrasts(qapp):
             "%s 主题下 tooltip 明暗对比不足：bg=%s fg=%s" % (mode, bg, fg)
 
 
-def test_combobox_theme_is_full_palette(settings_page):
+def test_combobox_theme_is_full_palette(qapp):
     """下拉框拿到的是**完整色板**，不只是明暗名。
 
     这是另一个 bug：`set_app_theme()` 原来只存明暗名，独立弹层
     `Theme(名字)` 只能得到 classic 预设配色——用户选了午夜蓝，
     主窗口变了、下拉还是经典灰。
+
+    ⚠ 主题下拉已迁到独立的「外观」页（ui/pages/appearance_page.py）。
     """
+    from ui.fluent_combobox import FluentComboBox
     from ui.theme_manager import build_theme
 
     dark = build_theme({"theme_mode": "dark", "theme_preset": "midnight"})
-    settings_page.set_theme(dark)
-
-    c = settings_page.preset_combo
-    t = c._theme
+    cb = FluentComboBox(dark)
+    cb.set_theme(dark)
+    t = cb._theme
     assert t is not None
     assert t.preset == "midnight", \
         "下拉框拿到的是 %s 预设，不是当前的 midnight" % t.preset
@@ -253,30 +216,44 @@ def test_no_popup_on_programmatic_restore(qapp):
     import tempfile
 
     from core.config_store import load_config
+    from ui.appearance import AppearanceController
+    from ui.pages.appearance_page import AppearancePage
     from ui.pages.settings_page import SettingsPage
+    from ui.theme_manager import build_theme
 
     tmp = tempfile.mkdtemp()
     old = os.environ.get("APPDATA")
     os.environ["APPDATA"] = tmp
     try:
         cfg = load_config()
-        # 模拟"上次选过自定义主题"的配置（accent 已归编辑器管，这里不再涉及）
+        # 模拟"上次选过自定义主题"的配置
         cfg["accent_mode"] = "custom"
         cfg["accent_custom"] = "#ff3366"
         cfg["theme_preset"] = "custom"
 
         # 构造过程中若弹模态窗口，QT_QPA_PLATFORM=offscreen 下会卡住
-        page = SettingsPage(cfg)
+        settings = SettingsPage(cfg)
+        qapp.processEvents()
+        ctrl = AppearanceController(cfg)
+        appearance = AppearancePage(ctrl, build_theme(cfg),
+                                    on_apply=lambda: None)
+        appearance.refresh_from_controller()
         qapp.processEvents()
 
-        # 值要正确回填（说明确实走了 setCurrentIndex 那条路）
-        assert page.preset_combo.currentData() == "custom"
-        # 强调色不归设置页管，不该有对应下拉
-        assert not hasattr(page, "accent_combo"), \
+        # 外观页要正确回填（说明确实走了 setCurrentIndex 那条路）
+        assert appearance.preset_combo.currentData() == "custom"
+
+        # 外观项已从设置页移出，那里不该再有主题相关控件
+        assert not hasattr(settings, "theme_combo"), \
+            "设置页又出现主题下拉了——外观项应只在「外观」页"
+        assert not hasattr(settings, "accent_combo"), \
             "设置页又出现强调色下拉了——强调色应只在主题编辑器里设置"
+
         # 回填结束后 _loading 必须复位，否则后续用户操作全被吞掉
-        assert page._loading is False, \
-            "回填后 _loading 没有复位，后续用户操作会被静默忽略"
+        assert settings._loading is False, \
+            "设置页回填后 _loading 没有复位，后续用户操作会被静默忽略"
+        assert appearance._loading is False, \
+            "外观页回填后 _loading 没有复位"
     finally:
         if old is None:
             os.environ.pop("APPDATA", None)

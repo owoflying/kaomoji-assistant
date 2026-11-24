@@ -245,6 +245,10 @@ class UnifiedSettingsWindow(FramelessShell):
         self._owns_theme_ctrl = theme_ctrl is None
         self.theme_ctrl = theme_ctrl or ThemeController(config, parent=self)
         self.theme = self.theme_ctrl.current()
+        #: 外观设置的唯一入口（主题/透明度/材质的读写都走它）
+        from ui.appearance import AppearanceController
+
+        self.appearance_ctrl = AppearanceController(config, parent=self)
         self._shadow_color = parse_color(self.theme.shadow_color)
         self._theme_ss = ""          # 缓存当前主题的完整 QSS，供 _refresh_content_sheet 复用
         self._content_surface = None  # 缓存内容区表面色，QSS 重贴的幂等判据之一
@@ -294,8 +298,15 @@ class UnifiedSettingsWindow(FramelessShell):
         self._nav_layout_box.setSpacing(4)
 
         # 导航控制器：内置导航由 NavController.NAV_ITEMS 驱动
+        #
+        # ⚠ NAV_ITEMS 的元组顺序是 **(key, 显示名, 图标名)**。
+        # 原来这里写成 `for icon_name, text, key in ...`，把顺序搞反了，
+        # 于是 "key" 拿到的是图标名。之前 7 项碰巧没暴露——它们的
+        # key 与 icon 同名（home/settings/about/library 等都是）；
+        # 新增「外观」(appearance / flash) 后，侧边栏 key 变成 "flash"，
+        # 点了页面不切换。
         self._nav = NavController(self, self._make_nav_item)
-        for icon_name, text, key in NavController.NAV_ITEMS:
+        for key, text, icon_name in NavController.NAV_ITEMS:
             item = self._make_nav_item(icon_name, text)
             item.clicked.connect(lambda k=key: self._set_page(k))
             self._nav_layout_box.addWidget(item)
@@ -454,6 +465,21 @@ class UnifiedSettingsWindow(FramelessShell):
                 pass
             return page
 
+        def _appearance_page():
+            """外观页工厂：接统一入口 AppearanceController。
+
+            所有读写都走 controller（见 ui/appearance.py），
+            不直接改 config——这样"改透明度把材质带歪"从机制上被杜绝。
+            """
+            from ui.pages.appearance_page import AppearancePage
+
+            page = AppearancePage(
+                self.appearance_ctrl, self.theme,
+                on_apply=self._on_appearance_applied)
+            page._theme_preview_cb = self._appearance_theme_preview
+            page.refresh_from_controller()
+            return page
+
         self._lazy_factories = {
             "library": lambda: LibraryPage(self.data),
             "custom": lambda: CustomKaomojiPage(self.user_kao, self.theme),
@@ -461,6 +487,7 @@ class UnifiedSettingsWindow(FramelessShell):
             "search": lambda: SearchPage(self.data, self.user_kao,
                                          self.theme.name),
             "settings": _settings_page,
+            "appearance": _appearance_page,
             "about": lambda: AboutPage(self.config, self.state,
                                        self.save_config, self.open_log),
         }
@@ -896,6 +923,49 @@ class UnifiedSettingsWindow(FramelessShell):
     def _on_settings_applied(self, new_cfg):
         self.config_applied.emit(new_cfg)
 
+    # ---------- 外观页回调 ----------
+    def _on_appearance_applied(self):
+        """外观页改了任何一项：广播配置，让 AppRuntime 落盘并重绘。
+
+        `appearance_ctrl.update()` 已经把改动写进 `self.config`（同一个
+        dict 实例），所以这里只要把配置发出去即可。
+
+        ⚠ 不要在这里再改 config——那是 controller 的职责，
+        重复写入会让"谁最后写谁生效"的竞态重新出现。
+        """
+        try:
+            self.config_applied.emit(dict(self.config))
+        except Exception:
+            pass
+
+    def _appearance_theme_preview(self, cfg, palette=None):
+        """外观页里主题编辑器的实时预览转交给宿主（AppRuntime）。"""
+        cb = getattr(self, "_theme_preview_cb", None)
+        if cb is not None:
+            try:
+                cb(cfg, palette)
+                return
+            except Exception:
+                pass
+        # 独立使用时没有宿主：直接换主题对象重绘
+        try:
+            if palette is not None:
+                from ui.theme_manager import build_theme
+
+                saved = self.config.get("theme_preset")
+                self.config["theme_preset"] = "custom"
+                try:
+                    self.theme = build_theme(self.config,
+                                             preview_palette=palette)
+                finally:
+                    if saved is None:
+                        self.config.pop("theme_preset", None)
+                    else:
+                        self.config["theme_preset"] = saved
+                self._apply_theme()
+        except Exception:
+            pass
+
     def _on_test_features_changed(self):
         """开发者页切换「测试功能」总开关后，让设置页重新评估测试项的可见性。
 
@@ -968,6 +1038,31 @@ class UnifiedSettingsWindow(FramelessShell):
             return bool(background_path())
         except Exception:
             return False
+
+    def _material_paint_params(self):
+        """给内部元素（卡片/输入框）用的材质参数；材质关闭时返回 None。
+
+        :return: `(material_type, strength, card_color, radius)` 或 None
+
+        卡片自己不会读配置（它是通用控件，页面各处都在用），
+        而是问**窗口**要参数——这样"材质开关"只有一个判断点。
+        """
+        if not self._material_on():
+            return None
+        mat = str(self.config.get("material_type", "none") or "none").lower()
+        strength = int(self.config.get("material_strength", 55))
+        # 材质类型是 none 但有背景图：内部元素也用最轻的磨砂质感，
+        # 否则卡片和背景图之间没有"玻璃层"的视觉过渡
+        if mat == "none":
+            mat = "frosted"
+            strength = min(strength, 35)
+        try:
+            from ui.win11_theme import RADIUS_CARD
+
+            radius = RADIUS_CARD
+        except Exception:
+            radius = 8
+        return (mat, strength, self.theme.card, radius)
 
     def _background_material(self):
         """给 frameless_shell 提供背景材质：`(pixmap, opacity)` 或 None。
@@ -1042,24 +1137,31 @@ class UnifiedSettingsWindow(FramelessShell):
     def _adjusted_panel_base(self):
         """面板基底色，按 panel_alpha（语义=不透明度，值越大越实）缩放。
 
-        ## 材质开启时为什么要更透
+        ## ⚠ 不要按材质状态改写 alpha（曾经踩过的坑）
 
-        基底色是画在背景**之上**的一层。材质（背景图/毛玻璃）要能看见，
-        这层就必须更透明；否则等于把背景挡死了。
+        上一版写成：
 
-        所以两套 alpha 映射：
-          * 材质开：`0.35 + 0.5 * panel_alpha`（0.35~0.85），背景始终透出来
-          * 材质关：`panel_alpha`（用户滑块直控），保底 0.4
+            材质开：a = 0.35 + 0.50 * alpha   （0.35~0.85）
+            材质关：a = alpha                 （0.4~1.0）
+
+        理由看起来合理——"材质要能看见，面板得透一点"。但实际后果：
+
+        * 滑块拉到 100%，面板只到 85%；拉到 50%，只到 60%。
+          **用户调滑块的效果被压缩掉一半，上限还被砍掉了**，
+          体感就是"透明度调了没用"。
+        * 一开一关材质，同样的滑块位置得到完全不同的观感，
+          于是"改改材质配置就又能用了"——看起来像随机 bug。
+
+        透明度和材质是两件独立的事：
+          * 面板不透明度 → 只由 panel_alpha 决定，**值是多少就是多少**
+          * 背景图能不能透出来 → 由 material_image_opacity 控制
+          * 材质效果强弱 → 由 material_strength 控制
+
+        三者互不干涉。要"让背景更明显"，用户调后两个滑块即可。
         """
         alpha = float(self.config.get("panel_alpha", 0.92))
-        if self._material_on():
-            base = self.theme.window_tint
-            r, g, b, _ = _rgba_parts(base)
-            a = max(0.35, min(0.85, 0.35 + 0.50 * alpha))
-        else:
-            base = self.theme.bg
-            r, g, b, _ = _rgba_parts(base)
-            a = max(0.4, min(1.0, alpha))
+        r, g, b, _ = _rgba_parts(self.theme.bg)
+        a = max(0.0, min(1.0, alpha))
         return _rgba_str(r, g, b, a)
 
     # ---------- 生命周期 ----------

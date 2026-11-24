@@ -48,6 +48,8 @@ _NO_STYLE_NEEDED = {
     # 非可视类型：数据项 / 布局策略 / 绘制选项，本身不绘制
     "QListWidgetItem", "QTableWidgetItem", "QTreeWidgetItem",
     "QSizePolicy", "QSpacerItem", "QStyleOptionButton",
+    # QGraphics* 是离屏图形对象（背景模糊用），不参与界面渲染
+    "QGraphicsBlurEffect", "QGraphicsPixmapItem", "QGraphicsScene",
     # 顶层容器：内部控件各自有样式
     "QMainWindow",
 }

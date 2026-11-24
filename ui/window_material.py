@@ -328,3 +328,62 @@ def soft_light_overlay(size, dark=False, alpha=36):
     p.fillRect(0, 0, w, h, grad)
     p.end()
     return layer
+
+
+# ====================================================================
+# 内部元素（卡片/输入框）的材质
+# ====================================================================
+
+def render_inner_surface(size, material="none", strength=DEFAULT_STRENGTH,
+                         base_color="#ffffff"):
+    """渲染"卡片/输入框"这类**内部小面板**的材质底。
+
+    ## 与窗口背景的区别
+
+    窗口背景是一整张图（或模糊后的图），内部元素只是它上面的**半透明
+    小面板**。所以这里不做"从背景图裁一块再模糊"——那样每张卡片都要
+    独立裁剪+模糊，页面上一二十张卡片会卡死。
+
+    实际做法是：内部元素只做**材质感的表面处理**（磨砂颗粒 / 雾化
+    叠层 / 轻微模糊带来的柔化），叠在窗口背景之上。
+
+    这样视觉上能看出"卡片也是玻璃的"，但成本只有一次小尺寸渲染，
+    而且尺寸很小（几百像素），单张 2~5ms。
+
+    :param base_color: 卡片本身的基础色（主题 card 色），作为叠层基准
+    """
+    w = max(1, int(size.width()))
+    h = max(1, int(size.height()))
+    mat = normalize_material(material)
+    strength = max(0, min(100, int(strength)))
+
+    canvas = QImage(w, h, QImage.Format_ARGB32_Premultiplied)
+    # 内部面板保持半透明：既能透出窗口背景，又有自己的"玻璃层"
+    # 材质越强、越"厚"，不透明度越高
+    base_alpha = int(120 + strength * 0.9)      # 120~210
+    base_alpha = max(0, min(255, base_alpha))
+    c = QColor(base_color)
+    c.setAlpha(base_alpha)
+    canvas.fill(c)
+
+    if mat == "frosted":
+        # 磨砂：叠细颗粒，模拟毛砂表面的漫反射
+        canvas = _apply_grain(canvas, 10 + strength * 0.25)
+    elif mat == "fog":
+        # 雾化：再叠一层更白的雾，让面板更"朦胧"
+        canvas = _apply_fog(canvas, int(strength * 0.5))
+    elif mat == "blur":
+        # 毛玻璃：内部面板没有可模糊的自身内容，用极轻的柔化 +
+        # 一层微亮叠加来暗示"玻璃厚度"
+        out = QImage(w, h, QImage.Format_ARGB32_Premultiplied)
+        out.fill(Qt.transparent)
+        p = QPainter(out)
+        p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        p.drawImage(0, 0, canvas)
+        p.fillRect(out.rect(),
+                   QColor(255, 255, 255, int(strength * 0.25)))
+        p.end()
+        canvas = out
+
+    pm = QPixmap.fromImage(canvas)
+    return pm if not pm.isNull() else QPixmap(w, h)

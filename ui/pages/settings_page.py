@@ -6,7 +6,7 @@
 """
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QSlider, QSpinBox, QFrame, QSizePolicy, QScrollArea, QDialog,
+    QSlider, QSpinBox, QFrame, QSizePolicy, QScrollArea,
 )
 from PySide6.QtCore import Qt, QTimer, Signal
 
@@ -173,32 +173,6 @@ class SettingsPage(QWidget):
         croot.addWidget(tip)
         v.addWidget(card)
 
-        # 外观
-        v.addWidget(self._section_title("外观"))
-        card = self._card()
-        croot = QVBoxLayout(card)
-        croot.setContentsMargins(16, 14, 16, 14)
-        croot.setSpacing(12)
-        self._add_row(croot, "主题", self._theme_combo())
-        self._add_row(croot, "配色方案", self._preset_row())
-        self._add_row(croot, "面板不透明度", self._panel_alpha_row())
-        self._add_row(croot, "候选条不透明度", self._opacity_row())
-        v.addWidget(card)
-
-        # 背景材质
-        v.addWidget(self._section_title("背景材质"))
-        card = self._card()
-        croot = QVBoxLayout(card)
-        croot.setContentsMargins(16, 14, 16, 14)
-        croot.setSpacing(12)
-        self._add_row(croot, "启用背景材质", self._material_toggle())
-        self._add_row(croot, "材质效果", self._material_combo())
-        self._add_row(croot, "材质强度", self._material_strength_row())
-        self._add_row(croot, "背景图", self._material_image_row())
-        self._add_row(croot, "图片不透明度", self._material_image_opacity_row())
-        self._add_row(croot, "背景暗化/提亮", self._material_dim_row())
-        v.addWidget(card)
-
         # 输入
         v.addWidget(self._section_title("输入"))
         card = self._card()
@@ -317,9 +291,6 @@ class SettingsPage(QWidget):
         # 所有设置项改动后自动保存：所有控件（含上方各节所建）都已存在，此处统一接线。
         # 外观项不再走 preview（不落盘）机制；滑块拖动时实时更新标签与候选条预览，
         # 释放后再统一保存，避免高频写盘/重绘。
-        self.theme_combo.currentIndexChanged.connect(lambda *_a: self._on_apply())
-        self.panel_alpha_slider.sliderReleased.connect(lambda *_a: self._on_apply())
-        self.opacity_slider.sliderReleased.connect(lambda *_a: self._on_apply())
         # 非外观项改动立即保存
         self.method_combo.currentIndexChanged.connect(lambda *_a: self._on_apply())
         self.recent_spin.valueChanged.connect(lambda *_a: self._on_apply())
@@ -410,307 +381,6 @@ class SettingsPage(QWidget):
         if test_feature:
             self._test_widgets.append(container)
         return container
-
-    def _theme_combo(self):
-        """明暗模式（light / dark / system）。"""
-        self.theme_combo = FluentComboBox(self._theme)
-        self.theme_combo.addItem("浅色", "light")
-        self.theme_combo.addItem("深色", "dark")
-        self.theme_combo.addItem("跟随系统", "system")
-        self.theme_combo.setToolTip(
-            "明暗与配色方案是分开的：这里只管深浅，"
-            "下面「配色方案」决定具体色调")
-        self.theme_combo.setMinimumWidth(140)
-        return self.theme_combo
-
-    def _preset_combo(self):
-        """配色方案：从 data/themes.json 动态读取，不写死列表。"""
-        from core.theme_presets import preset_choices
-
-        self.preset_combo = FluentComboBox(self._theme)
-        for pid, name in preset_choices():
-            self.preset_combo.addItem(name, pid)
-        # 「自定义」作为**一个真正的预设项**（不再是"点一下就弹窗"的伪选项）。
-        # 选中它 = 使用自定义主题；要修改则点右边的「编辑…」。
-        self.preset_combo.addItem("自定义", "custom")
-        self.preset_combo.setToolTip(
-            "每套配色都有浅色/深色两份，与上面的明暗自由组合。\n"
-            "选「自定义」后用右边的「编辑…」调整颜色。")
-        self.preset_combo.currentIndexChanged.connect(
-            lambda *_a: self._on_preset_changed())
-        self.preset_combo.setMinimumWidth(120)
-        return self.preset_combo
-
-    def _preset_row(self):
-        """配色方案一行：下拉 + 「编辑…」按钮。
-
-        ## 为什么不是"选自定义就弹编辑器"
-
-        原来 `_on_preset_changed` 里，选到「自定义…」就 `_open_theme_editor()`。
-        但 Qt 的 `currentIndexChanged` **只在索引变化时触发**——用户当前
-        已经是自定义主题时，再选一次同一项没有任何信号，编辑器打不开。
-        用户体感就是"必须先换回别的主题，才能再点自定义"，非常反直觉。
-
-        现在拆成两个独立动作：
-          * 下拉：选择用哪套配色（含自定义）
-          * 「编辑…」按钮：随时打开编辑器改颜色，与当前选中项无关
-
-        按钮只在选中「自定义」时可用——编辑别的预设没有意义
-        （它们是只读的内置数据）。
-        """
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-        row.addWidget(self._preset_combo())
-        self.edit_preset_btn = QPushButton("编辑…")
-        self.edit_preset_btn.setToolTip("调整自定义主题的颜色")
-        self.edit_preset_btn.clicked.connect(self._open_theme_editor)
-        row.addWidget(self.edit_preset_btn)
-        row.addStretch(1)
-        return row
-
-    def _on_preset_changed(self):
-        """配色方案变了：应用配置，并刷新「编辑…」按钮的可用性。
-
-        ⚠ **不要在这里弹编辑器**。选中「自定义」只是"用自定义主题"，
-        修改颜色是「编辑…」按钮的职责。混在一起会导致"再选一次同一项
-        没反应"（Qt 信号只在索引变化时触发）。
-        """
-        if getattr(self, "_loading", False):
-            return
-        self._sync_preset_buttons()
-        self._on_apply()
-
-    def _sync_preset_buttons(self):
-        """「编辑…」只在选中自定义时可用——内置预设是只读数据。"""
-        try:
-            is_custom = self.preset_combo.currentData() == "custom"
-            self.edit_preset_btn.setEnabled(is_custom)
-        except Exception:
-            pass
-
-    def _open_theme_editor(self):
-        """打开主题编辑器；保存后写 user_theme.json 并应用。
-
-        ## 预览为什么不能走 `config_applied`
-
-        `config_applied` 是 `Signal(dict)`，只吃一个配置字典。而预览需要
-        额外带上**编辑中的色板**（它还没落盘，不在配置里）。
-
-        所以走 `_theme_preview_cb`——由 AppRuntime 注入，签名是
-        `(config, palette_or_None)`。传 None 表示"退出预览，回到已保存的主题"。
-        """
-        from core.theme_presets import save_user_theme
-        from ui.theme_editor import ThemeEditorDialog
-
-        before = dict(self.config)
-        cb = getattr(self, "_theme_preview_cb", None)
-
-        def _preview(cfg, palette=None):
-            if cb is not None:
-                cb(cfg, palette)
-            elif hasattr(self, "config_applied"):
-                self.config_applied.emit(cfg)
-
-        dlg = ThemeEditorDialog(self.config, on_preview=_preview,
-                                parent=self)
-        if dlg.exec() != QDialog.Accepted:
-            # 取消：退出预览，回到打开前的主题
-            if cb is not None:
-                cb(before, None)
-            idx = self.preset_combo.findData(
-                before.get("theme_preset", "classic"))
-            self._loading = True
-            try:
-                self.preset_combo.setCurrentIndex(idx if idx >= 0 else 0)
-            finally:
-                self._loading = False
-            return
-
-        data = dlg.result_data()
-        ok, msg = save_user_theme(data)
-        if not ok:
-            self._refresh_rank_stats(msg)     # 借用现有的提示位
-            return
-        # 保存后退出预览态：让主题系统去读刚落盘的文件，
-        # 保证"预览的效果"和"保存后的效果"是同一条路径产生的
-        if cb is not None:
-            cb(before, None)
-        self.config["theme_preset"] = "custom"
-        self._on_apply()
-
-    def _panel_alpha_row(self):
-        row = QHBoxLayout()
-        self.panel_alpha_slider = QSlider(Qt.Horizontal)
-        self.panel_alpha_slider.setRange(50, 100)
-        self.panel_alpha_slider.setTickInterval(5)
-        self.panel_alpha_value = QLabel("")
-        self.panel_alpha_value.setFixedWidth(44)
-        self.panel_alpha_value.setObjectName("BodyText")
-        self.panel_alpha_slider.valueChanged.connect(
-            lambda v: self.panel_alpha_value.setText("%d%%" % v)
-        )
-        row.addWidget(self.panel_alpha_slider, 1)
-        row.addWidget(self.panel_alpha_value)
-        return row
-
-    # ---------- 背景材质 ----------
-    def _material_toggle(self):
-        """材质总开关。
-
-        关闭时完全不计算背景材质（模糊整窗 40~120ms），用纯主题色。
-        """
-        self.material_check = ToggleSwitch(self._theme)
-        self.material_check.setToolTip(
-            "开启后可用自定义背景图和玻璃效果。\n"
-            "关闭则使用纯色背景，最省资源。")
-        self.material_check.toggled.connect(
-            lambda *_a: self._on_material_changed())
-        return self.material_check
-
-    def _material_combo(self):
-        """材质效果：无 / 毛玻璃 / 磨砂玻璃 / 雾化。"""
-        from ui.window_material import material_choices
-
-        self.material_combo = FluentComboBox(self._theme)
-        for mid, name in material_choices():
-            self.material_combo.addItem(name, mid)
-        self.material_combo.setToolTip(
-            "毛玻璃：高斯模糊，背景隐约可见\n"
-            "磨砂玻璃：轻微模糊 + 细颗粒\n"
-            "雾化：半透明叠层，画面柔和")
-        self.material_combo.currentIndexChanged.connect(
-            lambda *_a: self._on_material_changed())
-        self.material_combo.setMinimumWidth(120)
-        return self.material_combo
-
-    def _material_slider_row(self, attr, on_change, fmt="%d%%"):
-        """材质相关滑块的通用构造（0~100）。"""
-        row = QHBoxLayout()
-        s = QSlider(Qt.Horizontal)
-        s.setRange(0, 100)
-        s.setFixedWidth(140)
-        val = QLabel("")
-        val.setFixedWidth(44)
-        s.valueChanged.connect(lambda v: val.setText(fmt % v))
-        s.sliderReleased.connect(lambda *_a: on_change())
-        row.addWidget(s)
-        row.addWidget(val)
-        row.addStretch(1)
-        setattr(self, attr, s)
-        setattr(self, attr + "_value", val)
-        return row
-
-    def _material_strength_row(self):
-        """材质强度：模糊半径 / 噪点密度 / 雾化浓度都按它缩放。"""
-        return self._material_slider_row(
-            "material_strength_slider", self._on_material_changed)
-
-    def _material_image_opacity_row(self):
-        return self._material_slider_row(
-            "material_image_opacity_slider", self._on_material_changed)
-
-    def _material_dim_row(self):
-        return self._material_slider_row(
-            "material_dim_slider", self._on_material_changed)
-
-    def _material_image_row(self):
-        """背景图：选择 / 清除 + 当前文件名。"""
-        row = QHBoxLayout()
-        self.material_image_btn = QPushButton("选择图片…")
-        self.material_image_btn.clicked.connect(self._pick_material_image)
-        row.addWidget(self.material_image_btn)
-        self.material_image_clear = QPushButton("清除")
-        self.material_image_clear.clicked.connect(self._clear_material_image)
-        row.addWidget(self.material_image_clear)
-        self.material_image_label = QLabel("")
-        self.material_image_label.setObjectName("Caption")
-        row.addWidget(self.material_image_label)
-        row.addStretch(1)
-        return row
-
-    def _pick_material_image(self):
-        """选背景图：复制到数据目录后立即生效。"""
-        from PySide6.QtWidgets import QFileDialog, QMessageBox
-
-        from ui.window_material import copy_background, IMAGE_SUFFIXES
-
-        patterns = " ".join("*" + e for e in IMAGE_SUFFIXES)
-        path, _ = QFileDialog.getOpenFileName(
-            self, "选择背景图", "", "图片 (%s);;所有文件 (*.*)" % patterns)
-        if not path:
-            return
-        ok, result = copy_background(path)
-        if not ok:
-            QMessageBox.warning(self, "背景图", result)
-            return
-        self._refresh_material_image_label()
-        self._on_material_changed()
-
-    def _clear_material_image(self):
-        from ui.window_material import clear_background
-
-        if clear_background():
-            self._refresh_material_image_label()
-            self._on_material_changed()
-
-    def _refresh_material_image_label(self):
-        """刷新"当前背景图"的显示文字。"""
-        import os
-
-        from ui.window_material import background_path
-
-        p = background_path()
-        try:
-            if p:
-                self.material_image_label.setText(os.path.basename(p))
-                self.material_image_clear.setEnabled(True)
-            else:
-                self.material_image_label.setText("未设置（使用纯色）")
-                self.material_image_clear.setEnabled(False)
-        except Exception:
-            pass
-
-    def _on_material_changed(self):
-        """材质参数变化：保存并通知运行时重建背景。"""
-        if getattr(self, "_loading", False):
-            return
-        self._sync_material_enabled()
-        self._on_apply()
-        cb = getattr(self, "_material_changed_cb", None)
-        try:
-            if cb is not None:
-                cb()
-        except Exception:
-            pass
-
-    def _sync_material_enabled(self):
-        """材质关着时，下面的参数控件置灰（避免用户调了没反应）。"""
-        try:
-            on = self.material_check.isChecked()
-            for w in (self.material_combo, self.material_strength_slider,
-                      self.material_image_btn,
-                      self.material_image_opacity_slider,
-                      self.material_dim_slider):
-                w.setEnabled(on)
-            # 「清除」按钮还要求确实有图
-            from ui.window_material import background_path
-
-            self.material_image_clear.setEnabled(on and bool(background_path()))
-        except Exception:
-            pass
-
-    def _opacity_row(self):
-        row = QHBoxLayout()
-        self.opacity_slider = QSlider(Qt.Horizontal)
-        self.opacity_slider.setRange(50, 100)
-        self.opacity_slider.setTickInterval(5)
-        self.opacity_value = QLabel("")
-        self.opacity_value.setFixedWidth(44)
-        self.opacity_value.setObjectName("BodyText")
-        self.opacity_slider.valueChanged.connect(self._on_opacity_input)
-        row.addWidget(self.opacity_slider, 1)
-        row.addWidget(self.opacity_value)
-        return row
 
     def _method_combo(self):
         self.method_combo = FluentComboBox(self._theme)
@@ -1072,7 +742,7 @@ class SettingsPage(QWidget):
         #
         # 以后新增下拉框记得加进这个列表；漏了会被
         # `tests/test_settings_theme_sync.py` 抓到。
-        for c in (self.theme_combo, self.preset_combo, self.method_combo):
+        for c in (self.method_combo,):
             if c is not None:
                 try:
                     c.set_theme(theme_obj)
@@ -1088,42 +758,8 @@ class SettingsPage(QWidget):
         try:
             self._captured = None
             self._update_hotkey_label(cfg.get("hotkey", "<ctrl>+<shift>+k"))
-            theme = cfg.get("theme_mode") or cfg.get("theme", "light")
-            idx = self.theme_combo.findData(theme)
-            self.theme_combo.setCurrentIndex(idx if idx >= 0 else 0)
-            # 配色方案 / 强调色来源
-            preset = cfg.get("theme_preset", "classic")
-            pidx = self.preset_combo.findData(preset)
-            self.preset_combo.setCurrentIndex(pidx if pidx >= 0 else 0)
-            # 回填期间信号被 _loading 屏蔽，按钮状态要手动同步
-            self._sync_preset_buttons()
-            # 强调色不在这里设置——它由主题编辑器统一管理，
-            # 这里既不回填也不写入，避免覆盖用户在编辑器里的选择。
-            pa = int(float(cfg.get("panel_alpha", 0.92)) * 100)
-            self.panel_alpha_slider.setValue(pa)
-            self.panel_alpha_value.setText("%d%%" % pa)
-            op = int(float(cfg.get("opacity", 0.98)) * 100)
-            self.opacity_slider.setValue(op)
-            self.opacity_value.setText("%d%%" % op)
-            # 背景材质
-            self.material_check.setChecked(
-                bool(cfg.get("material_enabled", False)))
-            mtype = str(cfg.get("material_type", "none") or "none")
-            mt_idx = self.material_combo.findData(mtype)
-            self.material_combo.setCurrentIndex(mt_idx if mt_idx >= 0 else 0)
-            for attr, key in (
-                    ("material_strength_slider", "material_strength"),
-                    ("material_image_opacity_slider", "material_image_opacity"),
-                    ("material_dim_slider", "material_dim")):
-                v = int(cfg.get(key, 55 if key == "material_strength" else (100 if "opacity" in key else 0)))
-                s = getattr(self, attr, None)
-                if s is not None:
-                    s.setValue(max(0, min(100, v)))
-                    lbl = getattr(self, attr + "_value", None)
-                    if lbl is not None:
-                        lbl.setText("%d%%" % s.value())
-            self._refresh_material_image_label()
-            self._sync_material_enabled()
+            # 主题/透明度/背景材质已迁到独立的「外观」页
+            # （见 ui/pages/appearance_page.py），这里不再回填。
             method = cfg.get("input_method", "direct")
             midx = self.method_combo.findData(method)
             self.method_combo.setCurrentIndex(midx if midx >= 0 else 0)
@@ -1340,17 +976,6 @@ class SettingsPage(QWidget):
         pass
 
     # ---------- 应用 ----------
-    def _on_opacity_input(self, value):
-        """候选条不透明度滑块拖动中：实时更新标签与候选条预览（不落盘）。
-
-        程序化加载（refresh_from_config 的 setValue）期间 _loading 为 True，此时仅让
-        label 随值刷新，不向外发预览信号，避免与 _on_apply 的自保存逻辑互相干扰。
-        """
-        if getattr(self, "_loading", False):
-            return
-        self.opacity_value.setText("%d%%" % value)
-        self.opacity_preview.emit(value / 100.0)
-
     def _on_uia_toggled(self, checked):
         """UIA 提权开关：**第一次开启时**给出风险说明，之后不再打扰。"""
         if getattr(self, "_loading", False):
@@ -1376,21 +1001,9 @@ class SettingsPage(QWidget):
         if self._captured is not None:
             new_cfg["hotkey"] = win_utils.format_hotkey(self._captured)
             self._captured = None
-        mode = self.theme_combo.currentData()
-        new_cfg["theme_mode"] = mode
-        new_cfg["theme"] = mode          # 旧键同步写，兼容降级/旧调用方
-        new_cfg["theme_preset"] = self.preset_combo.currentData()
-        # ⚠ 不写 accent_mode / accent_custom：强调色归主题编辑器管。
-        # new_cfg 是从 self.config 拷来的，原值会自然保留。
-        new_cfg["panel_alpha"] = self.panel_alpha_slider.value() / 100.0
-        new_cfg["opacity"] = self.opacity_slider.value() / 100.0
-        # 背景材质（全部数值型参数直接取滑块值）
-        new_cfg["material_enabled"] = self.material_check.isChecked()
-        new_cfg["material_type"] = self.material_combo.currentData() or "none"
-        new_cfg["material_strength"] = int(self.material_strength_slider.value())
-        new_cfg["material_image_opacity"] = int(
-            self.material_image_opacity_slider.value())
-        new_cfg["material_dim"] = int(self.material_dim_slider.value())
+        # 主题/透明度/背景材质归「外观」页管（ui/pages/appearance_page.py）。
+        # new_cfg 是从 self.config 拷来的，外观项的原值会自然保留——
+        # 这正是"设置页保存不会覆盖外观设置"的保证。
         new_cfg["input_method"] = self.method_combo.currentData()
         new_cfg["max_recent"] = self.recent_spin.value()
         new_cfg["auto_popup"] = self.auto_check.isChecked()

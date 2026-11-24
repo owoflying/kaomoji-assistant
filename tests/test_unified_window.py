@@ -85,9 +85,29 @@ def test_has_page_reflects_lazy_state(window):
 
 
 def test_nav_order_matches_nav_items(window):
+    """侧边栏实际渲染的顺序必须与 NAV_ITEMS 定义一致。
+
+    另外断言：**每个 NAV_ITEMS 都必须有对应页面工厂**。
+    漏登记时侧边栏会出现点了没反应的死项（外观页就差点这样）。
+    """
     from ui.unified_nav import NavController
-    assert [k for k, _ in window._nav.nav_items] == \
-        [k for k, _, _ in NavController.NAV_ITEMS]
+
+    declared = [k for k, _, _ in NavController.NAV_ITEMS]
+    # window._nav.nav_items 是 [(key, widget), ...]（两元组），
+    # 而 NAV_ITEMS 是三元组 (key, label, icon)——两边结构不同，取下标的写法也不同。
+    actual = [entry[0] for entry in window._nav.nav_items]
+    assert actual == declared, \
+        "侧边栏渲染顺序 %r 与 NAV_ITEMS 定义 %r 不一致" % (actual, declared)
+
+    # 每一项都要能真正打开（懒加载工厂存在，或已注册页面）
+    missing = []
+    for key in declared:
+        if window.has_page(key):
+            continue
+        if key in getattr(window, "_lazy_factories", {}):
+            continue
+        missing.append(key)
+    assert not missing, "这些导航项没有页面工厂，点了会没反应：%r" % (missing,)
 
 
 def test_shell_geometry_constants(window):
@@ -157,16 +177,29 @@ def test_apply_config_system_resolves(window):
 
 
 def test_panel_base_follows_panel_alpha(window):
-    """不透明度语义：值越大越实；亚克力开时保底 0.6，关时保底 0.4。"""
+    """不透明度语义：值越大越实，且**完全由滑块决定**。
+
+    ## 历史
+
+    曾经按材质开关做两套映射（材质开时压进 0.35~0.85、关时 0.4~1.0），
+    结果用户拖滑块的效果被压缩掉一半、上限还被砍掉，体感是"透明度调了没用"，
+    而且开关材质后同一滑块位置观感完全不同——看起来像随机 bug。
+
+    现在透明度和材质彻底解耦：panel_alpha 是多少，面板 alpha 就是多少。
+    """
     from ui.unified_window import _rgba_parts
 
     window.apply_config(_config(panel_alpha=1.0))
     hi = _rgba_parts(window._adjusted_panel_base())[3]
     window.apply_config(_config(panel_alpha=0.3))
     lo = _rgba_parts(window._adjusted_panel_base())[3]
+
     assert hi > lo, "panel_alpha 越大面板应越不透明"
     assert hi <= 1.0
-    assert lo >= 0.4
+    # 滑块拉到 100% 就该完全不透明，不再被材质压到 0.85
+    assert hi == 1.0, "panel_alpha=1.0 时面板应完全不透明，实际 %.2f" % hi
+    # 拉到最低就该真的更透，不再被保底抬到 0.4
+    assert lo <= 0.31, "panel_alpha=0.3 时面板 alpha 应接近 0.3，实际 %.2f" % lo
 
 
 def test_apply_config_is_idempotent(window):

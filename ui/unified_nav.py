@@ -38,13 +38,16 @@ class NavController:
     #: 就会表现为「侧边栏能点但页面不切」（拆分时踩过：这里曾写成 edit/flash，
     #: 而页面注册用的是 custom/triggers）。
     NAV_ITEMS = (
-        ("home",     "主页",     "home"),
-        ("library",  "颜文字库", "library"),
-        ("custom",   "我的颜文字", "custom"),
-        ("triggers", "快捷短语", "triggers"),
-        ("search",   "搜索",     "search"),
-        ("settings", "设置",     "settings"),
-        ("about",    "关于",     "about"),
+        ("home",       "主页",     "home"),
+        ("library",    "颜文字库", "library"),
+        ("custom",     "我的颜文字", "custom"),
+        ("triggers",   "快捷短语", "triggers"),
+        ("search",     "搜索",     "search"),
+        # 外观单独成页：主题/透明度/背景材质都是高频调整项，
+        # 挤在设置页里一屏放不下（详见 ui/pages/appearance_page.py）。
+        ("appearance", "外观",     "flash"),
+        ("settings",   "设置",     "settings"),
+        ("about",      "关于",     "about"),
     )
 
     def __init__(self, host, make_nav_item):

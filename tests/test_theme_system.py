@@ -300,7 +300,8 @@ def test_editor_does_not_expose_accent():
 def test_settings_page_has_no_accent_combo(qapp):
     """设置页**不能**再有强调色下拉。
 
-    这是上一个 bug 的另一半：两个入口必然打架。现在只留编辑器。
+    这是上一个 bug 的另一半：两个入口必然打架。现在强调色只在主题
+    编辑器里设置，而编辑器的入口在「外观」页。
     """
     from core.config_store import load_config
     from ui.pages.settings_page import SettingsPage
@@ -308,6 +309,37 @@ def test_settings_page_has_no_accent_combo(qapp):
     page = SettingsPage(load_config())
     assert not hasattr(page, "accent_combo"), \
         "设置页又出现强调色下拉了，会和编辑器里的设置打架"
+
+
+def test_appearance_page_owns_theme_controls(qapp):
+    """主题/透明度/材质控件必须都在「外观」页，不再散在设置页。
+
+    用户反馈过"设置混杂在一起，不知道哪个是什么"——外观项和热键、输入、
+    推荐挤在同一页，加了背景材质后一屏放不下，连「面板不透明度」都找不到了。
+    """
+    from core.config_store import load_config
+    from ui.appearance import AppearanceController
+    from ui.pages.appearance_page import AppearancePage
+    from ui.pages.settings_page import SettingsPage
+    from ui.theme_manager import build_theme
+
+    cfg = load_config()
+    appearance = AppearancePage(AppearanceController(cfg),
+                                build_theme(cfg), on_apply=lambda: None)
+    settings = SettingsPage(cfg)
+
+    # 外观页该有的
+    for name in ("theme_combo", "preset_combo", "panel_alpha_slider",
+                 "opacity_slider", "material_check", "material_combo",
+                 "material_strength_slider", "material_image_opacity_slider",
+                 "material_dim_slider"):
+        assert hasattr(appearance, name), "外观页缺少控件 %s" % name
+
+    # 设置页不该有的（已迁走）
+    for name in ("theme_combo", "preset_combo", "panel_alpha_slider",
+                 "opacity_slider", "material_check"):
+        assert not hasattr(settings, name), \
+            "设置页仍持有 %s，说明外观项没完全迁到「外观」页" % name
 
 
 def test_accent_always_from_settings(qapp, tmp_path, monkeypatch):

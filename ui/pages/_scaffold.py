@@ -8,6 +8,7 @@
 套一层基类只会增加 MRO 与 __init__ 协作的复杂度，收益远不如直接组合。
 """
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QScrollArea, QVBoxLayout, QWidget,
 )
@@ -99,8 +100,98 @@ def section_title(text):
     return lb
 
 
+class MaterialCard(QFrame):
+    """卡片容器：支持背景材质（磨砂/雾化）自绘。
+
+    ## 为什么需要自绘
+
+    `QFrame` 靠 QSS 画 background，做不出"磨砂颗粒""雾化叠层"这类效果。
+    背景材质开启时，卡片要自己画一层带材质的半透明底，才能和窗口的
+    背景图/毛玻璃呼应起来。
+
+    ## 材质关闭时退回纯 QSS
+
+    材质关着（或没有全局材质上下文）时，`paintEvent` 什么都不做，
+    完全由 QSS 的 `QFrame#Card` 规则绘制——保证默认外观零变化、
+    也零额外开销。
+
+    ## 上下文从哪来
+
+    卡片不持有配置（它是通用控件，页面各处都在用）。材质参数通过
+    `material_context()` 从**窗口**上取——窗口有 `_background_material`
+    / material 配置，卡片只读。
+    """
+
+    def __init__(self, parent=None, object_name="Card"):
+        super().__init__(parent)
+        self.setObjectName(object_name)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        #: 材质缓存：(QPixmap, key)
+        self._mat_cache = None
+        self._mat_key = None
+
+    # ---------------------------------------------------------- 上下文
+    def _material_ctx(self):
+        """取当前的 (material_type, strength, enabled)。取不到就当关闭。"""
+        if self._mat_cache is None and self._mat_key == "off":
+            return None
+        w = self.window()
+        fn = getattr(w, "_material_paint_params", None)
+        if fn is None:
+            return None
+        try:
+            return fn()
+        except Exception:
+            return None
+
+    # ---------------------------------------------------------- 绘制
+    def paintEvent(self, e):
+        ctx = self._material_ctx()
+        if ctx is None:
+            # 材质关闭：交给 QSS（父类会画 background）
+            super().paintEvent(e)
+            return
+
+        mat_type, strength, card_color, radius = ctx
+        key = (self.width(), self.height(), mat_type, strength, card_color)
+        if self._mat_cache is None or self._mat_key != key:
+            from PySide6.QtCore import QSize
+
+            from ui.window_material import render_inner_surface
+
+            self._mat_cache = render_inner_surface(
+                QSize(max(1, self.width()), max(1, self.height())),
+                material=mat_type, strength=strength, base_color=card_color)
+            self._mat_key = key
+
+        from PySide6.QtCore import QRectF
+        from PySide6.QtGui import QPainter, QPainterPath, QPen
+
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        path = QPainterPath()
+        rect = QRectF(self.rect())
+        path.addRoundedRect(rect, radius, radius)
+        p.setClipPath(path)
+        p.drawPixmap(0, 0, self._mat_cache)
+        p.setClipping(False)
+        # 边框跟着主题（材质底是半透明的，没边框会和背景糊在一起）
+        try:
+            t = getattr(self.window(), "theme", None)
+            if t is not None:
+                pen = QPen(QColor(t.card_border))
+                pen.setWidth(1)
+                p.setPen(pen)
+                p.setBrush(Qt.NoBrush)
+                p.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5),
+                                  radius, radius)
+        except Exception:
+            pass
+        p.end()
+
+
 def card(parent=None):
-    """标准卡片容器（QSS: Card）。
+    """标准卡片容器（QSS: Card + 可选背景材质）。
 
     ## ⚠ 必须 `WA_StyledBackground`
 
@@ -111,10 +202,7 @@ def card(parent=None):
 
     实测：加这个属性前后，卡片区域的像素从不透明背景变成纯白。
     """
-    frame = QFrame(parent)
-    frame.setObjectName("Card")
-    frame.setAttribute(Qt.WA_StyledBackground, True)
-    return frame
+    return MaterialCard(parent)
 
 
 def card_layout(card_widget, margins=CARD_MARGIN, spacing=CARD_SPACING,

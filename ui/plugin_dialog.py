@@ -1,4 +1,4 @@
-"""主题化无边框弹窗：供插件（与将来其它模块）复用的一致观感容器。
+﻿"""主题化无边框弹窗：供插件（与将来其它模块）复用的一致观感容器。
 
 背景：主窗口是 WA_TranslucentBackground + 自绘圆角阴影的无边框窗口，
 若插件直接 new 一个原生 QDialog，会与整体 Win11 观感割裂（方角、系统主题框、
@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from ui.win11_theme import Theme, parse_color, apply_child_theme
-from ui.win_style import apply_backdrop, apply_dark_mode, DWMSBT_TRANSIENTWINDOW
+from ui.win_style import apply_dark_mode
 from ui.fluent_icons import icon_label
 from ui.frameless_panel import paint_frameless_panel
 
@@ -140,14 +140,13 @@ class PluginDialog(QWidget):
     def showEvent(self, e):
         super().showEvent(e)
         # 与主窗口/候选条一致：DWM 亚克力磨砂 + 标题栏深浅色跟随主题。
-        # 无 DWM（Win10 以下/其他平台）时 apply_backdrop 为 no-op，靠自绘不透明面板兜底。
+    # 背景由自绘材质绘制（见 ui/window_material.py）
         try:
             hwnd = int(self.winId())
-            apply_backdrop(hwnd, DWMSBT_TRANSIENTWINDOW)
+        # 系统亚克力已移除：背景由自绘材质绘制（见 ui/window_material.py）
             apply_dark_mode(hwnd, self._theme.dark)
         except Exception:
             pass
-
     def _update_mask(self):
         w, h = self.width(), self.height()
         if w <= 0 or h <= 0:
@@ -157,24 +156,17 @@ class PluginDialog(QWidget):
         pp.addRoundedRect(QRectF(rect), _RADIUS, _RADIUS)
         poly = pp.toFillPolygon(QTransform())
         self.setMask(QRegion(poly.toPolygon()))
-
     def resizeEvent(self, e):
         super().resizeEvent(e)
         self._update_mask()
-
     def closeEvent(self, e):
         self.finished.emit(self._result)
         super().closeEvent(e)
-
     def paintEvent(self, e):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         t = self._theme
         panel = QRect(_PAD, _PAD, self.width() - 2 * _PAD, self.height() - 2 * _PAD)
-
-        # 面板基底强制不透明：window_tint 的固有 alpha 只有 0.85/0.88，直接用会
-        # 比主窗口（_adjusted_panel_base 默认映射到 1.0）明显更透，深色桌面上
-        # 甚至发黑。弹窗没有 panel_alpha 配置，取主窗口默认（100%）的等效实色。
         tint = parse_color(t.window_tint)
         tint.setAlpha(255)
         paint_frameless_panel(
@@ -187,30 +179,24 @@ class PluginDialog(QWidget):
             shadow_pad=_PAD,
         )
         super().paintEvent(e)
-
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton and e.pos().y() < _TITLEBAR_H + _PAD:
             self._drag_pos = e.globalPos() - self.frameGeometry().topLeft()
             e.accept()
         else:
             super().mousePressEvent(e)
-
     def mouseMoveEvent(self, e):
         if e.buttons() == Qt.LeftButton and self._drag_pos is not None:
             self.move(e.globalPos() - self._drag_pos)
             e.accept()
         else:
             super().mouseMoveEvent(e)
-
     def mouseReleaseEvent(self, e):
         self._drag_pos = None
         super().mouseReleaseEvent(e)
-
-
 def show_plugin_dialog(body=None, title="", theme=None, parent=None,
                        width=0, height=0, modal=False):
     """弹出自定义内容弹窗；modal=True 时同步阻塞并返回结果码。"""
-    # 插件自建 body 若带样式表会切断祖先级联，这里把完整主题 QSS 垫在前
     if body is not None:
         apply_child_theme(body, theme)
     dlg = PluginDialog(body, title, theme, parent, width, height)
@@ -221,12 +207,9 @@ def show_plugin_dialog(body=None, title="", theme=None, parent=None,
         dlg.raise_()
         dlg.activateWindow()
     return dlg
-
-
 def show_message(text, title="提示", theme=None, parent=None,
                  ok_text="确定", cancel_text=None):
     """轻量消息框（自绘外壳，观感与统一窗口一致）。
-
     传入 cancel_text 时返回 True/False，否则恒返回 True。
     """
     t = theme if isinstance(theme, Theme) else Theme(theme or "light")
@@ -234,20 +217,16 @@ def show_message(text, title="提示", theme=None, parent=None,
     lay = QVBoxLayout(body)
     lay.setContentsMargins(0, 0, 0, 0)
     lay.setSpacing(14)
-
     lbl = QLabel(text or "")
     lbl.setWordWrap(True)
     lbl.setObjectName("BodyText")
     lay.addWidget(lbl, 1)
-
     row = QHBoxLayout()
     row.addStretch(1)
     holder = {}
-
     def _finish(value):
         holder["dlg"].set_result(value)
         holder["dlg"].close()
-
     if cancel_text:
         btn_no = QPushButton(cancel_text)
         btn_no.setCursor(Qt.PointingHandCursor)
@@ -259,12 +238,9 @@ def show_message(text, title="提示", theme=None, parent=None,
     btn_ok.clicked.connect(lambda: _finish(1))
     row.addWidget(btn_ok)
     lay.addLayout(row)
-
     dlg = PluginDialog(body, title, t, parent, width=460, height=0)
     holder["dlg"] = dlg
     return bool(dlg.exec())
-
-
 def ask(text, title="确认", theme=None, parent=None,
         yes_text="确定", no_text="取消"):
     """是/否 询问框；返回 bool。"""

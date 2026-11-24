@@ -41,6 +41,7 @@ from ui.win11_theme import (
     resolved_mode_of,
 )
 from ui.theme_manager import build_theme
+from ui.theme_controller import ThemeController
 
 try:                                    # 判断窗口 C++ 对象是否仍然有效
     from shiboken6 import isValid as shiboken_is_valid
@@ -174,8 +175,12 @@ class AppRuntime:
         #: 自动更新的延迟检查定时器（可被"关闭自动更新"取消）
         self._auto_update_timer = None
         self._log_viewer = None
-        # 上一次真正贴到 QApplication 上的样式串，用于幂等短路（见 _apply_app_theme）
+        # 上一次真正贴到 QApplication 上的样式串，**仅用于幂等短路**。
+        # ⚠ 它不再代表"当前主题是什么"——那是 theme_ctrl 的职责。
         self._applied_style = None
+        #: 主题唯一权威源。所有窗口从这里取主题，不要自己 build/cache。
+        self.theme_ctrl = ThemeController(self.config)
+        self.theme_ctrl.changed.connect(self._on_theme_changed)
 
         self.data = None
         self.plugins = None
@@ -223,94 +228,124 @@ class AppRuntime:
         """
         uia_elevation.ensure_uiaccess(self.config, append_log)
 
-    def _preview_theme_palette(self, cfg, palette=None):
-        """主题编辑器的实时预览：按编辑中的色板重贴 QSS，**不落盘**。
+    def _on_theme_changed(self, _palette=None):
+        """ThemeController 广播：把新主题应用到所有窗口。
 
-        :param cfg: 预览用的配置（`theme_preset` 已被设为 "custom"）
+        ## 这是**唯一**的换肤入口
+
+        重构前有三条互不相同的路径（正式 / 预览 / 系统跟随），
+        各自手动改 `app`、`unified.theme`、`window._theme_obj`——
+        状态必然不同步，用户看到的"切换自定义主题有概率生效"就是这么来的。
+
+        现在所有变更（改配置、预览、系统强调色变化）都收敛到 controller，
+        它广播一次，这里统一重绘。预览和正式只是 controller 内部
+        数据来源不同，对外的重绘流程**完全一致**。
+
+        ⚠ 带重入保护：换肤动画是分帧跑的，期间不应该再触发一轮。
+        """
+        if getattr(self, "_in_theme_broadcast", False):
+            return
+        ctrl = getattr(self, "theme_ctrl", None)
+        if ctrl is None:
+            return
+        self._in_theme_broadcast = True
+        try:
+            theme = ctrl.current()
+            self.theme_obj = theme
+            self._apply_theme_object(theme)
+
+            # 候选条：让它重新取主题（内部会从 controller 拿）
+            try:
+                if self.window is not None:
+                    self.window.apply_config(self.config)
+            except Exception as e:
+                append_log("warn", "theme", "候选条换肤失败：%r" % (e,))
+
+            # 主窗口：走它自己的应用链路（含动画判定）
+            try:
+                if self.unified is not None:
+                    self.unified.apply_config(self.config)
+            except Exception as e:
+                append_log("warn", "theme", "主窗口换肤失败：%r" % (e,))
+
+            # 日志窗口（可能开着）
+            try:
+                self._theme_log_viewer(theme.name)
+            except Exception:
+                pass
+        finally:
+            self._in_theme_broadcast = False
+
+    def _preview_theme_palette(self, cfg=None, palette=None):
+        """主题编辑器的实时预览：按编辑中的色板重绘，**不落盘**。
+
+        :param cfg: 忽略（保留参数只为兼容旧的注入签名）；
+            主题状态已由 ThemeController 统一持有
         :param palette: 编辑中的色板 `{"name","light","dark"}`；
             传 None 表示退出预览，回到已保存的主题
 
-        ## 为什么不走 apply_settings
+        ## 重构后的实现
 
-        `apply_settings` 会落盘、会触发换肤动画、会广播给所有窗口——
-        拖动调色板时每秒几十次，那样会把磁盘和界面都打爆。
+        原来这里手动拼了一堆：改全局 QSS、改 `unified.theme`、
+        置空 `window._theme_obj` 再 apply——三个窗口三套写法，
+        必然不同步（用户看到"切换自定义主题有概率生效"）。
 
-        这里只做"重贴 QSS"这一件事，路径和正式应用一致（同一个
-        `_apply_app_theme`），所以预览看到的和保存后看到的是同一套规则。
+        现在只做一件事：告诉 controller"进入/退出预览"。
+        它内部的 `rebuild()` 走的是和正式应用**完全相同**的路径，
+        所有窗口通过订阅统一收到通知。
+
+        ## 为什么不落盘
+
+        `apply_settings` 会写磁盘、触发换肤动画、广播给所有窗口——
+        拖动调色板时每秒几十次，会把磁盘和界面都打爆。
+        预览只更新内存态并重绘，保存时才走 `apply_settings`。
         """
+        ctrl = getattr(self, "theme_ctrl", None)
+        if ctrl is None:
+            return
         try:
-            mode = resolved_mode_of(cfg or self.config)
-            # 预览期间把 theme_preset 临时设为 custom，让 build_theme 走自定义分支
-            saved = self.config.get("theme_preset")
-            self.config["theme_preset"] = "custom"
-            try:
-                self._apply_app_theme(mode, preview=palette)
-            finally:
-                # 配置本身不改：恢复原值，避免影响其它读取 config 的地方
-                if saved is None:
-                    self.config.pop("theme_preset", None)
-                else:
-                    self.config["theme_preset"] = saved
-            # 主窗口与候选条也要跟着预览
-            try:
-                if self.unified is not None:
-                    from ui.theme_manager import build_theme
-
-                    self.unified.theme = build_theme(
-                        self.config, mode_override=mode,
-                        preview_palette=palette)
-                    self.unified._apply_theme()
-            except Exception:
-                pass
-            try:
-                if self.window is not None:
-                    self.window._theme_obj = None      # 失效缓存，强制重算
-                    self.window.apply_config(self.config)
-            except Exception:
-                pass
+            if palette is None:
+                ctrl.clear_preview()
+            else:
+                ctrl.set_preview(palette)
         except Exception as e:
             append_log("warn", "theme", "主题预览失败：%r" % (e,))
 
     def _apply_initial_theme(self):
-        """应用级样式表：让独立对话框与统一面板视觉一致（含 "system" 解析）。"""
-        # mode_override 传解析后的明暗，避免 build_theme 里再读一次注册表
-        mode = resolve_theme_name(
-            self.config.get("theme_mode") or self.config.get("theme", "light"))
-        self._apply_app_theme(mode)
-        # set_app_theme 供独立弹层（拿不到 config）用；它只关心明暗名
-        set_app_theme(getattr(self, "theme_obj", None) or mode)
+        """启动时应用主题（含 "system" 解析）。"""
+        # controller 在 _build_core 里已按 self.config 初始化过，
+        # 这里只需把它算出的主题贴到应用级 QSS 上
+        ctrl = getattr(self, "theme_ctrl", None)
+        theme = ctrl.current() if ctrl is not None else None
+        if theme is None:
+            from ui.theme_manager import build_theme
 
-    def _apply_app_theme(self, theme_name, chunked=False, preview=None):
-        """全应用 QSS 重贴（幂等）。
+            theme = build_theme(self.config)
+        self._apply_theme_object(theme)
+        # set_app_theme 供独立弹层（拿不到 config）用
+        set_app_theme(theme)
 
-        `QApplication.setStyleSheet` 会触发所有控件重新 polish，代价随控件数量
-        线性增长（本项目实测热态 ≈450ms）。设置页任何一处改动都会走
-        apply_settings，若不做幂等短路，拖一下滑块、录一次热键都要白卡近一秒
-        ——这正是「点完成特别卡顿」的主要来源。样式串不变时直接返回。
+    def _apply_theme_object(self, theme, chunked=False):
+        """把一个 Theme 对象贴成应用级 QSS。
 
-        :param chunked: 为 True 时返回一个**生成器**，把贴 QSS 这件事
-            拆到两帧之间做。默认返回 None，行为与原来一致。
+        :return: `chunked=True` 时返回生成器，否则返回 None
+
+        ## 幂等
+
+        `QApplication.setStyleSheet` 会让所有控件重新 polish，代价随
+        控件数量线性增长（实测热态 ≈450ms）。设置页任何改动都会走
+        应用链路，不做幂等短路的话，拖一下滑块就白卡近一秒。
+
+        `_applied_style` 仍然保留——但它的语义收窄了：**只是
+        "上一次贴到 Qt 上的 QSS 串"这一条渲染缓存**，不再兼任
+        "当前主题是什么"的真相（那是 controller 的职责）。
 
         ## 为什么"分两次贴同一个串"是错的
 
-        曾经试过「先贴前半段 → yield → 再贴完整串」，想借此让事件循环
-        喘口气。实测反而更慢：两次 `setStyleSheet` 都要全量重算一遍
-        （各 ≈1 秒），总时间翻倍。
-
-        正确做法是**只贴一次**，但把「贴」和「重绘」分开到两帧：
-        先贴（样式立即生效但屏幕上还是旧帧），下一帧再强制重绘。
-        用户看到的是"一帧之后换好了"，中间那一帧由遮罩盖着。
+        曾试过「先贴前半段 → yield → 再贴完整串」，想借事件循环喘口气。
+        实测更慢：两次 `setStyleSheet` 都要全量重算，总时间翻倍。
+        正确做法是只贴一次，但把「贴」和「重绘」分到两帧。
         """
-        # 统一走 theme_manager：解析 mode / preset / accent_mode，
-        # 保证所有窗口拿到的是同一套色板（不会再有某个弹窗漏配色）。
-        #
-        # `preview` 是主题编辑器的实时预览色板：给了就直接用它，
-        # 不读磁盘上的 user_theme.json（详见 build_theme 的说明）。
-        from ui.theme_manager import build_theme
-
-        theme = build_theme(self.config, mode_override=theme_name,
-                            preview_palette=preview)
-        self.theme_obj = theme
         ss = theme.style_sheet()
         if ss == self._applied_style:
             return None
@@ -323,7 +358,6 @@ class AppRuntime:
             return None
 
         def _steps():
-            # 贴 QSS：一次性完成（这是唯一必须同步做的一步）
             self.app.setStyleSheet(ss)
             _apply_tooltip_palette(self.app, theme)
             self._applied_style = ss
@@ -333,6 +367,23 @@ class AppRuntime:
             yield
 
         return _steps()
+
+    def _apply_app_theme(self, theme_name=None, chunked=False, preview=None):
+        """按配置重贴应用级 QSS（兼容旧调用点的薄包装）。
+
+        ⚠ 新代码请直接用 `_apply_theme_object(ctrl.current())`——
+        主题的唯一真相是 `self.theme_ctrl`，不要绕过它自己 build。
+        """
+        from ui.theme_manager import build_theme
+
+        ctrl = getattr(self, "theme_ctrl", None)
+        if ctrl is not None and preview is None and theme_name is None:
+            theme = ctrl.current()
+        else:
+            theme = build_theme(self.config, mode_override=theme_name,
+                                preview_palette=preview)
+        self.theme_obj = theme
+        return self._apply_theme_object(theme, chunked=chunked)
 
     def _sync_autostart(self):
         """让「配置里的 autostart」与注册表实际状态保持一致（仅 exe 形态）。"""
@@ -393,6 +444,8 @@ class AppRuntime:
     def _build_windows(self):
         self.window = PickerWindow(
             self.data, self.config, self.state, self.user_kao)
+        # 候选条也从同一个 controller 取主题，不再自己 build/缓存
+        self.window._theme_ctrl = self.theme_ctrl
         self.hotkey = NativeHotkeyManager()
         self.monitor = EmotionMonitor(triggers=self.triggers)
         self.unified = UnifiedSettingsWindow(
@@ -408,6 +461,8 @@ class AppRuntime:
             },
             plugins=self.plugins,
             ui_registry=self.ui_registry,
+            # 注入唯一主题源：主窗口不再自己 build，避免两份状态不同步
+            theme_ctrl=self.theme_ctrl,
         )
 
     def _wire_components(self):
@@ -881,7 +936,14 @@ class AppRuntime:
         _THEME_KEYS = ("theme", "theme_mode", "theme_preset",
                        "accent_mode", "accent_custom")
         theme_changed = bool(set(_THEME_KEYS) & changed)
-        # 幂等：样式串没变就不重贴（详见 _apply_app_theme 注释）
+
+        # 把最新配置推给 controller —— 它是主题的唯一真相。
+        # controller 内部 rebuild 后会广播，`_on_theme_changed` 负责重绘。
+        ctrl = getattr(self, "theme_ctrl", None)
+        if ctrl is not None and theme_changed:
+            ctrl.set_config(self.config, notify=False)
+
+        # 幂等：样式串没变就不重贴（详见 _apply_theme_object 注释）
         #
         # ⚠ 深色↔浅色切换时，这一整套工作（本函数后续的 app 级 QSS 重贴
         # ≈1 秒 + 主窗口重铺）必须**藏进主窗口的淡出过渡里**，否则用户
@@ -893,8 +955,13 @@ class AppRuntime:
             self._apply_theme_with_fade(effective_theme)
             return
 
-        self._apply_app_theme(effective_theme)
-        set_app_theme(getattr(self, "theme_obj", None) or effective_theme)
+        if ctrl is not None:
+            theme_now = ctrl.current()
+            self._apply_theme_object(theme_now)
+            set_app_theme(theme_now)
+        else:
+            self._apply_app_theme(effective_theme)
+            set_app_theme(getattr(self, "theme_obj", None) or effective_theme)
         # system 跟随定时器的启停也由所有主题键共同决定
         if theme_changed:
             # 已打开的日志窗口同步换肤（否则它会停留在启动时的主题）
@@ -961,11 +1028,21 @@ class AppRuntime:
                 # ① 应用级 QSS：最大的一块（0.9~1.4 秒）。
                 #    分两段贴，中间让出一轮事件循环——否则整段一次贴完，
                 #    加载图标在这 1.3 秒里一格都转不动。
-                chunked = self._apply_app_theme(effective_theme, chunked=True)
+                #
+                # 主题从 controller 取（唯一真相），不再自己 build。
+                ctrl = getattr(self, "theme_ctrl", None)
+                theme_now = ctrl.current() if ctrl is not None else None
+                if theme_now is not None:
+                    self.theme_obj = theme_now
+                    chunked = self._apply_theme_object(theme_now, chunked=True)
+                    set_app_theme(theme_now)
+                else:
+                    chunked = self._apply_app_theme(effective_theme, chunked=True)
+                    set_app_theme(getattr(self, "theme_obj", None)
+                                  or effective_theme)
                 if chunked is not None:
                     for _ in chunked:
                         yield
-                set_app_theme(getattr(self, "theme_obj", None) or effective_theme)
                 yield
                 # ② 日志窗口（可能开着）
                 self._theme_log_viewer(effective_theme)

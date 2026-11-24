@@ -329,9 +329,8 @@ class PickerWindow(QWidget):
         由 AppRuntime.apply_settings 调用，保证设置页改动实时生效。
         """
         self.config = config
-        # ⚠ 必须失效缓存的主题对象：否则换配色预设後候选条还在用旧色板，
-        # 表现为"主窗口变了、候选条没变"。
-        self._theme_obj = None
+        # 不再需要"失效缓存"：主题每次都从 controller 现取，
+        # 没有跨次缓存可言（见 _apply_style）。
         new_size = max(1, int(config.get("page_size", 3)))
         if new_size != len(self._chips):
             self.page_size = new_size
@@ -369,19 +368,27 @@ class PickerWindow(QWidget):
         原来读静态 `PALETTES`，换配色预设时候选条不跟着变——主窗口
         变成午夜蓝、候选条还是经典灰，像两个程序拼在一起。
 
-        现在优先用 `build_theme()` 的完整色板派生；只有极端情况
-        （主题模块导入失败）才回退静态表，保证候选条永远画得出来。
+        现在优先用**主题 controller** 的当前主题派生（和主窗口同一个源，
+        不会出现"主窗口变了候选条没变"）；没有 controller 时退回
+        `build_theme()`；再不行才用静态表——保证候选条永远画得出来。
         """
         mode = resolved_mode_of(self.config)
-        if not hasattr(self, "_theme_obj") or self._theme_obj is None:
+        theme_obj = None
+        ctrl = getattr(self, "_theme_ctrl", None)
+        if ctrl is not None:
+            try:
+                theme_obj = ctrl.current()
+            except Exception:
+                theme_obj = None
+        if theme_obj is None:
             try:
                 from ui.theme_manager import build_theme
-                self._theme_obj = build_theme(self.config,
-                                              mode_override=mode)
+                theme_obj = build_theme(self.config, mode_override=mode)
             except Exception:
-                self._theme_obj = None
-        if self._theme_obj is not None:
-            pal = _palette_from_theme(self._theme_obj)
+                theme_obj = None
+        self._theme_obj = theme_obj      # 仅作本次绘制的临时引用，不再跨次缓存
+        if theme_obj is not None:
+            pal = _palette_from_theme(theme_obj)
         else:
             pal = PALETTES.get(mode, PALETTES["light"])
         self._applied_theme = mode    # 供 _prepare_show 判断主题是否已同步

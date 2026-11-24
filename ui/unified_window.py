@@ -186,7 +186,8 @@ class UnifiedSettingsWindow(FramelessShell):
 
     def __init__(self, data, config, state, user_kao, triggers,
                  save_config=None, open_log=None, dev_refs=None,
-                 plugins=None, parent=None, ui_registry=None):
+                 plugins=None, parent=None, ui_registry=None,
+                 theme_ctrl=None):
         super().__init__(parent)
         self.data = data
         self.config = config
@@ -203,12 +204,22 @@ class UnifiedSettingsWindow(FramelessShell):
         # 避免与设置页自动保存时的字典替换/刷新相互干扰。
         self._developer_mode = bool(config.get("developer_mode", False))
 
-        # 主题从统一入口构造：预设 / 强调色模式都在里面解析，
-        # 避免主窗口用一套配色、候选条用另一套。
-        from ui.theme_manager import build_theme, theme_signature
+        # 主题唯一真相：有 controller 就用它（AppRuntime 注入），
+        # 没有就自己建一个（测试/独立使用时）。
+        #
+        # ⚠ 不要自己 build_theme —— 那会让主窗口和 app 各有一份，
+        # 换肤时必然不同步（这正是"切换自定义主题有概率生效"的成因）。
+        from ui.theme_controller import ThemeController
 
-        self.theme = build_theme(config)
-        self._theme_signature = theme_signature(config)
+        #: controller 是否由本窗口自己拥有。
+        #:
+        #: True  —— 独立使用（测试、单独跑窗口）：窗口是唯一驱动者，
+        #:           收到新 config 要推给 controller。
+        #: False —— AppRuntime 注入：controller 由 AppRuntime 驱动，
+        #:           窗口只能读，不能推（否则会覆盖预览态）。
+        self._owns_theme_ctrl = theme_ctrl is None
+        self.theme_ctrl = theme_ctrl or ThemeController(config, parent=self)
+        self.theme = self.theme_ctrl.current()
         self._shadow_color = parse_color(self.theme.shadow_color)
         self._theme_ss = ""          # 缓存当前主题的完整 QSS，供 _refresh_content_sheet 复用
         self._content_surface = None  # 缓存内容区表面色，QSS 重贴的幂等判据之一
@@ -763,30 +774,53 @@ class UnifiedSettingsWindow(FramelessShell):
         换肤动作包在自己的淡出里，会设置 `_in_theme_fade` 标记，
         这里就不要再套一层动画（否则会淡出两次、肉眼可见地闪）。
         """
-        # 主题是否真的变了：比较完整签名（明暗 + 预设 + 强调色模式），
-        # 而不是只比明暗名。改预设/强调色时也要走换肤，否则配色会突变。
-        from ui.theme_manager import theme_signature
-
-        old_sig = getattr(self, "_theme_signature", None)
-        new_sig = theme_signature(config)
+        # 主题是否真的变了：比较 controller 的当前色板，而不是自己算指纹。
+        #
+        # 重构前这里有独立的 `_theme_signature`，和 app 的 `_applied_style`、
+        # picker 的 `_theme_obj` 各自维护——三份缓存必然不同步。
+        # 现在只有 controller 一份真相，这里只比较它的输出。
+        old_key = getattr(self, "_theme_key", None)
+        new_key = self._theme_key_of(self.theme_ctrl)
         # dark 参数只决定遮罩颜色，用解析后的明暗
         new_mode = resolved_mode_of(config)
         _do = lambda: self._apply_config_now(config)      # noqa: E731
         if getattr(self, "_in_theme_fade", False):
             _do()
             return
-        if old_sig is not None and old_sig != new_sig:
+        if old_key is not None and old_key != new_key:
             self._theme_fader.run(_do, dark=(new_mode == "dark"))
         else:
             _do()
 
+    @staticmethod
+    def _theme_key_of(ctrl):
+        """controller 当前主题的轻量指纹（只取影响配色的几个键）。"""
+        try:
+            p = ctrl.current_palette()
+            return (p.get("mode"), p.get("preset"), p.get("bg"),
+                    p.get("card"), p.get("accent"))
+        except Exception:
+            return None
+
     def _apply_config_now(self, config):
         """真正执行配置应用（不含过渡动画）。"""
-        from ui.theme_manager import build_theme, theme_signature
-
         self.config = config
-        self.theme = build_theme(config)
-        self._theme_signature = theme_signature(config)
+        # 主题的唯一真相是 controller。窗口收到新配置时要不要"推给它"，
+        # 取决于 controller 是否由**自己拥有**：
+        #
+        #   * 独立使用（测试、单独跑窗口）：`_owns_theme_ctrl` 为 True，
+        #     窗口就是唯一驱动者，必须把 config 推给 controller，
+        #     否则 controller 永远停在初始配置上（换主题无效）。
+        #   * AppRuntime 注入：config 由 AppRuntime 统一推给 controller，
+        #     窗口只是消费者。此时**不能**再推——否则会覆盖预览态
+        #     （预览广播 → 这里 apply_config → 推配置 → 预览被清掉）。
+        if self._owns_theme_ctrl:
+            try:
+                self.theme_ctrl.set_config(config, notify=False)
+            except Exception:
+                pass
+        self.theme = self.theme_ctrl.current()
+        self._theme_key = self._theme_key_of(self.theme_ctrl)
         self._acrylic_on = _has_dwm
         self._shadow_color = parse_color(self.theme.shadow_color)
         self._apply_theme()

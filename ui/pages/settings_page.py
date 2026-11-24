@@ -167,7 +167,7 @@ class SettingsPage(QWidget):
         croot.setContentsMargins(16, 14, 16, 14)
         croot.setSpacing(12)
         self._add_row(croot, "主题", self._theme_combo())
-        self._add_row(croot, "配色方案", self._preset_combo())
+        self._add_row(croot, "配色方案", self._preset_row())
         self._add_row(croot, "面板不透明度", self._panel_alpha_row())
         self._add_row(croot, "候选条不透明度", self._opacity_row())
         v.addWidget(card)
@@ -403,32 +403,63 @@ class SettingsPage(QWidget):
         self.preset_combo = FluentComboBox(self._theme)
         for pid, name in preset_choices():
             self.preset_combo.addItem(name, pid)
-        # 「自定义…」放在最后：选中它会打开主题编辑器
-        self.preset_combo.addItem("自定义…", "custom")
+        # 「自定义」作为**一个真正的预设项**（不再是"点一下就弹窗"的伪选项）。
+        # 选中它 = 使用自定义主题；要修改则点右边的「编辑…」。
+        self.preset_combo.addItem("自定义", "custom")
         self.preset_combo.setToolTip(
-            "每套配色都有浅色/深色两份，与上面的明暗自由组合")
+            "每套配色都有浅色/深色两份，与上面的明暗自由组合。\n"
+            "选「自定义」后用右边的「编辑…」调整颜色。")
         self.preset_combo.currentIndexChanged.connect(
             lambda *_a: self._on_preset_changed())
-        self.preset_combo.setMinimumWidth(140)
+        self.preset_combo.setMinimumWidth(120)
         return self.preset_combo
 
+    def _preset_row(self):
+        """配色方案一行：下拉 + 「编辑…」按钮。
+
+        ## 为什么不是"选自定义就弹编辑器"
+
+        原来 `_on_preset_changed` 里，选到「自定义…」就 `_open_theme_editor()`。
+        但 Qt 的 `currentIndexChanged` **只在索引变化时触发**——用户当前
+        已经是自定义主题时，再选一次同一项没有任何信号，编辑器打不开。
+        用户体感就是"必须先换回别的主题，才能再点自定义"，非常反直觉。
+
+        现在拆成两个独立动作：
+          * 下拉：选择用哪套配色（含自定义）
+          * 「编辑…」按钮：随时打开编辑器改颜色，与当前选中项无关
+
+        按钮只在选中「自定义」时可用——编辑别的预设没有意义
+        （它们是只读的内置数据）。
+        """
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(self._preset_combo())
+        self.edit_preset_btn = QPushButton("编辑…")
+        self.edit_preset_btn.setToolTip("调整自定义主题的颜色")
+        self.edit_preset_btn.clicked.connect(self._open_theme_editor)
+        row.addWidget(self.edit_preset_btn)
+        row.addStretch(1)
+        return row
+
     def _on_preset_changed(self):
-        """选「自定义…」预设时打开主题编辑器。
+        """配色方案变了：应用配置，并刷新「编辑…」按钮的可用性。
 
-        ## ⚠ 同样必须先检查 `_loading`
-
-        用户上次存的是 `theme_preset=custom` 时，启动后回填配置会
-        `setCurrentIndex` 到「自定义…」，进而触发本函数——编辑器窗口
-        自己弹出来。和 `_on_accent_changed` 是同一类 bug：
-        **程序化赋值被当成了用户操作**。
+        ⚠ **不要在这里弹编辑器**。选中「自定义」只是"用自定义主题"，
+        修改颜色是「编辑…」按钮的职责。混在一起会导致"再选一次同一项
+        没反应"（Qt 信号只在索引变化时触发）。
         """
         if getattr(self, "_loading", False):
             return
-        pid = self.preset_combo.currentData()
-        if pid != "custom":
-            self._on_apply()
-            return
-        self._open_theme_editor()
+        self._sync_preset_buttons()
+        self._on_apply()
+
+    def _sync_preset_buttons(self):
+        """「编辑…」只在选中自定义时可用——内置预设是只读数据。"""
+        try:
+            is_custom = self.preset_combo.currentData() == "custom"
+            self.edit_preset_btn.setEnabled(is_custom)
+        except Exception:
+            pass
 
     def _open_theme_editor(self):
         """打开主题编辑器；保存后写 user_theme.json 并应用。
@@ -891,6 +922,8 @@ class SettingsPage(QWidget):
             preset = cfg.get("theme_preset", "classic")
             pidx = self.preset_combo.findData(preset)
             self.preset_combo.setCurrentIndex(pidx if pidx >= 0 else 0)
+            # 回填期间信号被 _loading 屏蔽，按钮状态要手动同步
+            self._sync_preset_buttons()
             # 强调色不在这里设置——它由主题编辑器统一管理，
             # 这里既不回填也不写入，避免覆盖用户在编辑器里的选择。
             pa = int(float(cfg.get("panel_alpha", 0.92)) * 100)

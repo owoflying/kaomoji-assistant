@@ -112,10 +112,35 @@ class _NavItem(QWidget):
         self._apply_style()
 
     def update_theme(self, theme):
+        """换主题时重建图标。
+
+        ## ⚠ 必须 `setParent(None)`，不能只 `deleteLater()`
+
+        原来写的是 `deleteLater()` + `removeWidget()`：
+
+            self.ico.deleteLater()          # 只是"安排删除"，对象还在
+            layout.removeWidget(self.ico)   # 从布局移除
+            self.ico = icon_label(...)      # 新建
+            layout.insertWidget(1, self.ico)
+
+        `deleteLater` 要等事件循环才真正销毁，而 `removeWidget` 只是让
+        布局不再管这个控件——**控件依然挂在父窗口上，依然会在原位置
+        绘制**。于是新图标盖在旧图标上，形成重影。
+
+        实测表现：导航栏里「我的颜文字」「快捷短语」「插件」「关于」
+        前面有淡色重复图标（那几个是懒加载页，切主题时图标被重建）。
+
+        正确做法是先 `setParent(None)` 让它立刻脱离绘制树，再 deleteLater
+        释放内存。
+        """
         self._theme = theme
-        self.ico.deleteLater()
         layout = self.layout()
-        layout.removeWidget(self.ico)
+        try:
+            layout.removeWidget(self.ico)
+            self.ico.setParent(None)    # ← 立即脱离绘制，消除重影
+            self.ico.deleteLater()      # 内存稍后释放
+        except RuntimeError:
+            pass                        # 已经被销毁
         self.ico = icon_label(self._icon_name, 16, theme.text_secondary)
         layout.insertWidget(1, self.ico)
         self._apply_style()

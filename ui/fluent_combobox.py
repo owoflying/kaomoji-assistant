@@ -21,6 +21,45 @@ class FluentComboBox(QComboBox):
         super().__init__(parent)
         self._theme = theme
 
+    def paintEvent(self, ev):
+        """自绘下拉箭头。
+
+        ## 为什么不用 QSS 的 border 三角
+
+        `QComboBox::down-arrow {{ border-left/right/bottom: ... }}` 这种
+        "用边框拼三角形"的写法，在 QSpinBox 上有效，但在 **QComboBox 上
+        不生效**——Qt 6 的 Windows 样式会把它画成一个实心小方块。
+
+        实测：箭头区域只有 60 个像素的纯色方块，放大看就是个 `▪`。
+
+        而内联 SVG（`image: url("data:image/svg+xml,...")`）在 Qt 6.11 上
+        根本不渲染（详见 win11_theme.py 里 QSpinBox 箭头的注释）。
+
+        所以只能用 QPainter 直接画——这是唯一在所有平台上稳定的方式。
+        """
+        super().paintEvent(ev)
+        try:
+            from PySide6.QtCore import QPointF, Qt
+            from PySide6.QtGui import QColor, QPainter, QPolygonF
+
+            t = self._resolve_theme()
+            p = QPainter(self)
+            p.setRenderHint(QPainter.Antialiasing, True)
+            cx = self.width() - 15
+            cy = self.height() / 2.0
+            tri = QPolygonF([
+                QPointF(cx - 4, cy - 2),
+                QPointF(cx + 4, cy - 2),
+                QPointF(cx, cy + 3),
+            ])
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(t.text_secondary))
+            p.drawPolygon(tri)
+            p.end()
+        except Exception:
+            # 画箭头失败不该影响控件本身
+            pass
+
     def set_theme(self, theme):
         """主题切换时更新，供父页面统一调用。"""
         self._theme = theme

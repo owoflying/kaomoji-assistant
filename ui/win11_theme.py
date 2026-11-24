@@ -585,11 +585,13 @@ class Theme:
             width: 26px;
             background: transparent;  /* 必须显式透明：否则 Win10 会回退原生下拉按钮（右侧黑条） */
         }}
+        /* ⚠ 箭头**不在这里画**。
+           `QComboBox::down-arrow {{ border-*: ... }}` 拼三角形在 Qt 6 的
+           Windows 样式下会渲染成一个实心小方块（实测放大看就是 `▪`）。
+           真正的箭头由 `FluentComboBox.paintEvent` 用 QPainter 绘制。
+           这里只把原生箭头关掉、留出位置。 */
         QComboBox::down-arrow {{
             image: none;
-            border-left: 5px solid transparent;
-            border-right: 5px solid transparent;
-            border-top: 6px solid {t.text_secondary};
             width: 0px;
             height: 0px;
         }}

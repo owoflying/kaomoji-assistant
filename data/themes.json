@@ -6,14 +6,14 @@
       "name": "经典",
       "description": "Windows 11 风格，冷调中性灰",
       "light": {
-        "bg": "#ffffff",
+        "bg": "#f3f3f3",
         "card": "#ffffff",
-        "card_border": "#e8e8e8",
-        "text": "#1f1f1f",
+        "card_border": "#e5e5e5",
+        "text": "#1a1a1a",
         "text_secondary": "#5c5c5c",
         "accent": "#0067c0",
-        "window_tint": "rgba(255,255,255,0.88)",
-        "content_surface": "rgba(255,255,255,0.70)"
+        "window_tint": "rgba(243,243,243,0.90)",
+        "content_surface": "rgba(248,248,248,0.72)"
       },
       "dark": {
         "bg": "#1a1a1a",
@@ -30,9 +30,9 @@
       "name": "午夜蓝",
       "description": "冷蓝底 + 青色强调，适合夜间长时间使用",
       "light": {
-        "bg": "#f2f6fb",
-        "card": "#fbfdff",
-        "card_border": "#d5e2f0",
+        "bg": "#eef3fa",
+        "card": "#ffffff",
+        "card_border": "#dde7f3",
         "text": "#16283d",
         "text_secondary": "#52677f",
         "accent": "#1a6fc4",
@@ -54,9 +54,9 @@
       "name": "暖阳",
       "description": "米白 / 暖灰底 + 琥珀强调，柔和不刺眼",
       "light": {
-        "bg": "#faf6f0",
-        "card": "#fffcf7",
-        "card_border": "#e8ded0",
+        "bg": "#f5efe6",
+        "card": "#fffdf9",
+        "card_border": "#e6dccd",
         "text": "#33291f",
         "text_secondary": "#75685a",
         "accent": "#c26a1c",

@@ -1,4 +1,4 @@
-"""关于页：应用信息、开源链接、致谢、开发者模式入口。
+﻿"""关于页：应用信息、开源链接、致谢、开发者模式入口。
 
 开发者模式解锁方式：在关于页连续点击「版本号」8 次。启用后：
 - 关于页会显示「开发者模式」徽标与「查看运行日志」入口；
@@ -348,6 +348,7 @@ class AboutPage(QWidget):
 
         card = QFrame()
         card.setObjectName("Card")
+        card.setAttribute(Qt.WA_StyledBackground, True)  # 卡片背景才会真正绘制
         croot = QVBoxLayout(card)
         croot.setContentsMargins(24, 22, 24, 22)
         croot.setSpacing(14)
@@ -411,6 +412,7 @@ class AboutPage(QWidget):
         if self._state is not None:
             stat_card = QFrame()
             stat_card.setObjectName("Card")
+            stat_card.setAttribute(Qt.WA_StyledBackground, True)  # 卡片背景才会真正绘制
             scard = QVBoxLayout(stat_card)
             scard.setContentsMargins(24, 22, 24, 22)
             scard.setSpacing(14)
@@ -468,6 +470,7 @@ class AboutPage(QWidget):
     def _init_release_card(self, body_layout):
         card = QFrame()
         card.setObjectName("Card")
+        card.setAttribute(Qt.WA_StyledBackground, True)  # 卡片背景才会真正绘制
         root = QVBoxLayout(card)
         root.setContentsMargins(24, 22, 24, 22)
         root.setSpacing(12)

@@ -1,4 +1,4 @@
-"""主页：仪表盘，展示问候、快速统计与常用入口卡片。
+﻿"""主页：仪表盘，展示问候、快速统计与常用入口卡片。
 
 主页同时是**插件卡片的宿主**：插件通过 `api.register_home_card()` 注册的卡片
 会插进「问候卡片」与「欢迎卡片」之间的插槽（见 `plugin_cards_slot`）。
@@ -32,6 +32,7 @@ class ActionCard(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("Card")      # 复用宿主 QSS 的卡片样式
+        self.setAttribute(Qt.WA_StyledBackground, True)  # 卡片背景才会真正绘制
         self.setCursor(QCursor(Qt.PointingHandCursor))
         self._label = None
 

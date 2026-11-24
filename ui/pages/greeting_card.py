@@ -1,4 +1,4 @@
-"""主页上的「问候卡片」：按当前时段显示一句问候。
+﻿"""主页上的「问候卡片」：按当前时段显示一句问候。
 
 **为什么放在主程序而不是插件里**：这张卡片是内置功能，与「统计行」「快捷入口」
 同级，不依赖任何测试功能开关。插件版（`plugins/home_greeting/`）保留下来
@@ -48,6 +48,7 @@ class GreetingCard(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("Card")
+        self.setAttribute(Qt.WA_StyledBackground, True)  # 卡片背景才会真正绘制
         self._build()
         self.refresh()
 

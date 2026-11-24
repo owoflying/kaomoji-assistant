@@ -93,9 +93,20 @@ def section_title(text):
 
 
 def card(parent=None):
-    """标准卡片容器（QSS: Card）。"""
+    """标准卡片容器（QSS: Card）。
+
+    ## ⚠ 必须 `WA_StyledBackground`
+
+    `QFrame` 默认**不绘制 QSS 里的 `background`**——只有设了
+    `WA_StyledBackground` 才会真的画背景色/圆角。少了这一行，
+    `QFrame#Card {{ background: ... }}` 形同虚设，卡片只剩一条边框，
+    内容看起来是"飘"在页面上的（用户反馈过"卡片完全看不见"）。
+
+    实测：加这个属性前后，卡片区域的像素从不透明背景变成纯白。
+    """
     frame = QFrame(parent)
     frame.setObjectName("Card")
+    frame.setAttribute(Qt.WA_StyledBackground, True)
     return frame
 
 

@@ -64,12 +64,19 @@ def page_layout(widget, spacing=PAGE_SPACING, margins=PAGE_MARGIN,
     area.setFrameShape(QFrame.NoFrame)
     area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
     area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-    area.setStyleSheet("background:transparent;border:none;")
+    # ⚠ ID 选择器：无选择器会级联到滚动区内部所有控件，把卡片白底清掉
+    area.setStyleSheet(
+        "QScrollArea#PageScroll{background:transparent;border:none;}")
     outer.addWidget(area, 1)
 
     body = QWidget()
     body.setObjectName("PageScrollBody")
-    body.setStyleSheet("background:transparent;")
+    # ⚠ 必须用 ID 选择器。
+    #
+    # 没有选择器的 `background:transparent;` 会级联到 body 的**所有子孙**，
+    # 把卡片（QFrame#Card）的白底也清掉。QSS 里卡片规则明明存在却看不见
+    # ——用户反馈的"根本就没有卡片"就是这个原因。
+    body.setStyleSheet("QWidget#PageScrollBody{background:transparent;}")
     area.setWidget(body)
 
     root = QVBoxLayout(body)

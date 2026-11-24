@@ -117,12 +117,25 @@ class SettingsPage(QWidget):
         self.scroll.setFrameShape(QFrame.NoFrame)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.scroll.setStyleSheet("background:transparent;border:none;")
+        # ⚠ 必须用 ID 选择器：无选择器的样式表会级联到滚动区**内部所有控件**，
+        # 把卡片的白底一起清成透明（实测卡片抓图中心变成 #000000）。
+        # 这一层在 body 之上，只改 body 是不够的。
+        self.scroll.setStyleSheet(
+            "QScrollArea#SettingsScroll{background:transparent;border:none;}")
         root.addWidget(self.scroll, 1)
 
         body = QWidget()
         body.setObjectName("SettingsBody")
-        body.setStyleSheet("background:transparent;")
+        # ⚠ **必须用 ID 选择器**，不能写 `background:transparent;`。
+        #
+        # 没有选择器的样式表会级联到该控件的**所有子孙**。写成
+        # `background:transparent;` 时，卡片（QFrame#Card）的白底会被
+        # 覆盖成透明——QSS 里 `QFrame#Card { background: #ffffff; }`
+        # 明明存在，却完全看不到卡片（用户反馈"根本就没有卡片"）。
+        #
+        # 实测：`background:transparent;` → 卡片抓图中心是 #000000（透明）；
+        #       `QWidget#SettingsBody{background:transparent;}` → #ffffff。
+        body.setStyleSheet("QWidget#SettingsBody{background:transparent;}")
         v = page_layout(body, scroll=False)  # 外层已自建滚动区
 
         v.addWidget(page_title("设置"))

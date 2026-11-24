@@ -311,6 +311,26 @@ class AppRuntime:
         except Exception as e:
             append_log("warn", "theme", "主题预览失败：%r" % (e,))
 
+    def _refresh_material(self):
+        """背景材质参数变化后重绘主窗口。
+
+        ## 为什么只重绘主窗口
+
+        背景材质只作用于统一主窗口（卡片列表那种大界面）。候选条和
+        各种弹窗保持纯色——它们很小，背景图在上面反而看不清内容，
+        而且每多一个窗口就要多算一次模糊。
+
+        ## 为什么要清缓存
+
+        材质 pixmap 按输入做缓存（见 `UnifiedSettingsWindow._background_material`），
+        调了强度/换了图之后缓存键会变，自然重算。这里只需触发重绘。
+        """
+        try:
+            if self.unified is not None:
+                self.unified.update()
+        except Exception as e:
+            append_log("warn", "theme", "背景材质刷新失败：%r" % (e,))
+
     def _apply_initial_theme(self):
         """启动时应用主题（含 "system" 解析）。"""
         # controller 在 _build_core 里已按 self.config 初始化过，
@@ -555,6 +575,8 @@ class AppRuntime:
             page.hotkey_capture_changed.connect(self._on_hotkey_capture)
             # 主题编辑器的实时预览：直接改样式，不落盘
             page._theme_preview_cb = self._preview_theme_palette
+            # 背景材质参数变化：清缓存并重绘（模糊要重算）
+            page._material_changed_cb = self._refresh_material
             page._runtime_connected = True
         except Exception as e:
             append_log("warn", "app", "设置页信号连接失败：%r" % (e,))

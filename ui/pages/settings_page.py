@@ -185,6 +185,20 @@ class SettingsPage(QWidget):
         self._add_row(croot, "候选条不透明度", self._opacity_row())
         v.addWidget(card)
 
+        # 背景材质
+        v.addWidget(self._section_title("背景材质"))
+        card = self._card()
+        croot = QVBoxLayout(card)
+        croot.setContentsMargins(16, 14, 16, 14)
+        croot.setSpacing(12)
+        self._add_row(croot, "启用背景材质", self._material_toggle())
+        self._add_row(croot, "材质效果", self._material_combo())
+        self._add_row(croot, "材质强度", self._material_strength_row())
+        self._add_row(croot, "背景图", self._material_image_row())
+        self._add_row(croot, "图片不透明度", self._material_image_opacity_row())
+        self._add_row(croot, "背景暗化/提亮", self._material_dim_row())
+        v.addWidget(card)
+
         # 输入
         v.addWidget(self._section_title("输入"))
         card = self._card()
@@ -538,6 +552,152 @@ class SettingsPage(QWidget):
         row.addWidget(self.panel_alpha_slider, 1)
         row.addWidget(self.panel_alpha_value)
         return row
+
+    # ---------- 背景材质 ----------
+    def _material_toggle(self):
+        """材质总开关。
+
+        关闭时完全不计算背景材质（模糊整窗 40~120ms），用纯主题色。
+        """
+        self.material_check = ToggleSwitch(self._theme)
+        self.material_check.setToolTip(
+            "开启后可用自定义背景图和玻璃效果。\n"
+            "关闭则使用纯色背景，最省资源。")
+        self.material_check.toggled.connect(
+            lambda *_a: self._on_material_changed())
+        return self.material_check
+
+    def _material_combo(self):
+        """材质效果：无 / 毛玻璃 / 磨砂玻璃 / 雾化。"""
+        from ui.window_material import material_choices
+
+        self.material_combo = FluentComboBox(self._theme)
+        for mid, name in material_choices():
+            self.material_combo.addItem(name, mid)
+        self.material_combo.setToolTip(
+            "毛玻璃：高斯模糊，背景隐约可见\n"
+            "磨砂玻璃：轻微模糊 + 细颗粒\n"
+            "雾化：半透明叠层，画面柔和")
+        self.material_combo.currentIndexChanged.connect(
+            lambda *_a: self._on_material_changed())
+        self.material_combo.setMinimumWidth(120)
+        return self.material_combo
+
+    def _material_slider_row(self, attr, on_change, fmt="%d%%"):
+        """材质相关滑块的通用构造（0~100）。"""
+        row = QHBoxLayout()
+        s = QSlider(Qt.Horizontal)
+        s.setRange(0, 100)
+        s.setFixedWidth(140)
+        val = QLabel("")
+        val.setFixedWidth(44)
+        s.valueChanged.connect(lambda v: val.setText(fmt % v))
+        s.sliderReleased.connect(lambda *_a: on_change())
+        row.addWidget(s)
+        row.addWidget(val)
+        row.addStretch(1)
+        setattr(self, attr, s)
+        setattr(self, attr + "_value", val)
+        return row
+
+    def _material_strength_row(self):
+        """材质强度：模糊半径 / 噪点密度 / 雾化浓度都按它缩放。"""
+        return self._material_slider_row(
+            "material_strength_slider", self._on_material_changed)
+
+    def _material_image_opacity_row(self):
+        return self._material_slider_row(
+            "material_image_opacity_slider", self._on_material_changed)
+
+    def _material_dim_row(self):
+        return self._material_slider_row(
+            "material_dim_slider", self._on_material_changed)
+
+    def _material_image_row(self):
+        """背景图：选择 / 清除 + 当前文件名。"""
+        row = QHBoxLayout()
+        self.material_image_btn = QPushButton("选择图片…")
+        self.material_image_btn.clicked.connect(self._pick_material_image)
+        row.addWidget(self.material_image_btn)
+        self.material_image_clear = QPushButton("清除")
+        self.material_image_clear.clicked.connect(self._clear_material_image)
+        row.addWidget(self.material_image_clear)
+        self.material_image_label = QLabel("")
+        self.material_image_label.setObjectName("Caption")
+        row.addWidget(self.material_image_label)
+        row.addStretch(1)
+        return row
+
+    def _pick_material_image(self):
+        """选背景图：复制到数据目录后立即生效。"""
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+        from ui.window_material import copy_background, IMAGE_SUFFIXES
+
+        patterns = " ".join("*" + e for e in IMAGE_SUFFIXES)
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择背景图", "", "图片 (%s);;所有文件 (*.*)" % patterns)
+        if not path:
+            return
+        ok, result = copy_background(path)
+        if not ok:
+            QMessageBox.warning(self, "背景图", result)
+            return
+        self._refresh_material_image_label()
+        self._on_material_changed()
+
+    def _clear_material_image(self):
+        from ui.window_material import clear_background
+
+        if clear_background():
+            self._refresh_material_image_label()
+            self._on_material_changed()
+
+    def _refresh_material_image_label(self):
+        """刷新"当前背景图"的显示文字。"""
+        import os
+
+        from ui.window_material import background_path
+
+        p = background_path()
+        try:
+            if p:
+                self.material_image_label.setText(os.path.basename(p))
+                self.material_image_clear.setEnabled(True)
+            else:
+                self.material_image_label.setText("未设置（使用纯色）")
+                self.material_image_clear.setEnabled(False)
+        except Exception:
+            pass
+
+    def _on_material_changed(self):
+        """材质参数变化：保存并通知运行时重建背景。"""
+        if getattr(self, "_loading", False):
+            return
+        self._sync_material_enabled()
+        self._on_apply()
+        cb = getattr(self, "_material_changed_cb", None)
+        try:
+            if cb is not None:
+                cb()
+        except Exception:
+            pass
+
+    def _sync_material_enabled(self):
+        """材质关着时，下面的参数控件置灰（避免用户调了没反应）。"""
+        try:
+            on = self.material_check.isChecked()
+            for w in (self.material_combo, self.material_strength_slider,
+                      self.material_image_btn,
+                      self.material_image_opacity_slider,
+                      self.material_dim_slider):
+                w.setEnabled(on)
+            # 「清除」按钮还要求确实有图
+            from ui.window_material import background_path
+
+            self.material_image_clear.setEnabled(on and bool(background_path()))
+        except Exception:
+            pass
 
     def _opacity_row(self):
         row = QHBoxLayout()
@@ -945,6 +1105,25 @@ class SettingsPage(QWidget):
             op = int(float(cfg.get("opacity", 0.98)) * 100)
             self.opacity_slider.setValue(op)
             self.opacity_value.setText("%d%%" % op)
+            # 背景材质
+            self.material_check.setChecked(
+                bool(cfg.get("material_enabled", False)))
+            mtype = str(cfg.get("material_type", "none") or "none")
+            mt_idx = self.material_combo.findData(mtype)
+            self.material_combo.setCurrentIndex(mt_idx if mt_idx >= 0 else 0)
+            for attr, key in (
+                    ("material_strength_slider", "material_strength"),
+                    ("material_image_opacity_slider", "material_image_opacity"),
+                    ("material_dim_slider", "material_dim")):
+                v = int(cfg.get(key, 55 if key == "material_strength" else (100 if "opacity" in key else 0)))
+                s = getattr(self, attr, None)
+                if s is not None:
+                    s.setValue(max(0, min(100, v)))
+                    lbl = getattr(self, attr + "_value", None)
+                    if lbl is not None:
+                        lbl.setText("%d%%" % s.value())
+            self._refresh_material_image_label()
+            self._sync_material_enabled()
             method = cfg.get("input_method", "direct")
             midx = self.method_combo.findData(method)
             self.method_combo.setCurrentIndex(midx if midx >= 0 else 0)
@@ -1205,6 +1384,13 @@ class SettingsPage(QWidget):
         # new_cfg 是从 self.config 拷来的，原值会自然保留。
         new_cfg["panel_alpha"] = self.panel_alpha_slider.value() / 100.0
         new_cfg["opacity"] = self.opacity_slider.value() / 100.0
+        # 背景材质（全部数值型参数直接取滑块值）
+        new_cfg["material_enabled"] = self.material_check.isChecked()
+        new_cfg["material_type"] = self.material_combo.currentData() or "none"
+        new_cfg["material_strength"] = int(self.material_strength_slider.value())
+        new_cfg["material_image_opacity"] = int(
+            self.material_image_opacity_slider.value())
+        new_cfg["material_dim"] = int(self.material_dim_slider.value())
         new_cfg["input_method"] = self.method_combo.currentData()
         new_cfg["max_recent"] = self.recent_spin.value()
         new_cfg["auto_popup"] = self.auto_check.isChecked()

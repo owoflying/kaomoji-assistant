@@ -248,6 +248,10 @@ class UnifiedSettingsWindow(FramelessShell):
         self._shadow_color = parse_color(self.theme.shadow_color)
         self._theme_ss = ""          # 缓存当前主题的完整 QSS，供 _refresh_content_sheet 复用
         self._content_surface = None  # 缓存内容区表面色，QSS 重贴的幂等判据之一
+        #: 背景材质缓存：(QPixmap, opacity)。模糊整窗要 40~120ms，
+        #: 不能每帧算，只在「尺寸/材质参数/背景图」变化时重建。
+        self._bg_cache = None
+        self._bg_cache_key = None
 
         self._init_window()
         self._init_ui()
@@ -947,21 +951,114 @@ class UnifiedSettingsWindow(FramelessShell):
             pass
         self.content.set_surface(self._adjusted_content_surface())
 
+    def _material_on(self):
+        """背景材质是否启用（总开关 + 有实际内容）。
+
+        材质关着时用纯主题色——最省资源，也避免模糊计算的 40~120ms 开销。
+        """
+        if not bool(self.config.get("material_enabled", False)):
+            return False
+        mat = str(self.config.get("material_type", "none") or "none").lower()
+        if mat in ("blur", "frosted", "fog"):
+            return True
+        # material_type=none 时，只要设置了背景图也算启用
+        try:
+            from ui.window_material import background_path
+
+            return bool(background_path())
+        except Exception:
+            return False
+
+    def _background_material(self):
+        """给 frameless_shell 提供背景材质：`(pixmap, opacity)` 或 None。
+
+        ## 缓存策略
+
+        模糊整窗（约 1000x700）单次 40~120ms，**绝不能每帧算**——
+        窗口每次重绘都会调到这里。
+
+        所以按"影响结果的输入"做缓存键：
+
+            窗口尺寸 + 材质类型 + 强度 + 背景图路径/修改时间 + 主题明暗
+
+        任何一项变了才重算。键里带背景图的 mtime，用户换了图能立刻生效。
+        """
+        try:
+            from ui.window_material import background_path, render_background
+        except Exception:
+            return None
+
+        panel_w = max(1, self.width())
+        panel_h = max(1, self.height())
+        img_path = background_path()
+        mat = str(self.config.get("material_type", "none") or "none").lower()
+        strength = int(self.config.get("material_strength", 55))
+        # 图片不透明度（0~100）→ 0~1
+        img_opacity = int(self.config.get("material_image_opacity", 100)) / 100.0
+
+        # 文件修改时间参与缓存键：换图后立即重建
+        mtime = 0.0
+        if img_path:
+            try:
+                import os as _os
+
+                mtime = _os.path.getmtime(img_path)
+            except Exception:
+                mtime = 0.0
+
+        key = (panel_w, panel_h, mat, strength, img_path, mtime,
+               self.theme.dark, int(self.config.get("material_dim", 0)))
+        if self._bg_cache is not None and self._bg_cache_key == key:
+            return self._bg_cache
+
+        try:
+            from PySide6.QtCore import QSize
+
+            pm = render_background(
+                QSize(panel_w, panel_h),
+                material=mat,
+                strength=strength,
+                image_path=img_path,
+                fallback_color=self.theme.bg,
+            )
+            # 额外暗化/提亮：让上层文字在花哨背景图上仍能看清
+            dim = int(self.config.get("material_dim", 0))
+            if dim:
+                from PySide6.QtGui import QColor, QPainter
+
+                q = QPainter(pm)
+                # 浅色背景叠白提亮、深色背景叠黑压暗，都往"低对比"方向
+                a = int(dim * 1.6)
+                q.fillRect(pm.rect(),
+                           QColor(0, 0, 0, a) if self.theme.dark
+                           else QColor(255, 255, 255, a))
+                q.end()
+            self._bg_cache = (pm, img_opacity)
+            self._bg_cache_key = key
+            return self._bg_cache
+        except Exception:
+            return None
+
     def _adjusted_panel_base(self):
         """面板基底色，按 panel_alpha（语义=不透明度，值越大越实）缩放。
 
-        - 亚克力开启：基底 RGB 取 window_tint，但不透明度直接由 panel_alpha 决定
-          （映射并保底 0.6），让「不透明度」滑块在开亚克力时也真实生效；拉到 100%
-          即接近实色磨砂玻璃，不再"永远半透明、甚至比关亚克力还透"。
-          原 bug：window_tint 固有 alpha 仅 0.85/0.88，乘 panel_alpha 后最多 0.85。
-        - 亚克力关闭：纯色底 bg 直接按 panel_alpha 缩放（保底 0.4）。
+        ## 材质开启时为什么要更透
+
+        基底色是画在背景**之上**的一层。材质（背景图/毛玻璃）要能看见，
+        这层就必须更透明；否则等于把背景挡死了。
+
+        所以两套 alpha 映射：
+          * 材质开：`0.35 + 0.5 * panel_alpha`（0.35~0.85），背景始终透出来
+          * 材质关：`panel_alpha`（用户滑块直控），保底 0.4
         """
-        base = self.theme.window_tint if self._acrylic_on else self.theme.bg
         alpha = float(self.config.get("panel_alpha", 0.92))
-        r, g, b, _ = _rgba_parts(base)
-        if self._acrylic_on:
-            a = max(0.6, min(1.0, 0.55 + 0.45 * alpha))
+        if self._material_on():
+            base = self.theme.window_tint
+            r, g, b, _ = _rgba_parts(base)
+            a = max(0.35, min(0.85, 0.35 + 0.50 * alpha))
         else:
+            base = self.theme.bg
+            r, g, b, _ = _rgba_parts(base)
             a = max(0.4, min(1.0, alpha))
         return _rgba_str(r, g, b, a)
 

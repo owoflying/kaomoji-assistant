@@ -27,7 +27,7 @@ from PySide6.QtWidgets import QMainWindow
 
 from ui.frameless_panel import paint_frameless_panel
 from ui.win_style import (
-    DWMSBT_TRANSIENTWINDOW, _has_dwm, apply_backdrop, apply_dark_mode,
+    _has_dwm, apply_dark_mode,
 )
 
 
@@ -102,7 +102,7 @@ class FramelessShell(QMainWindow):
         self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setWindowTitle("颜文字输入辅助器")
-        # 亚克力模糊为窗口核心视觉效果（DWM 不可用时 apply_backdrop 为 no-op）
+        # 窗口背景由自绘材质绘制（见 ui/window_material.py）
         self._acrylic_on = _has_dwm
         # 窗口状态持久化：关闭/隐藏时记住是否最大化，下次 show 时恢复
         self._saved_maximized = False
@@ -248,7 +248,8 @@ class FramelessShell(QMainWindow):
     def _update_backdrop(self):
         """DWM 亚克力 + 深色标题栏，跟随当前主题。"""
         hwnd = int(self.winId())
-        apply_backdrop(hwnd, DWMSBT_TRANSIENTWINDOW)
+        # 系统亚克力已移除（Win10 无效、且会与自绘背景材质冲突），
+        # 窗口背景由 paint_frameless_panel + window_material 自绘。
         apply_dark_mode(hwnd, self.theme.dark)
 
     # ---------- 最大化 / 还原 ----------
@@ -509,11 +510,12 @@ class FramelessShell(QMainWindow):
         return True, HTCLIENT
 
     def paintEvent(self, e):
-        """自绘：亚克力基底（DWM 提供模糊）+ 竖向渐变 + 1px 圆角边框 + 柔和外阴影。
+        """自绘：背景材质（可选）→ 面板底色 → 竖向渐变 → 1px 圆角边框 + 柔和外阴影。
 
         最大化时取消阴影、圆角与边框，让面板贴合屏幕工作区。
         具体笔法见 ui/frameless_panel（与日志窗口/插件弹窗共用同一实现）。
-        子类通过 `_adjusted_panel_base()` 提供按不透明度缩放后的基底色。
+        子类通过 `_adjusted_panel_base()` 提供按不透明度缩放后的基底色，
+        通过 `_background_material()` 提供背景材质（默认无）。
         """
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
@@ -526,6 +528,11 @@ class FramelessShell(QMainWindow):
         else:
             panel = QRect(P, P, self.width() - 2 * P, self.height() - 2 * P)
 
+        # 背景材质（自定义背景图 + 毛玻璃/磨砂/雾化）。
+        # 画在面板底色**之前**，由底色半透明地盖上去——这样材质透出来，
+        # 而上面的文字仍由面板底色保证可读性。
+        self._paint_background_material(p, panel)
+
         paint_frameless_panel(
             p, panel, radius=r,
             tint=self._adjusted_panel_base(),
@@ -536,6 +543,33 @@ class FramelessShell(QMainWindow):
             shadow_pad=P,
         )
         super().paintEvent(e)
+
+    # ---------- 背景材质 ----------
+    def _background_material(self):
+        """返回 `(pixmap, opacity)` 或 None。
+
+        子类覆盖（主窗口接入了设置项；候选条/弹窗默认无背景材质）。
+        """
+        return None
+
+    def _paint_background_material(self, painter, panel):
+        """把背景材质画进面板区域（裁剪成圆角）。"""
+        try:
+            got = self._background_material()
+        except Exception:
+            got = None
+        if not got:
+            return
+        pixmap, opacity = got
+        if pixmap is None or pixmap.isNull():
+            return
+        painter.save()
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(panel), self._RADIUS, self._RADIUS)
+        painter.setClipPath(path)
+        painter.setOpacity(max(0.0, min(1.0, float(opacity))))
+        painter.drawPixmap(panel.topLeft(), pixmap)
+        painter.restore()
 
     def _adjusted_panel_base(self):
         """面板基底色（子类按 panel_alpha 缩放；基类给个安全默认）。"""

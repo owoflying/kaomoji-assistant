@@ -29,6 +29,17 @@ DEFAULT_CONFIG = {
     "accent_mode": "preset",           # preset | system | custom
     "accent_custom": "#0067c0",        # accent_mode=custom 时的颜色
     "panel_alpha": 0.92,
+    # ---- 背景材质（自定义背景图 + 玻璃效果）----
+    #: 总开关。关闭后完全忽略背景图和材质，用主题纯色（最省资源）。
+    "material_enabled": False,
+    #: 材质类型：none / blur（毛玻璃）/ frosted（磨砂）/ fog（雾化）
+    "material_type": "none",
+    #: 材质强度 0~100（模糊半径、噪点密度、雾化浓度都按它缩放）
+    "material_strength": 55,
+    #: 背景图不透明度 0~100（0 = 完全透明，只看得到底色）
+    "material_image_opacity": 100,
+    #: 额外叠一层暗化/提亮 0~100（让上层文字更易读）
+    "material_dim": 0,
     "opacity": 0.98,
     "input_method": "direct",
     "max_recent": 30,
@@ -83,6 +94,7 @@ _CONFIG_ENUMS = {
     # 由 theme_presets.resolve_palette() 负责"找不到就回退 classic"。
     # 这里只校验类型（字符串），避免老预设 id 被误判非法。
     "accent_mode": ("preset", "system", "custom"),
+    "material_type": ("none", "blur", "frosted", "fog"),
     "input_method": ("clipboard", "direct", "type"),
 }
 
@@ -93,6 +105,9 @@ _CONFIG_RANGES = {
     "max_recent": (0, 200),
     "page_size": (1, 20),
     "emotion_sensitivity": (0, 100),
+    "material_strength": (0, 100),
+    "material_image_opacity": (0, 100),
+    "material_dim": (0, 100),
 }
 
 

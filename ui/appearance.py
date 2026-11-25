@@ -28,6 +28,7 @@ APPEARANCE_KEYS = frozenset({
     "panel_alpha", "opacity",
     "material_enabled", "material_type", "material_strength",
     "material_image_opacity", "material_dim",
+    "material_saturate", "material_brightness",
 })
 
 #: 材质类型的合法值
@@ -40,6 +41,9 @@ _DEFAULTS = {
     "material_strength": (55, 0, 100),
     "material_image_opacity": (100, 0, 100),
     "material_dim": (0, 0, 100),
+    # 玻璃滤镜：饱和度/亮度决定"通透感"，是材质精致度的关键
+    "material_saturate": (18, 10, 30),
+    "material_brightness": (104, 80, 130),
 }
 
 
@@ -60,7 +64,8 @@ class AppearanceState:
 
     __slots__ = ("theme_mode", "theme_preset", "accent_mode", "accent_custom",
                  "panel_alpha", "opacity", "material_enabled", "material_type",
-                 "material_strength", "material_image_opacity", "material_dim")
+                 "material_strength", "material_image_opacity", "material_dim",
+                 "material_saturate", "material_brightness")
 
     def __init__(self, **kw):
         for name in self.__slots__:

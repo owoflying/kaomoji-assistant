@@ -79,11 +79,13 @@ class AppearancePage(QWidget):
         self._add_row(lay, "启用背景材质", self._material_toggle())
         self._add_row(lay, "材质效果", self._material_combo())
         self._add_row(lay, "材质强度", self._material_strength_row())
+        self._add_row(lay, "玻璃饱和度", self._material_saturate_row())
+        self._add_row(lay, "玻璃亮度", self._material_brightness_row())
         self._add_row(lay, "背景图", self._material_image_row())
-        self._add_row(lay, "图片不透明度", self._material_image_opacity_row())
         self._add_row(lay, "背景暗化/提亮", self._material_dim_row())
-        self._hint(lay, "材质只作用于主窗口；候选条和弹窗保持纯色"
-                        "（它们很小，背景图反而看不清内容）。")
+        self._hint(lay, "背景能透多少由上面的「面板不透明度」控制；"
+                        "玻璃饱和度/亮度决定材质的通透感"
+                        "（饱和度越高，玻璃后面的颜色越鲜艳、越像真玻璃）。")
         root.addWidget(c)
         root.addStretch(1)
 
@@ -205,11 +207,44 @@ class AppearancePage(QWidget):
             "material_strength_slider", "material_strength", 0, 100,
             on_change=lambda k, s: self._push(material_strength=s.value()))
 
-    def _material_image_opacity_row(self):
-        return self._slider_row(
-            "material_image_opacity_slider", "material_image_opacity", 0, 100,
-            on_change=lambda k, s: self._push(
-                material_image_opacity=s.value()))
+    def _material_saturate_row(self):
+        """玻璃饱和度 ×10（10 = 1.0x，30 = 3.0x）。
+
+        这是"玻璃精致感"最关键的参数——纯模糊只会糊，提饱和才有通透感。
+        """
+        row = QHBoxLayout()
+        s = QSlider(Qt.Horizontal)
+        s.setRange(10, 30)
+        s.setFixedWidth(140)
+        val = QLabel("")
+        val.setFixedWidth(44)
+        s.valueChanged.connect(lambda v: val.setText("%.1fx" % (v / 10.0)))
+        s.sliderReleased.connect(
+            lambda *_a: self._push(material_saturate=s.value()))
+        row.addWidget(s)
+        row.addWidget(val)
+        row.addStretch(1)
+        self.material_saturate_slider = s
+        self.material_saturate_slider_value = val
+        return row
+
+    def _material_brightness_row(self):
+        """玻璃亮度 ×100（80 = 0.8x，130 = 1.3x）。"""
+        row = QHBoxLayout()
+        s = QSlider(Qt.Horizontal)
+        s.setRange(80, 130)
+        s.setFixedWidth(140)
+        val = QLabel("")
+        val.setFixedWidth(44)
+        s.valueChanged.connect(lambda v: val.setText("%.2fx" % (v / 100.0)))
+        s.sliderReleased.connect(
+            lambda *_a: self._push(material_brightness=s.value()))
+        row.addWidget(s)
+        row.addWidget(val)
+        row.addStretch(1)
+        self.material_brightness_slider = s
+        self.material_brightness_slider_value = val
+        return row
 
     def _material_dim_row(self):
         return self._slider_row(
@@ -272,8 +307,9 @@ class AppearancePage(QWidget):
             st = self._ctrl.state()
             on = bool(st.material_enabled)
             for w in (self.material_combo, self.material_strength_slider,
+                      self.material_saturate_slider,
+                      self.material_brightness_slider,
                       self.material_image_btn,
-                      self.material_image_opacity_slider,
                       self.material_dim_slider):
                 w.setEnabled(on)
             from ui.window_material import background_path
@@ -380,19 +416,26 @@ class AppearancePage(QWidget):
                 idx = combo.findData(val)
                 combo.setCurrentIndex(idx if idx >= 0 else 0)
             self.material_check.setChecked(bool(st.material_enabled))
-            for attr, val in (
-                    ("panel_alpha_slider", int(round(st.panel_alpha * 100))),
-                    ("opacity_slider", int(round(st.opacity * 100))),
-                    ("material_strength_slider", int(st.material_strength)),
-                    ("material_image_opacity_slider",
-                     int(st.material_image_opacity)),
-                    ("material_dim_slider", int(st.material_dim))):
+            # (控件, 目标值, 标签格式化) —— 三类滑块单位不同，必须分别格式化
+            for attr, val, fmt in (
+                    ("panel_alpha_slider", int(round(st.panel_alpha * 100)),
+                     lambda v: "%d%%" % v),
+                    ("opacity_slider", int(round(st.opacity * 100)),
+                     lambda v: "%d%%" % v),
+                    ("material_strength_slider", int(st.material_strength),
+                     lambda v: "%d%%" % v),
+                    ("material_saturate_slider", int(st.material_saturate),
+                     lambda v: "%.1fx" % (v / 10.0)),
+                    ("material_brightness_slider", int(st.material_brightness),
+                     lambda v: "%.2fx" % (v / 100.0)),
+                    ("material_dim_slider", int(st.material_dim),
+                     lambda v: "%d%%" % v)):
                 s = getattr(self, attr, None)
                 if s is not None:
                     s.setValue(max(s.minimum(), min(s.maximum(), val)))
                     lbl = getattr(self, attr + "_value", None)
                     if lbl is not None:
-                        lbl.setText("%d%%" % s.value())
+                        lbl.setText(fmt(s.value()))
             self._refresh_image_label()
         finally:
             self._loading = False

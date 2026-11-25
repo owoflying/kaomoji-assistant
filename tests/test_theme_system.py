@@ -331,9 +331,14 @@ def test_appearance_page_owns_theme_controls(qapp):
     # 外观页该有的
     for name in ("theme_combo", "preset_combo", "panel_alpha_slider",
                  "opacity_slider", "material_check", "material_combo",
-                 "material_strength_slider", "material_image_opacity_slider",
-                 "material_dim_slider"):
+                 "material_strength_slider", "material_saturate_slider",
+                 "material_brightness_slider", "material_dim_slider"):
         assert hasattr(appearance, name), "外观页缺少控件 %s" % name
+
+    # 「图片不透明度」与「面板不透明度」是同一件事，不该并存
+    # （用户反馈过：两个滑块都叫不透明度，不知道调哪个）
+    assert not hasattr(appearance, "material_image_opacity_slider"), \
+        "外观页又出现「图片不透明度」滑块了——它和面板不透明度重复"
 
     # 设置页不该有的（已迁走）
     for name in ("theme_combo", "preset_combo", "panel_alpha_slider",

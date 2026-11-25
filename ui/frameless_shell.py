@@ -639,8 +639,10 @@ class FramelessShell(QMainWindow):
             bool(self.config.get("material_enabled", False)),
             str(self.config.get("material_type", "none")),
             int(self.config.get("material_strength", 55)),
-            int(self.config.get("material_image_opacity", 100)),
             int(self.config.get("material_dim", 0)),
+            # 玻璃滤镜参数也必须进键——调了饱和度/亮度要立刻重算
+            int(self.config.get("material_saturate", 18)),
+            int(self.config.get("material_brightness", 104)),
             bp, mtime,
         )
 
@@ -665,12 +667,20 @@ class FramelessShell(QMainWindow):
 
             mat = normalize_material(self.config.get("material_type", "none"))
             strength = int(self.config.get("material_strength", 55))
-            img_op = max(0, min(100, int(
-                self.config.get("material_image_opacity", 100)))) / 100.0
+            # 玻璃的"精致感"来自这三个滤镜（参考 CSS backdrop-filter）：
+            #   saturate(1.8) 大幅提艳 —— 最关键，少了它只会显得糊
+            #   brightness(1.04) 轻微提亮
+            #   contrast(1.01)   极轻压对比
+            sat = max(10, min(30, int(self.config.get(
+                "material_saturate", 18)))) / 10.0
+            bri = max(80, min(130, int(self.config.get(
+                "material_brightness", 104)))) / 100.0
             bp = background_path()
-            if bp and img_op > 0:
-                layer = render_background(QSize(w, h), material=mat,
-                                          strength=strength, image_path=bp)
+            if bp:
+                layer = render_background(
+                    QSize(w, h), material=mat, strength=strength,
+                    image_path=bp, saturate=sat, brightness=bri,
+                    contrast=1.01)
                 # 暗化/提亮（让上层文字在花哨背景上仍可读）
                 dim = int(self.config.get("material_dim", 0))
                 if dim:
@@ -680,11 +690,16 @@ class FramelessShell(QMainWindow):
                                 QColor(0, 0, 0, a) if self.theme.dark
                                 else QColor(255, 255, 255, a))
                     ll.end()
-                p.setOpacity(img_op)
+                # 背景图本身不再单独设透明度：
+                # 「背景能透多少」由下面的面板底色（panel_alpha）统一决定。
+                # 原来还有一个 material_image_opacity 滑块，和 panel_alpha
+                # 是同一件事，两个都是 0~100 只会让用户困惑。
                 p.drawPixmap(0, 0, layer)
-                p.setOpacity(1.0)
 
         # ---- 2. 面板底色（按 panel_alpha）----
+        #
+        # 这一步决定"背景透过多少"：alpha 越低，背景越明显。
+        # 面板透明度是**唯一**控制它的地方。
         p.fillRect(0, 0, w, h, _as_color(self._adjusted_panel_base()))
 
         # ---- 3. 竖向渐变（同样按 panel_alpha 缩放）----

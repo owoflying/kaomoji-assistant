@@ -36,10 +36,21 @@ DEFAULT_CONFIG = {
     "material_type": "none",
     #: 材质强度 0~100（模糊半径、噪点密度、雾化浓度都按它缩放）
     "material_strength": 55,
-    #: 背景图不透明度 0~100（0 = 完全透明，只看得到底色）
+    #: 背景图不透明度 0~100。
+    #:
+    #: ⚠ 已废弃，与 `panel_alpha` 合并——两者控制的是同一件事
+    #: （"背景能透多少"），同时存在只会让用户困惑。
+    #: 保留键位是为了兼容旧配置；新代码不再读取，也不再暴露成滑块。
     "material_image_opacity": 100,
     #: 额外叠一层暗化/提亮 0~100（让上层文字更易读）
     "material_dim": 0,
+    #: 玻璃饱和度倍数 ×10（10 = 1.0x 不变，18 = 1.8x 提艳）。
+    #:
+    #: 这是"玻璃精致感"的关键：纯模糊只会显得糊，把饱和度提上来
+    #: 才有那种通透的彩色玻璃质感。
+    "material_saturate": 18,
+    #: 玻璃亮度倍数 ×100（100 = 1.0x，104 = 1.04x 轻微提亮）
+    "material_brightness": 104,
     "opacity": 0.98,
     "input_method": "direct",
     "max_recent": 30,
@@ -108,6 +119,8 @@ _CONFIG_RANGES = {
     "material_strength": (0, 100),
     "material_image_opacity": (0, 100),
     "material_dim": (0, 100),
+    "material_saturate": (10, 30),
+    "material_brightness": (80, 130),
 }
 
 

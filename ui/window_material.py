@@ -241,8 +241,83 @@ def _apply_fog(img, strength):
     return out
 
 
+def _apply_color_adjust(img, saturate=1.0, brightness=1.0, contrast=1.0):
+    """调整饱和度 / 亮度 / 对比度。
+
+    ## 这才是"玻璃精致感"的来源
+
+    只做模糊，画面只会显得"糊"。参考实现（DS H wallpaper 插件）用的是
+    CSS `backdrop-filter` 的完整组合：
+
+        blur(16px) saturate(1.8) brightness(1.04) contrast(1.01)
+
+    **`saturate(1.8)` 是把饱和度提到 1.8 倍**——玻璃后面的颜色被明显提艳，
+    这才有那种"通透的彩色玻璃"质感。少了这一步，无论模糊半径多大
+    都只是灰蒙蒙一片。
+
+    ## 实现
+
+    逐像素做色彩矩阵变换。Qt 没有直接的图像饱和度 API，
+    `QGraphicsColorizeEffect` 只做单色叠加，不符合需求。
+
+    用 `bytearray` 直接读写像素（和 `_apply_grain` 同样的技巧），
+    避免逐像素的 Qt 调用开销。
+    """
+    w, h = img.width(), img.height()
+    if w <= 0 or h <= 0:
+        return img
+    if abs(saturate - 1.0) < 1e-3 and abs(brightness - 1.0) < 1e-3 \
+            and abs(contrast - 1.0) < 1e-3:
+        return img
+
+    src = img.convertToFormat(QImage.Format_ARGB32)
+    data = bytearray(src.constBits().tobytes())
+
+    # 标准饱和度矩阵（Rec.709 亮度权重）。
+    #
+    # 正确形式（S = saturate，L = 该通道的亮度权重）：
+    #
+    #     gray = r*Lr + g*Lg + b*Lb
+    #     R'   = gray + (r - gray) * S = r*(Lr*(1-S)+S) + g*(Lg*(1-S)) + b*(Lb*(1-S))
+    #
+    # 即对角线为 L*(1-S)+S，其余为 L*(1-S)。
+    #
+    # ⚠ 最初把非对角线写成了 `-L*S`（漏了 1-S 里的"1"），
+    # 结果是灰蓝 #7a8a9a 提饱和后变成绿色 #0b681d —— 通道搞混了。
+    s = saturate
+    lr, lg, lb = 0.2126, 0.7152, 0.0722
+    m = 1.0 - s
+    rr, rg, rb = lr * m + s, lg * m, lb * m
+    gr, gg, gb = lr * m, lg * m + s, lb * m
+    br, bg, bb = lr * m, lg * m, lb * m + s
+
+    for i in range(0, len(data), 4):
+        b = data[i]
+        g = data[i + 1]
+        r = data[i + 2]
+        # 饱和度
+        nr = r * rr + g * rg + b * rb
+        ng = r * gr + g * gg + b * gb
+        nb = r * br + g * bg + b * bb
+        # 亮度
+        nr *= brightness
+        ng *= brightness
+        nb *= brightness
+        # 对比度（以 128 为中心）
+        nr = (nr - 128.0) * contrast + 128.0
+        ng = (ng - 128.0) * contrast + 128.0
+        nb = (nb - 128.0) * contrast + 128.0
+        data[i] = 0 if nb < 0 else (255 if nb > 255 else int(nb))
+        data[i + 1] = 0 if ng < 0 else (255 if ng > 255 else int(ng))
+        data[i + 2] = 0 if nr < 0 else (255 if nr > 255 else int(nr))
+
+    out = QImage(bytes(data), w, h, src.bytesPerLine(), QImage.Format_ARGB32)
+    return out.convertToFormat(QImage.Format_ARGB32_Premultiplied)
+
+
 def render_background(size, material="none", strength=DEFAULT_STRENGTH,
-                      image_path=None, fallback_color=None):
+                      image_path=None, fallback_color=None,
+                      saturate=1.0, brightness=1.0, contrast=1.0):
     """渲染一张"窗口背景"图，供 paintEvent 直接 drawPixmap。
 
     :param size: QSize，窗口客户区尺寸
@@ -298,6 +373,20 @@ def render_background(size, material="none", strength=DEFAULT_STRENGTH,
     p.end()
 
     # ---- 2. 材质 ----
+    # ---- 2. 色彩调整（饱和度/亮度/对比度）----
+    #
+    # ⚠ 必须在模糊**之前**做。
+    #
+    # 先模糊再提艳，边缘的过渡色会被放大成脏色；先提艳再模糊，
+    # 大色块的饱和度整体提升，模糊后仍是干净的彩色——
+    # 这正是 CSS `backdrop-filter: blur() saturate()` 的观感。
+    if abs(saturate - 1.0) > 1e-3 or abs(brightness - 1.0) > 1e-3 \
+            or abs(contrast - 1.0) > 1e-3:
+        canvas = _apply_color_adjust(canvas, saturate=saturate,
+                                     brightness=brightness,
+                                     contrast=contrast)
+
+    # ---- 3. 材质模糊 ----
     if mat == "blur":
         # 强度 0~100 映射到模糊半径 2~28
         radius = 2 + strength * 0.26

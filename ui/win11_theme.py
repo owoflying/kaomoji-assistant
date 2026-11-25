@@ -71,6 +71,75 @@ _current_theme_name = "light"
 _current_theme_obj = None
 
 
+def _glass_controls_css(t):
+    """材质开启时给按钮/输入框追加的"玻璃控件"规则。
+
+    ## 为什么需要
+
+    卡片已经通过 `MaterialCard` 自绘拿到了玻璃质感（背后真实背景 +
+    釉面高光），但按钮和输入框还是普通 QSS 的实色底。用户反馈
+    "背景很高级了但这些控件的感觉还是很廉价"——对比之下更明显。
+
+    ## 能做什么、不能做什么
+
+    QSS **画不出**釉面高光渐变（实测 `qlineargradient` 在 QPushButton
+    上被 Qt 的样式引擎忽略）。所以这里只能做两件确实有效的事：
+
+    1. **把底色调透**：浅色主题的 `input_bg` 是 85% 白，几乎不透；
+       降到 40% 左右就能透出背后的背景图和卡片
+    2. **边框改成浅色描边**：像贴在玻璃上的高光边，而不是"实色块的
+       深色轮廓"——这是廉价感的主要来源
+
+    深色主题下反向处理：底色略微提亮、边框用更亮的白。
+    """
+    if getattr(t, "dark", False):
+        fill = "rgba(255,255,255,0.10)"
+        fill_hover = "rgba(255,255,255,0.16)"
+        fill_press = "rgba(255,255,255,0.06)"
+        edge = "rgba(255,255,255,0.22)"
+    else:
+        fill = "rgba(255,255,255,0.42)"
+        fill_hover = "rgba(255,255,255,0.62)"
+        fill_press = "rgba(255,255,255,0.30)"
+        edge = "rgba(255,255,255,0.85)"
+
+    return f"""
+        /* ===== 玻璃控件（材质开启时启用）=====
+           QSS 无法画釉面高光渐变，所以只做两件事：
+           把底色调透 + 边框改成浅色高光边。 */
+        /* 用 QWidget X 形式提高优先级，确保覆盖上面的基础规则 */
+        QWidget QPushButton {{
+            background: {fill};
+            border: 1px solid {edge};
+        }}
+        QWidget QPushButton:hover {{
+            background: {fill_hover};
+        }}
+        QWidget QPushButton:pressed {{
+            background: {fill_press};
+        }}
+        QWidget QPushButton:disabled {{
+            background: rgba(255,255,255,0.16);
+            border: 1px solid {t.input_border};
+        }}
+        QWidget QLineEdit, QWidget QTextEdit, QWidget QPlainTextEdit,
+        QWidget QSpinBox, QWidget QDoubleSpinBox {{
+            background: {fill};
+            border: 1px solid {edge};
+        }}
+        QWidget QLineEdit:focus, QWidget QTextEdit:focus,
+        QWidget QPlainTextEdit:focus, QWidget QSpinBox:focus,
+        QWidget QDoubleSpinBox:focus {{
+            background: {fill_hover};
+            border: 1px solid {t.accent};
+        }}
+        QWidget QComboBox {{
+            background: {fill};
+            border: 1px solid {edge};
+        }}
+        """
+
+
 def set_app_theme(name_or_theme, theme_obj=None):
     """设置当前应用主题，供独立对话框/弹出层在无法取父级时读取。
 
@@ -216,8 +285,14 @@ class Theme:
         p.update(overrides)
         return Theme(self.name, palette=p)
 
-    def style_sheet(self):
-        """返回应用到统一窗口根 widget 的全局 QSS。"""
+    def style_sheet(self, glass=False):
+        """返回应用到统一窗口根 widget 的全局 QSS。
+
+        :param glass: 材质开启时传 True —— 追加一段玻璃控件规则，
+                      把按钮/输入框的底色调透、边框改成浅色描边，
+                      让它们透出背后的背景图，观感与卡片统一。
+        """
+        glass_css = _glass_controls_css(self) if glass else ""
         t = self
         # 把内置图标字体追加到全局字体回退链「末尾」：正文仍由前面的界面字体渲染，
         # 而 PUA 区的图标码点在前面字体都缺字形时能回退到它。
@@ -703,6 +778,7 @@ class Theme:
             color: {t.text};
             background: transparent;
         }}
+        {glass_css}
         """
 
 

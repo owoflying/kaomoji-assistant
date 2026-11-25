@@ -766,7 +766,7 @@ class UnifiedSettingsWindow(FramelessShell):
     # ==================================================================
     def _apply_theme(self):
         t = self.theme
-        ss = t.style_sheet()
+        ss = t.style_sheet(glass=self._material_on())
         surface = self._adjusted_content_surface()
         # QSS 重贴会让窗口内所有控件重新 polish：本窗实测 setStyleSheet ≈170ms，
         # 内容区再贴一次 ≈130ms。设置页任何一处改动都会走 apply_config → 这里，

@@ -41,6 +41,7 @@ from core import win_utils
 from core.global_keys import GlobalKeyInterceptor
 from core.global_mouse import GlobalMouseInterceptor
 from ui.win_style import apply_dark_mode
+from ui.window_material_mixin import WindowMaterialMixin
 from ui.frameless_panel import paint_frameless_panel
 from ui.win11_theme import resolved_mode_of
 
@@ -232,7 +233,7 @@ class CandidateChip(QWidget):
         super().mousePressEvent(e)
 
 
-class PickerWindow(QWidget):
+class PickerWindow(WindowMaterialMixin, QWidget):
     selected = Signal(str, object)   # (text, ctx) —— ctx 为触发词上下文 dict 或 None
     emotion_shown = Signal(str)        # 因某情绪自动弹出时发出，供监听器锁定该情绪
     settings_requested = Signal()      # 保留信号：托盘菜单走这条路
@@ -362,6 +363,14 @@ class PickerWindow(QWidget):
         """
         hwnd = int(self.winId())
         apply_dark_mode(hwnd, resolved_mode_of(self.config) == "dark")
+        # 接入背景材质：候选条也能吃到用户设置的高级材质。
+        # 主题取 `_theme_obj`（`_apply_style` 每次换肤都会刷新它）。
+        try:
+            self._init_material(
+                self.config,
+                theme_provider=lambda: getattr(self, "_theme_obj", None))
+        except Exception:
+            pass
 
     def _apply_style(self):
         """按当前主题重贴候选条样式。
@@ -743,7 +752,31 @@ class PickerWindow(QWidget):
         :param source_text: 触发这次弹窗的原始文本（现在是用户输入的那句话）。
             在线学习需要它作为「样本输入」——用户从"开心"候选里选了一张，
             就把那句话当作"开心"的训练样本。
+
+        ## ⚠ 输入法正在用时**不弹**
+
+        用户反馈：有时输入法候选窗和我们的候选条同时出现，两边都响应
+        数字键 1~9，按 1 会同时选中两边各自的第一项——"抢输入法的
+        数字快捷键"。
+
+        所以在真正 show 之前先问 `core.ime_guard`：只要有输入法的
+        候选窗可见、或前台正处在中文输入状态，就**直接放弃这次弹出**。
+        宁可不弹（用户还能用热键/托盘手动唤起），也不能抢键害人丢字。
         """
+        try:
+            from core.ime_guard import other_ime_active
+
+            busy, why = other_ime_active()
+            if busy:
+                from core.applog import append_log
+
+                append_log("info", "picker",
+                           "检测到输入法正在输入（%s），本次不弹出候选条"
+                           % why)
+                return
+        except Exception:
+            # 检测本身失败时宁可照常弹出，不能因为一个辅助判断让功能失效
+            pass
         self._finish_hide_now()
         self._emotion = emotion
         self._caret = caret
@@ -861,6 +894,12 @@ class PickerWindow(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         pad = SHADOW_PAD
+        # 材质开启时由 mixin 画（含背景图/模糊），不再画纯色面板
+        if self._paint_material(painter, pad, RADIUS,
+                                shadow_color=self._shadow_color):
+            painter.end()
+            super().paintEvent(e)
+            return
         panel = self.rect().adjusted(pad, pad, -pad, -pad)
         paint_frameless_panel(
             painter, panel, radius=RADIUS,

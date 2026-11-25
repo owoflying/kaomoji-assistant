@@ -87,6 +87,20 @@ _LIGHT_CHANGE_KEYS = frozenset({
 })
 
 
+def _glass_enabled(config):
+    """材质开启 → 控件用玻璃样式（底色透、边框高光）。
+
+    单一判断点：材质到底有没有实际内容（开关 + 背景图/材质类型），
+    由 MaterialComposer 统一回答，避免各窗口各判一套。
+    """
+    try:
+        from ui.material_composer import MaterialComposer
+
+        return MaterialComposer(config or {}, lambda: None).enabled()
+    except Exception:
+        return False
+
+
 def _apply_tooltip_palette(app, theme):
     """把主题交给自绘 tooltip（并保留调色板兜底）。
 
@@ -379,7 +393,7 @@ class AppRuntime:
         实测更慢：两次 `setStyleSheet` 都要全量重算，总时间翻倍。
         正确做法是只贴一次，但把「贴」和「重绘」分到两帧。
         """
-        ss = theme.style_sheet()
+        ss = theme.style_sheet(glass=_glass_enabled(self.config))
         if ss == self._applied_style:
             return None
         if not chunked:
@@ -1247,7 +1261,8 @@ class AppRuntime:
 
         theme = build_theme(self.config, mode_override=current)
         self.theme_obj = theme
-        self.app.setStyleSheet(theme.style_sheet())
+        self.app.setStyleSheet(
+            theme.style_sheet(glass=_glass_enabled(self.config)))
         if self.menu is not None:
             self.menu.setStyleSheet(theme.menu_style())
         set_app_theme(theme)

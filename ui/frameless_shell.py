@@ -1,4 +1,4 @@
-"""无边框窗口外壳：WinUI 3 风格窗口的"机械部分"基类。
+﻿"""无边框窗口外壳：WinUI 3 风格窗口的"机械部分"基类。
 
 **拆出来的理由**：`UnifiedSettingsWindow` 原先 1172 行里混着三件互不相干的事——
 1. 无边框窗口的机械逻辑（圆角遮罩、八向缩放热区、最大化贴工作区、状态保持）；
@@ -21,11 +21,8 @@
 import ctypes
 from ctypes.wintypes import DWORD, MSG, POINT, RECT
 
-from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, QEvent, QTimer
-from PySide6.QtGui import (
-    QColor, QImage, QPainter, QPainterPath, QPen, QPixmap, QRegion,
-    QTransform,
-)
+from PySide6.QtCore import QPoint, QRect, QRectF, Qt, QEvent, QTimer
+from PySide6.QtGui import QPainter, QPainterPath, QPen, QRegion, QTransform
 from PySide6.QtWidgets import QMainWindow
 
 from ui.frameless_panel import paint_frameless_panel
@@ -605,137 +602,32 @@ class FramelessShell(QMainWindow):
         p.end()
         super().paintEvent(e)
 
+    def _composer(self):
+        """当前窗口的材质合成器（懒建）。"""
+        c = getattr(self, "_material_composer", None)
+        if c is None:
+            from ui.material_composer import MaterialComposer
+
+            c = MaterialComposer(self.config, lambda: self.theme)
+            self._material_composer = c
+        return c
+
     def _composed_background(self, panel):
-        """把「材质 + 底色 + 渐变」合成成一张位图；失败返回 None。
+        """把「材质 + 底色 + 透明度」合成成一张位图。
 
-        结果按「面板尺寸 + 材质参数 + 主题 + 背景图 + 面板不透明度」
-        缓存——模糊整窗 40~120ms，不能每帧算。
+        ⚠ **所有窗口共用**同一条合成路径（见 ui/material_composer.py）。
+
+        原先这套逻辑只写在主窗口里，于是日志窗口 / 候选条 / 插件弹窗
+        各自 `paintEvent` 画纯色，材质完全吃不到（用户反馈
+        "高级材质托盘和日志窗口没吃上"）。现在抽成公共模块，
+        任何窗口只要有自己的 `config` / `theme` 就能复用。
+
+        结果在 composer 内部缓存——模糊整窗 25~90ms，不能每帧算。
         """
-        key = self._composed_cache_key(panel)
-        cached = getattr(self, "_composed_cache", None)
-        if cached is not None and getattr(self, "_composed_key", None) == key:
-            return cached
         try:
-            pm = self._render_composed(panel)
+            return self._composer().compose(panel.size())
         except Exception:
-            pm = None
-        self._composed_cache = pm
-        self._composed_key = key
-        return pm
-
-    def _composed_cache_key(self, panel):
-        """合成图缓存键（任何输入变化都要重算）。"""
-        try:
-            from ui.window_material import background_path
-
-            bp = background_path()
-            mtime = 0.0
-            if bp:
-                import os as _os
-
-                mtime = _os.path.getmtime(bp)
-        except Exception:
-            bp, mtime = None, 0.0
-        return (
-            panel.width(), panel.height(),
-            self.theme.dark, self.theme.bg,
-            self.theme.window_grad_top, self.theme.window_grad_bottom,
-            self._panel_alpha_value(),
-            bool(self.config.get("material_enabled", False)),
-            str(self.config.get("material_type", "none")),
-            int(self.config.get("material_strength", 55)),
-            int(self.config.get("material_dim", 0)),
-            # 玻璃滤镜参数也必须进键——调了饱和度/亮度要立刻重算
-            int(self.config.get("material_saturate", 18)),
-            int(self.config.get("material_brightness", 104)),
-            bp, mtime,
-        )
-
-    def _render_composed(self, panel):
-        """合成窗口背景位图。
-
-        ## 三条清晰规则
-
-            1. **有背景图** → 始终画背景图，**不画**面板底色
-               （底色会盖住背景图，那正是"看不到背景"的原因）
-            2. **没背景图** → 画实色面板底色
-            3. **整窗不透明度**（panel_alpha）→ 以上内容统一按它缩放，
-               拉到 0 时完全透明、直接看到桌面
-
-        所以「不透明度」是**唯一的透明度旋钮**，语义是"整个窗口有多实"，
-        和背景图、底色都没有耦合关系。
-
-        ## 之前的错误
-
-        我把"背景图"和"面板底色"当成两个可独立调透明的层，
-        于是有过两个方向的 bug：底色盖住背景图、背景图挡住桌面。
-        根因是**让底色和背景图同时存在**——底色在背景图上本来就是遮挡物。
-
-        正确做法是互斥：有背景图就不画底色。
-        """
-        from ui.frameless_panel import _as_color
-
-        w, h = max(1, panel.width()), max(1, panel.height())
-        canvas = QImage(w, h, QImage.Format_ARGB32_Premultiplied)
-        canvas.fill(Qt.transparent)
-        p = QPainter(canvas)
-        p.setRenderHint(QPainter.Antialiasing, True)
-        p.setRenderHint(QPainter.SmoothPixmapTransform, True)
-
-        # ---- 1. 背景图（优先）----
-        drew_image = False
-        if self._material_on():
-            from ui.window_material import (
-                background_path, normalize_material, render_background,
-            )
-
-            bp = background_path()
-            if bp:
-                mat = normalize_material(
-                    self.config.get("material_type", "none"))
-                strength = int(self.config.get("material_strength", 55))
-                # 玻璃质感三件套（参考 CSS backdrop-filter）：
-                #   saturate(1.8) 大幅提艳 —— 最关键，少了只会显得糊
-                #   brightness(1.04) 轻微提亮 / contrast(1.01) 极轻压对比
-                sat = max(10, min(30, int(self.config.get(
-                    "material_saturate", 18)))) / 10.0
-                bri = max(80, min(130, int(self.config.get(
-                    "material_brightness", 104)))) / 100.0
-                layer = render_background(
-                    QSize(w, h), material=mat, strength=strength,
-                    image_path=bp, saturate=sat, brightness=bri,
-                    contrast=1.01, dark=bool(self.theme.dark))
-                # 暗化/提亮（让上层文字在花哨背景上仍可读）
-                dim = int(self.config.get("material_dim", 0))
-                if dim:
-                    ll = QPainter(layer)
-                    a = min(255, int(dim * 1.6))
-                    ll.fillRect(layer.rect(),
-                                QColor(0, 0, 0, a) if self.theme.dark
-                                else QColor(255, 255, 255, a))
-                    ll.end()
-                p.drawPixmap(0, 0, layer)
-                drew_image = True
-
-        # ---- 2. 没有背景图 → 实色面板 ----
-        #
-        # ⚠ 只在**没有背景图**时画，否则会把背景图盖死
-        if not drew_image:
-            p.fillRect(0, 0, w, h, _as_color(self._adjusted_panel_base()))
-
-        # ---- 3. 整窗不透明度 ----
-        #
-        # 把上面画好的内容整体按 panel_alpha 缩放，得到最终透明度。
-        # 这是"整窗透明度"的唯一实现点：背景图和实色面板都受它控制。
-        alpha = self._panel_alpha_value()
-        if alpha < 0.999:
-            # 用一个与自身相乘的合成：源图 alpha *= panel_alpha
-            p.setCompositionMode(QPainter.CompositionMode_DestinationIn)
-            p.fillRect(0, 0, w, h, QColor(0, 0, 0, int(round(alpha * 255))))
-            p.setCompositionMode(QPainter.CompositionMode_SourceOver)
-
-        p.end()
-        return QPixmap.fromImage(canvas)
+            return None
 
     def _panel_alpha_value(self):
         """当前面板不透明度（0~1），供渐变等叠加层等比缩放。"""

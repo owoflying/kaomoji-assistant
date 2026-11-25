@@ -1,4 +1,4 @@
-﻿"""主题化无边框弹窗：供插件（与将来其它模块）复用的一致观感容器。
+"""主题化无边框弹窗：供插件（与将来其它模块）复用的一致观感容器。
 
 背景：主窗口是 WA_TranslucentBackground + 自绘圆角阴影的无边框窗口，
 若插件直接 new 一个原生 QDialog，会与整体 Win11 观感割裂（方角、系统主题框、
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from ui.win11_theme import Theme, parse_color, apply_child_theme
+from ui.window_material_mixin import WindowMaterialMixin
 from ui.win_style import apply_dark_mode
 from ui.fluent_icons import icon_label
 from ui.frameless_panel import paint_frameless_panel
@@ -30,7 +31,21 @@ _PAD = 12
 _TITLEBAR_H = 40
 
 
-class PluginDialog(QWidget):
+def _load_material_config():
+    """取材质配置（弹窗被直接 new 出来时的兜底）。
+
+    材质设置持久化在 config.json 里，独立窗口拿不到宿主 config 时
+    读一份磁盘配置即可。
+    """
+    try:
+        from core.config_store import load_config
+
+        return load_config()
+    except Exception:
+        return {}
+
+
+class PluginDialog(WindowMaterialMixin, QWidget):
     """自定义标题栏 + 内容区 + 自绘（阴影/圆角/渐变/边框）的无边框弹窗。
 
     body 由调用方（插件）提供，本容器只负责把它摆进统一外壳。
@@ -42,6 +57,12 @@ class PluginDialog(QWidget):
                  width=0, height=0):
         super().__init__(parent)
         self._theme = theme if isinstance(theme, Theme) else Theme(theme or "light")
+        # 接入背景材质（插件弹窗也能吃到高级材质）
+        try:
+            self._init_material(_load_material_config(),
+                                theme_provider=lambda: self._theme)
+        except Exception:
+            pass
         self._drag_pos = None
         self._result = 0
         self.setWindowTitle(title or "插件")
@@ -165,6 +186,12 @@ class PluginDialog(QWidget):
     def paintEvent(self, e):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
+        # 材质开启时由 mixin 画，不再画纯色面板
+        if self._paint_material(p, _PAD, _RADIUS,
+                                shadow_color=parse_color(self._theme.shadow_color)):
+            p.end()
+            super().paintEvent(e)
+            return
         t = self._theme
         panel = QRect(_PAD, _PAD, self.width() - 2 * _PAD, self.height() - 2 * _PAD)
         tint = parse_color(t.window_tint)

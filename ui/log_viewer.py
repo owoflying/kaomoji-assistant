@@ -20,6 +20,7 @@ from PySide6.QtGui import (
 from ui.win11_theme import Theme, parse_color, resolve_theme_name
 from ui.fluent_icons import icon_label, recolor
 from ui.frameless_panel import paint_frameless_panel
+from ui.window_material_mixin import WindowMaterialMixin
 
 
 _PLACEHOLDER = "（暂无日志）"
@@ -30,6 +31,20 @@ _PAD = 12
 _TITLEBAR_H = 40
 
 
+def _load_material_config():
+    """取材质相关配置（窗口没被传入 config 时的兜底）。
+
+    独立窗口可能是被直接 new 出来的（测试 / 插件），拿不到宿主的 config。
+    这时从磁盘读一份——材质设置本来就持久化在 config.json 里。
+    """
+    try:
+        from core.config_store import load_config
+
+        return load_config()
+    except Exception:
+        return {}
+
+
 def _opaque(spec):
     """取主题色的实色版本（复制一份，避免改到 Theme 缓存里的 QColor 令牌）。"""
     c = QColor(spec)
@@ -37,7 +52,7 @@ def _opaque(spec):
     return c
 
 
-class LogViewer(QWidget):
+class LogViewer(WindowMaterialMixin, QWidget):
     """只读日志窗口：实时显示 LOG_BUFFER，支持复制与保存。"""
 
     def __init__(self, buffer, parent=None, theme_name="light", theme=None):
@@ -58,6 +73,9 @@ class LogViewer(QWidget):
             self._theme = Theme(resolve_theme_name(theme_name))
         self.setAttribute(Qt.WA_DeleteOnClose, True)
         self._init_window()
+        # 接入背景材质：日志窗口也能吃到用户设置的高级材质
+        self._init_material(theme.config if hasattr(theme, "config") else
+                            _load_material_config())
         self._init_ui()
         self._refresh()
 
@@ -263,6 +281,12 @@ class LogViewer(QWidget):
     def paintEvent(self, e):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
+        # 材质开启时由 mixin 画（含背景图/模糊/整窗透明度），返回 True 就不画纯色
+        if self._paint_material(p, _PAD, _RADIUS,
+                                shadow_color=parse_color(self._theme.shadow_color)):
+            p.end()
+            super().paintEvent(e)
+            return
         t = self._theme
         panel = QRect(_PAD, _PAD, self.width() - 2 * _PAD, self.height() - 2 * _PAD)
 

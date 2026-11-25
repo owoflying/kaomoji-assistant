@@ -495,6 +495,8 @@ class UnifiedSettingsWindow(FramelessShell):
                 self.appearance_ctrl, self.theme,
                 on_apply=self._on_appearance_applied)
             page._theme_preview_cb = self._appearance_theme_preview
+            # 换材质种类时走「后退 + 遮罩」过渡，与换肤体感一致
+            page._animated_apply = self.apply_material_with_fade
             page.refresh_from_controller()
             return page
 
@@ -819,6 +821,58 @@ class UnifiedSettingsWindow(FramelessShell):
             self._content_surface = surface
             self._patch_content_surface(surface)
         self.update()
+        # ⚠ 子控件不会因为窗口 update() 自动重绘。
+        #
+        # 卡片的玻璃底是按「背后那块背景」裁出来的，材质一变它就必须
+        # 重新裁——但卡片自己不知道配置变了。这里显式清掉它们的缓存
+        # 再让它们重绘。
+        self.invalidate_material_cards()
+
+    def apply_material_with_fade(self, apply_fn):
+        """切换材质时套用与换肤同样的「后退 + 遮罩」过渡。
+
+        ## 为什么需要
+
+        材质重算即使优化到 25~90ms，卡片逐一重绘 + 整窗合成仍有可感停顿；
+        而用户已经习惯了换肤有过渡动画，材质切换却是"突然卡一下就好了"，
+        体感很差。
+
+        复用 `ThemeFader` 让两者行为一致：遮罩升起 → 后台重算 → 淡出。
+
+        :param apply_fn: 真正应用材质变更的函数（可以是生成器）
+        """
+        try:
+            self._theme_fader.run(
+                apply_fn, dark=bool(getattr(self.theme, "dark", False)))
+        except Exception:
+            # 动画失败就同步执行，不能因为过渡问题让设置不生效
+            try:
+                fn = apply_fn
+                gen = fn()
+                if hasattr(gen, "__iter__"):
+                    for _ in gen:
+                        pass
+            except Exception:
+                pass
+
+    def invalidate_material_cards(self):
+        """清空所有卡片/内部元素的玻璃缓存并请求重绘。
+
+        材质参数（类型/强度/饱和度/亮度/暗化）变化后必须调用：
+        卡片缓存的是裁剪好的背景图，不失效就会继续显示旧材质。
+        """
+        try:
+            from ui.pages._scaffold import MaterialCard
+
+            for card in self.findChildren(MaterialCard):
+                card._mat_cache = None
+                card._mat_key = None
+                card.update()
+        except Exception:
+            pass
+        # 窗口自己的合成图也要重算
+        self._composed_cache = None
+        self._composed_key = None
 
     def _patch_content_surface(self, surface):
         """更新内容区表面背景色（自绘，不走 QSS）。

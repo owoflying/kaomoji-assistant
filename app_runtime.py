@@ -69,8 +69,21 @@ DISMISS_GUARD_SEC = 0.4
 #: （重贴 QSS + 刷全部子页，实测 ≈320ms）。用户拖动不透明度滑块时
 #: 每一档都走全量刷新会明显卡顿。
 _LIGHT_CHANGE_KEYS = frozenset({
-    "panel_alpha",   # 面板不透明度：只影响 paintEvent 的基底色
+    "panel_alpha",   # 面板不透明度：只影响 paintEvent 的合成图
     "opacity",       # 候选条不透明度：只影响窗口透明度
+    # ---- 背景材质参数 ----
+    #
+    # 这些只影响窗口 `paintEvent` 的合成图，**不需要**重贴 QSS、
+    # 也不需要重建设置页控件。之前它们落不进这个集合，于是调一下
+    # 材质走的是全量刷新（重贴 321 条 QSS 规则 + 刷所有子页，
+    # 实测 ≈320ms 起），表现为"切材质卡好久"。
+    "material_enabled",
+    "material_type",
+    "material_strength",
+    "material_saturate",
+    "material_brightness",
+    "material_dim",
+    "material_image_opacity",
 })
 
 

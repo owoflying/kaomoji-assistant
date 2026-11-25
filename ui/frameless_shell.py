@@ -704,7 +704,7 @@ class FramelessShell(QMainWindow):
                 layer = render_background(
                     QSize(w, h), material=mat, strength=strength,
                     image_path=bp, saturate=sat, brightness=bri,
-                    contrast=1.01)
+                    contrast=1.01, dark=bool(self.theme.dark))
                 # 暗化/提亮（让上层文字在花哨背景上仍可读）
                 dim = int(self.config.get("material_dim", 0))
                 if dim:

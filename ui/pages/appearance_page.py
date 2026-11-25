@@ -275,13 +275,25 @@ class AppearancePage(QWidget):
         2. 用 `changes_for()` 算出**目标配置快照**，交给宿主的 `on_apply(cfg)`。
            controller 自己**不改** config——否则宿主的 `apply_settings`
            比对不出差异，切主题会静默失效（实测过：config 变了、界面没变）。
+
+        ## 动画策略
+
+        `material_type` 变化（换材质种类）时走完整过渡——那是一次明显的
+        视觉切换，需要动画遮掩重算停顿；其它参数（强度/饱和度滑块）
+        只重绘，不做动画，否则拖一次滑块就要看一遍淡入淡出，很拖沓。
         """
         if self._loading:
             return
         target_cfg = self._ctrl.changes_for(**changes)
         changed = self._ctrl.update(**changes)
         self._sync_enabled()
-        if changed and self._on_apply is not None:
+        if not changed or self._on_apply is None:
+            return
+        kind_changed = "material_type" in changes
+        animated = getattr(self, "_animated_apply", None)
+        if kind_changed and animated is not None:
+            animated(lambda: self._on_apply(target_cfg))
+        else:
             self._on_apply(target_cfg)
 
     def _push_from_slider(self, _key, _slider):

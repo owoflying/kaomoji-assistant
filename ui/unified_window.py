@@ -1061,18 +1061,22 @@ class UnifiedSettingsWindow(FramelessShell):
     def _material_paint_params(self):
         """给内部元素（卡片/输入框）用的材质参数；材质关闭时返回 None。
 
-        :return: `(material_type, strength, card_color, radius)` 或 None
+        :return: `(material_type, strength, tint_color, radius)` 或 None
 
         卡片自己不会读配置（它是通用控件，页面各处都在用），
         而是问**窗口**要参数——这样"材质开关"只有一个判断点。
+
+        ## tint 用 rgba 而不是纯色
+
+        卡片底色要半透明才能透出背后的背景。这里直接返回主题 card 色
+        对应的 rgba（alpha 由主题给），卡片再自行做可读性保底。
         """
         if not self._material_on():
             return None
         mat = str(self.config.get("material_type", "none") or "none").lower()
         strength = int(self.config.get("material_strength", 55))
-        # 材质类型是 none 但有背景图：内部元素也用最轻的磨砂质感，
-        # 否则卡片和背景图之间没有"玻璃层"的视觉过渡
         if mat == "none":
+            # 只设了背景图、没选材质：卡片用最轻的磨砂质感
             mat = "frosted"
             strength = min(strength, 35)
         try:
@@ -1081,7 +1085,20 @@ class UnifiedSettingsWindow(FramelessShell):
             radius = RADIUS_CARD
         except Exception:
             radius = 8
-        return (mat, strength, self.theme.card, radius)
+        # 卡片底色：浅色主题用白，深色用深灰，都带半透明
+        card = self.theme.card
+        try:
+            from PySide6.QtGui import QColor
+
+            c = QColor(card)
+            if self.theme.dark:
+                c.setAlphaF(0.55)
+            else:
+                c.setAlphaF(0.62)
+            tint = c
+        except Exception:
+            tint = card
+        return (mat, strength, tint, radius)
 
     def _background_material(self):
         """给 frameless_shell 提供背景材质：`(pixmap, opacity)` 或 None。

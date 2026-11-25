@@ -5,18 +5,19 @@
 """
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QCursor
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from ui.fluent_icons import icon_label, recolor
 from ui.pages._scaffold import (
     body_text, card, card_layout, card_title, page_layout, page_title,
     section_title,
+    MaterialCard,
 )
 from ui.pages.greeting_card import GreetingCard
 from ui.win11_theme import Theme, resolve_theme_name
 
 
-class ActionCard(QFrame):
+class ActionCard(MaterialCard):
     """快捷入口卡片：整卡可点，并发出 `clicked` 信号。
 
     原先用「给实例塞一个 mouseReleaseEvent」实现点击，好处是省事，坏处是
@@ -31,8 +32,8 @@ class ActionCard(QFrame):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setObjectName("Card")      # 复用宿主 QSS 的卡片样式
-        self.setAttribute(Qt.WA_StyledBackground, True)  # 卡片背景才会真正绘制
+        # 继承 MaterialCard：材质开启时自绘玻璃底，关闭时退回 QSS
+        self.setObjectName("Card")
         self.setCursor(QCursor(Qt.PointingHandCursor))
         self._label = None
 

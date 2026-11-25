@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 
+from ui.pages._scaffold import MaterialCard
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame,
     QScrollArea, QSizePolicy,
@@ -28,7 +29,7 @@ def _state_text(state):
     return STATE_TEXT.get(state, state)
 
 
-class _PluginCard(QFrame):
+class _PluginCard(MaterialCard):
     """单个插件卡片：名称/版本/状态徽标 + 描述 + 作者 + 重载按钮 + 启用开关。
 
     若插件通过 api.register_settings_widget() 注册了设置面板（API v2），
@@ -42,6 +43,7 @@ class _PluginCard(QFrame):
         self._host = host                # PluginPage：提供设置面板的构建/缓存
         self._theme = theme if isinstance(theme, Theme) else Theme(theme or "light")
         theme = self._theme
+        # 继承 MaterialCard：材质开启时自绘玻璃底
         self.setObjectName("Card")
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
 

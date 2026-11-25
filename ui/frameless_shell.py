@@ -1,4 +1,4 @@
-﻿"""无边框窗口外壳：WinUI 3 风格窗口的"机械部分"基类。
+"""无边框窗口外壳：WinUI 3 风格窗口的"机械部分"基类。
 
 **拆出来的理由**：`UnifiedSettingsWindow` 原先 1172 行里混着三件互不相干的事——
 1. 无边框窗口的机械逻辑（圆角遮罩、八向缩放热区、最大化贴工作区、状态保持）；
@@ -743,6 +743,49 @@ class FramelessShell(QMainWindow):
             return max(0.0, min(1.0, float(self.config.get("panel_alpha", 0.92))))
         except Exception:
             return 0.92
+
+    # ---------- 供内部控件取"我背后的那块背景" ----------
+    def backdrop_for(self, widget):
+        """取出 `widget` 背后那块**已模糊处理**的背景图（用于卡片/输入框的玻璃）。
+
+        :return: (QPixmap, offset_in_widget) 或 None
+
+        这才是 CSS `backdrop-filter` 的等价物：控件不是自己造一层模糊，
+        而是**从窗口已渲染好的背景里裁出自己那块**——于是卡片后面
+        真的就是模糊过的背景图，而不是凭空生成的纹理。
+
+        ## 坐标换算
+
+        卡片可能嵌在滚动区里，`mapTo(self, QPoint(0,0))` 拿到它在窗口中的
+        位置；再减去面板左上角（有 12px 阴影留白）就得到背景图里的偏移。
+
+        ## 成本
+
+        `QPixmap.copy()` 是一块区域拷贝（几百×几十像素），比重新模糊
+        便宜两个数量级；且只在卡片尺寸/位置变化时调用一次，之后由卡片
+        自己缓存。
+        """
+        try:
+            maxed = self.isMaximized()
+            P = 0 if maxed else self._PAD
+            panel = QRect(P, P,
+                          self.width() - 2 * P, self.height() - 2 * P)
+            if panel.width() <= 0 or panel.height() <= 0:
+                return None
+            bg = self._composed_background(panel)
+            if bg is None or bg.isNull():
+                return None
+            from PySide6.QtCore import QPoint
+
+            tl = widget.mapTo(self, QPoint(0, 0))
+            # 转成相对面板左上角的偏移
+            rel = tl - panel.topLeft()
+            rect = QRect(rel, widget.size()).intersected(bg.rect())
+            if rect.isEmpty():
+                return None
+            return (bg.copy(rect), tl - rect.topLeft())
+        except Exception:
+            return None
 
     # ---------- 背景材质 ----------
     def _background_material(self):

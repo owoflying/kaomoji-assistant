@@ -153,21 +153,33 @@ class MaterialCard(QFrame):
         super().__init__(parent)
         self.setObjectName(object_name)
         self.setAttribute(Qt.WA_StyledBackground, True)
-        #: 材质缓存：(QPixmap, key)
+        #: 玻璃底缓存：(QPixmap, key)
         self._mat_cache = None
         self._mat_key = None
 
     # ---------------------------------------------------------- 上下文
     def _material_ctx(self):
-        """取当前的 (material_type, strength, enabled)。取不到就当关闭。"""
-        if self._mat_cache is None and self._mat_key == "off":
-            return None
+        """取当前的 (material_type, strength, tint, radius)。
+
+        取不到（材质关闭 / 不在主窗口里）返回 None → 走 QSS 纯色。
+        """
         w = self.window()
         fn = getattr(w, "_material_paint_params", None)
         if fn is None:
             return None
         try:
             return fn()
+        except Exception:
+            return None
+
+    def _glass_backdrop(self):
+        """从窗口背景里裁出**我背后那块**（CSS backdrop-filter 的等价物）。"""
+        w = self.window()
+        fn = getattr(w, "backdrop_for", None)
+        if fn is None:
+            return None
+        try:
+            return fn(self)
         except Exception:
             return None
 
@@ -179,16 +191,18 @@ class MaterialCard(QFrame):
             super().paintEvent(e)
             return
 
-        mat_type, strength, card_color, radius = ctx
-        key = (self.width(), self.height(), mat_type, strength, card_color)
+        mat_type, strength, tint, radius = ctx
+        # 位置也进缓存键：滚动时背后那块背景会变，必须重取
+        try:
+            pos = self.mapTo(self.window(), self.rect().topLeft())
+            pos_key = (pos.x(), pos.y())
+        except Exception:
+            pos_key = (0, 0)
+
+        key = (self.width(), self.height(), mat_type, strength, tint,
+               radius, pos_key)
         if self._mat_cache is None or self._mat_key != key:
-            from PySide6.QtCore import QSize
-
-            from ui.window_material import render_inner_surface
-
-            self._mat_cache = render_inner_surface(
-                QSize(max(1, self.width()), max(1, self.height())),
-                material=mat_type, strength=strength, base_color=card_color)
+            self._mat_cache = self._render_glass(tint, radius)
             self._mat_key = key
 
         from PySide6.QtCore import QRectF
@@ -200,9 +214,10 @@ class MaterialCard(QFrame):
         rect = QRectF(self.rect())
         path.addRoundedRect(rect, radius, radius)
         p.setClipPath(path)
-        p.drawPixmap(0, 0, self._mat_cache)
+        if self._mat_cache is not None:
+            p.drawPixmap(0, 0, self._mat_cache)
         p.setClipping(False)
-        # 边框跟着主题（材质底是半透明的，没边框会和背景糊在一起）
+        # 边框跟着主题（玻璃是半透明的，没边框会和背景糊在一起）
         try:
             t = getattr(self.window(), "theme", None)
             if t is not None:
@@ -215,6 +230,83 @@ class MaterialCard(QFrame):
         except Exception:
             pass
         p.end()
+
+    def _render_glass(self, tint, radius):
+        """渲染卡片的玻璃底：背后背景 + 半透明底色 + 釉面高光。
+
+        ## 三层结构（对应 CSS）
+
+            1. 背后那块已模糊的背景   ← backdrop-filter: blur()
+            2. 半透明卡片底色         ← background-color: rgba(...)
+            3. 顶部高光渐变           ← background-image: linear-gradient(180deg,
+                                         rgba(255,255,255,0.16),
+                                         rgba(255,255,255,0.05) 38%, transparent)
+
+        第 3 层是"湿玻璃"的关键：它让平面色块有了**釉面反光**，
+        看起来像有一层光从上方打下来。少了它，再透明也只是一块塑料。
+        """
+        from PySide6.QtCore import QRectF
+        from PySide6.QtGui import (
+            QColor, QImage, QLinearGradient, QPainter, QPainterPath, QPixmap,
+        )
+
+        w = max(1, self.width())
+        h = max(1, self.height())
+        canvas = QImage(w, h, QImage.Format_ARGB32_Premultiplied)
+        canvas.fill(Qt.transparent)
+        p = QPainter(canvas)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+
+        # ---- 1. 背后的真实背景（已模糊）----
+        got = self._glass_backdrop()
+        if got is not None:
+            bg_pm, offset = got
+            if bg_pm is not None and not bg_pm.isNull():
+                p.drawPixmap(-offset.x(), -offset.y(), bg_pm)
+
+        # ---- 2. 半透明卡片底色 ----
+        try:
+            c = QColor(tint)
+            # 卡片本身要比面板更"实"一点，否则文字会和背景打架
+            c.setAlphaF(min(1.0, max(0.0, c.alphaF() if c.alphaF() > 0 else 0.62)))
+            if c.alphaF() < 0.35:
+                c.setAlphaF(0.35)      # 可读性保底
+            p.fillRect(0, 0, w, h, c)
+        except Exception:
+            p.fillRect(0, 0, w, h, QColor(255, 255, 255, 120))
+
+        # ---- 3. 釉面高光（顶部亮 → 38% 处减弱 → 底部透明）----
+        try:
+            dark = bool(getattr(self.window(), "theme", None)
+                        and self.window().theme.dark)
+            sheen = QLinearGradient(0, 0, 0, h)
+            if dark:
+                # 深色下用更低的白色，避免整块发灰
+                sheen.setColorAt(0.0, QColor(255, 255, 255, 26))
+                sheen.setColorAt(0.38, QColor(255, 255, 255, 12))
+                sheen.setColorAt(1.0, QColor(255, 255, 255, 0))
+            else:
+                sheen.setColorAt(0.0, QColor(255, 255, 255, 92))
+                sheen.setColorAt(0.38, QColor(255, 255, 255, 30))
+                sheen.setColorAt(1.0, QColor(255, 255, 255, 0))
+            p.fillRect(0, 0, w, h, sheen)
+        except Exception:
+            pass
+
+        # ---- 4. 圆角裁切 ----
+        p.end()
+
+        out = QImage(w, h, QImage.Format_ARGB32_Premultiplied)
+        out.fill(Qt.transparent)
+        q = QPainter(out)
+        q.setRenderHint(QPainter.Antialiasing, True)
+        clip = QPainterPath()
+        clip.addRoundedRect(QRectF(0, 0, w, h), radius, radius)
+        q.setClipPath(clip)
+        q.drawImage(0, 0, canvas)
+        q.end()
+        return QPixmap.fromImage(out)
 
 
 def card(parent=None):

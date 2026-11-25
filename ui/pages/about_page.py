@@ -1,4 +1,4 @@
-﻿"""关于页：应用信息、开源链接、致谢、开发者模式入口。
+"""关于页：应用信息、开源链接、致谢、开发者模式入口。
 
 开发者模式解锁方式：在关于页连续点击「版本号」8 次。启用后：
 - 关于页会显示「开发者模式」徽标与「查看运行日志」入口；
@@ -7,8 +7,9 @@
 """
 import os
 
+from ui.pages._scaffold import MaterialCard
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QLabel, QFrame, QPushButton, QHBoxLayout,
+    QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout,
     QScrollArea, QDialog, QPlainTextEdit, QFileDialog, QTabWidget,
     QMessageBox,
 )
@@ -346,9 +347,7 @@ class AboutPage(QWidget):
         body_layout.setContentsMargins(0, 0, 0, 0)
         body_layout.setSpacing(22)
 
-        card = QFrame()
-        card.setObjectName("Card")
-        card.setAttribute(Qt.WA_StyledBackground, True)  # 卡片背景才会真正绘制
+        card = MaterialCard()
         croot = QVBoxLayout(card)
         croot.setContentsMargins(24, 22, 24, 22)
         croot.setSpacing(14)
@@ -410,9 +409,7 @@ class AboutPage(QWidget):
 
         # 使用统计卡片（摘要 + 详情弹窗）
         if self._state is not None:
-            stat_card = QFrame()
-            stat_card.setObjectName("Card")
-            stat_card.setAttribute(Qt.WA_StyledBackground, True)  # 卡片背景才会真正绘制
+            stat_card = MaterialCard()
             scard = QVBoxLayout(stat_card)
             scard.setContentsMargins(24, 22, 24, 22)
             scard.setSpacing(14)
@@ -468,9 +465,7 @@ class AboutPage(QWidget):
 
     # ---------- 更新与下载（GitHub 发行包） ----------
     def _init_release_card(self, body_layout):
-        card = QFrame()
-        card.setObjectName("Card")
-        card.setAttribute(Qt.WA_StyledBackground, True)  # 卡片背景才会真正绘制
+        card = MaterialCard()
         root = QVBoxLayout(card)
         root.setContentsMargins(24, 22, 24, 22)
         root.setSpacing(12)

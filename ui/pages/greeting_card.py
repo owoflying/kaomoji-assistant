@@ -15,7 +15,8 @@
 import datetime
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout
+from ui.pages._scaffold import MaterialCard
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout
 
 from ui.pages._scaffold import body_text
 
@@ -38,7 +39,7 @@ def current_period(now=None):
     return "晚上", "🌙", "今天辛苦了，早点休息。"
 
 
-class GreetingCard(QFrame):
+class GreetingCard(MaterialCard):
     """主页顶部的时间问候卡片。
 
     `refresh()` 按当前时间重绘文案；主页每次切到前台都会调用它
@@ -47,8 +48,8 @@ class GreetingCard(QFrame):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        # 继承 MaterialCard：材质开启时自绘玻璃底，关闭时退回 QSS
         self.setObjectName("Card")
-        self.setAttribute(Qt.WA_StyledBackground, True)  # 卡片背景才会真正绘制
         self._build()
         self.refresh()
 

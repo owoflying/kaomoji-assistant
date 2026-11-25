@@ -40,14 +40,22 @@ def _opaque(spec):
 class LogViewer(QWidget):
     """只读日志窗口：实时显示 LOG_BUFFER，支持复制与保存。"""
 
-    def __init__(self, buffer, parent=None, theme_name="light"):
+    def __init__(self, buffer, parent=None, theme_name="light", theme=None):
         super().__init__(parent)
         self._buffer = buffer
         self._shown = 0           # 已渲染到文本框的行数
         self._drag_pos = None
-        # 配置里可能是 "system"，统一解析成实际 light/dark，避免主题名未解析
-        # 时落到默认分支（表现为窗口配色与主体不一致）。
-        self._theme = Theme(resolve_theme_name(theme_name))
+        # ⚠ 优先用传入的**完整 Theme 对象**。
+        #
+        # 原来只收一个明暗名（"light"/"dark"），内部 `Theme(name)` 重建——
+        # 于是配色预设完全丢失：用户选了"午夜蓝"，日志窗口仍是经典灰；
+        # 自定义主题更是不可能生效。这和之前下拉框只存明暗名是同一类 bug。
+        #
+        # 只有拿不到完整主题时才退回按名字构造。
+        if theme is not None:
+            self._theme = theme
+        else:
+            self._theme = Theme(resolve_theme_name(theme_name))
         self.setAttribute(Qt.WA_DeleteOnClose, True)
         self._init_window()
         self._init_ui()
@@ -168,8 +176,26 @@ class LogViewer(QWidget):
         )
         recolor(self._icon, t.accent)
 
-    def set_theme(self, theme_name):
-        """换肤：主题名（可含 system）解析后重刷窗口，避免开着窗口改主题不跟随。"""
+    def set_theme(self, theme_name=None, theme=None):
+        """换肤。
+
+        :param theme_name: 明暗名（兼容旧调用）
+        :param theme: **完整 Theme 对象（推荐）** —— 只有它能带上配色预设
+
+        ## 为什么必须支持完整对象
+
+        只按明暗名重建 `Theme(name)` 会丢掉 preset：
+        用户选了午夜蓝或自定义主题，日志窗口仍是经典灰，
+        看起来像"这个窗口没接入主题"。
+        """
+        if theme is not None:
+            # 完整对象：直接换，能带上配色预设
+            if self._theme is theme:
+                return
+            self._theme = theme
+            self._apply_theme()
+            self.update()
+            return
         name = resolve_theme_name(theme_name)
         if self._theme.name == name:
             return
@@ -276,9 +302,12 @@ class LogViewer(QWidget):
         super().mouseReleaseEvent(e)
 
 
-def show_log_viewer(buffer, parent=None, theme_name="light"):
-    """弹出日志查看器（非模态）。"""
-    dlg = LogViewer(buffer, parent, theme_name)
+def show_log_viewer(buffer, parent=None, theme_name="light", theme=None):
+    """弹出日志查看器（非模态）。
+
+    :param theme: 完整 Theme 对象（推荐）；只有它会带上配色预设
+    """
+    dlg = LogViewer(buffer, parent, theme_name, theme=theme)
     dlg.show()
     dlg.raise_()
     dlg.activateWindow()

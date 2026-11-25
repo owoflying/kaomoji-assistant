@@ -281,11 +281,11 @@ class AppRuntime:
             except Exception as e:
                 append_log("warn", "theme", "主窗口换肤失败：%r" % (e,))
 
-            # 日志窗口（可能开着）
-            try:
-                self._theme_log_viewer(theme.name)
-            except Exception:
-                pass
+            # 日志窗口（可能开着）—— 传完整主题，才能带上配色预设
+            self._theme_log_viewer(theme=theme)
+
+            # 托盘右键菜单：独立 QMenu 不继承全局 QSS，必须显式刷新
+            self._theme_tray_menu(theme)
         finally:
             self._in_theme_broadcast = False
 
@@ -1000,7 +1000,9 @@ class AppRuntime:
         # system 跟随定时器的启停也由所有主题键共同决定
         if theme_changed:
             # 已打开的日志窗口同步换肤（否则它会停留在启动时的主题）
-            self._theme_log_viewer(effective_theme)
+            self._theme_log_viewer(
+            theme_name=effective_theme,
+            theme=getattr(self, "theme_obj", None))
             self._update_system_theme_watcher()
 
         # ---------- 按"变化的内容"决定刷新广度 ----------
@@ -1080,7 +1082,9 @@ class AppRuntime:
                         yield
                 yield
                 # ② 日志窗口（可能开着）
-                self._theme_log_viewer(effective_theme)
+                # 传完整主题：明暗名会丢掉配色预设，日志窗口就跟不上换肤
+                self._theme_log_viewer(
+                    theme=getattr(self, "theme_obj", None))
                 self._update_system_theme_watcher()
                 yield
                 # ③ 候选条窗口
@@ -1251,7 +1255,9 @@ class AppRuntime:
             self.window.apply_config(self.config)
         if self.unified is not None:
             self.unified.apply_config(self.config)
-        self._theme_log_viewer(current or resolved_mode_of(self.config))
+        self._theme_log_viewer(
+                theme_name=current or resolved_mode_of(self.config),
+                theme=getattr(self, "theme_obj", None))
 
     def _theme_mode(self):
         """当前配置的明暗模式（兼容旧 theme 键）。"""
@@ -1271,11 +1277,47 @@ class AppRuntime:
         else:
             self._system_theme_timer.stop()
 
-    def _theme_log_viewer(self, theme_name):
-        """给开着的日志窗口换肤（销毁过/从没开过则跳过）。"""
+    def _theme_log_viewer(self, theme_name=None, theme=None):
+        """给开着的日志窗口换肤（销毁过/从没开过则跳过）。
+
+        ⚠ 必须传**完整 Theme 对象**。
+
+        原来只传 `theme.name`（"light"/"dark"），日志窗口内部用
+        `Theme(name)` 重建，配色预设（午夜蓝/自定义）全部丢失——
+        表现就是"日志窗口没接入主题"。
+        """
         w = self._log_viewer
         if w is not None and shiboken_is_valid(w):
-            w.set_theme(theme_name)
+            try:
+                if theme is not None:
+                    w.set_theme(theme=theme)
+                else:
+                    w.set_theme(theme_name)
+            except Exception as e:
+                append_log("warn", "theme", "日志窗口换肤失败：%r" % (e,))
+
+    def _theme_tray_menu(self, theme=None):
+        """给托盘右键菜单换肤。
+
+        ## 为什么要单独处理
+
+        独立 `QMenu`（由托盘图标弹出、无父 widget）**不继承 app 的全局
+        QSS**，所以主题切换后它仍是系统默认的白底黑字——与整体风格脱节。
+        创建时虽然涂过一次色，但那个样式是**快照**，切主题后不会自己更新，
+        必须由 ThemeController 的广播重新推一次。
+        """
+        menu = getattr(self, "menu", None)
+        if menu is None:
+            return
+        try:
+            t = theme if theme is not None else getattr(self, "theme_obj", None)
+            if t is None:
+                from ui.theme_manager import build_theme
+
+                t = build_theme(self.config)
+            menu.setStyleSheet(t.menu_style())
+        except Exception as e:
+            append_log("warn", "theme", "托盘菜单换肤失败：%r" % (e,))
 
     # ------------------------------------------------------------------
     # 注入链路
@@ -1714,15 +1756,22 @@ class AppRuntime:
     def open_log_viewer(self):
         """打开（或复用）日志窗口。"""
         name = resolved_mode_of(self.config)
+        # 用完整主题对象，而不是明暗名——只有它能带上配色预设
+        theme = getattr(self, "theme_obj", None)
+        if theme is None:
+            from ui.theme_manager import build_theme
+
+            theme = build_theme(self.config)
         w = self._log_viewer
         # 关闭时窗口自带 WA_DeleteOnClose，destroyed 会把引用置空；这里再兜一层
         # 有效性判断，防止极端时序下拿到已销毁的 C++ 对象。
         if not (w is not None and shiboken_is_valid(w)):
-            w = show_log_viewer(LOG_BUFFER, parent=self.unified, theme_name=name)
+            w = show_log_viewer(LOG_BUFFER, parent=self.unified,
+                                theme_name=name, theme=theme)
             self._log_viewer = w
             w.destroyed.connect(self._forget_log_viewer)
         else:
-            w.set_theme(name)
+            w.set_theme(theme_name=name, theme=theme)
         w.show()
         w.raise_()
         w.activateWindow()

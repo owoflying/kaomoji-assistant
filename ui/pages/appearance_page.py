@@ -236,15 +236,18 @@ class AppearancePage(QWidget):
 
         ## 关键
 
-        只传"用户刚改的那几项"，其余由 controller 保持不变。
-        这是"改 A 不会带歪 B"的机制保证。
+        1. 只传"用户刚改的那几项"，其余由 controller 保持不变。
+        2. 用 `changes_for()` 算出**目标配置快照**，交给宿主的 `on_apply(cfg)`。
+           controller 自己**不改** config——否则宿主的 `apply_settings`
+           比对不出差异，切主题会静默失效（实测过：config 变了、界面没变）。
         """
         if self._loading:
             return
+        target_cfg = self._ctrl.changes_for(**changes)
         changed = self._ctrl.update(**changes)
         self._sync_enabled()
         if changed and self._on_apply is not None:
-            self._on_apply()
+            self._on_apply(target_cfg)
 
     def _push_from_slider(self, _key, _slider):
         # 默认路径不会走到（各滑块都自带 on_change）

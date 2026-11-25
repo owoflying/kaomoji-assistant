@@ -248,17 +248,20 @@ def render_background(size, material="none", strength=DEFAULT_STRENGTH,
     :param size: QSize，窗口客户区尺寸
     :param material: none / blur / frosted / fog
     :param strength: 0~100，材质强度
-    :param image_path: 背景图路径；None 时用 fallback_color 纯色
-    :param fallback_color: 没有背景图时的底色（通常是主题 bg）
-    :return: QPixmap（永远非空）
+    :param image_path: 背景图路径；None 时**返回全透明图**（不画底色）
+    :param fallback_color: 兼容参数，已不用于填充（见下）
+    :return: QPixmap；没有背景图时返回一张全透明图
 
-    ## 绘制顺序
+    ## ⚠ 没有背景图时**不要**填充不透明底色
 
-        1. 铺底：背景图（按窗口等比裁切填满）或纯色
-        2. 按材质处理整张图
-        3. 返回结果
+    最初写成 `p.fillRect(..., fallback_color)`，用主题 bg 不透明地铺满。
+    后果很严重：材质一开启，窗口背景就被这块纯色盖住，
+    **用户把面板不透明度拉到 0 也看不到桌面**——看起来"调了没用"
+    （实测：底色 alpha=0、渐变也缩放了，但整窗中心仍是 #e6e6e6，
+    正来自这张材质图）。
 
-    结果由调用方缓存——本函数较慢（模糊整窗 30~60ms），不应每帧调用。
+    现在没有背景图就返回全透明图：让窗口的底色/桌面自然透出来，
+    材质只在**真的设置了背景图**时才参与绘制。
     """
     w = max(1, int(size.width()))
     h = max(1, int(size.height()))
@@ -275,22 +278,23 @@ def render_background(size, material="none", strength=DEFAULT_STRENGTH,
         if loaded.isNull():
             loaded = None
 
+    if loaded is None:
+        # 没有背景图：透明图（让窗口底色/桌面透出）
+        return QPixmap.fromImage(canvas)
+
     p = QPainter(canvas)
     p.setRenderHint(QPainter.SmoothPixmapTransform, True)
-    if loaded is not None:
-        # 等比缩放并居中裁切（cover）：铺满窗口且不变形
-        iw, ih = loaded.width(), loaded.height()
-        if iw > 0 and ih > 0:
-            scale = max(w / iw, h / ih)
-            nw, nh = int(iw * scale + 0.5), int(ih * scale + 0.5)
-            src_x = max(0, (nw - w) // 2)
-            src_y = max(0, (nh - h) // 2)
-            scaled = loaded.scaled(nw, nh, Qt.IgnoreAspectRatio,
-                                   Qt.SmoothTransformation)
-            p.drawImage(QRect(0, 0, w, h),
-                        scaled, QRect(src_x, src_y, w, h))
-    else:
-        p.fillRect(0, 0, w, h, QColor(fallback_color or "#ffffff"))
+    # 等比缩放并居中裁切（cover）：铺满窗口且不变形
+    iw, ih = loaded.width(), loaded.height()
+    if iw > 0 and ih > 0:
+        scale = max(w / iw, h / ih)
+        nw, nh = int(iw * scale + 0.5), int(ih * scale + 0.5)
+        src_x = max(0, (nw - w) // 2)
+        src_y = max(0, (nh - h) // 2)
+        scaled = loaded.scaled(nw, nh, Qt.IgnoreAspectRatio,
+                               Qt.SmoothTransformation)
+        p.drawImage(QRect(0, 0, w, h),
+                    scaled, QRect(src_x, src_y, w, h))
     p.end()
 
     # ---- 2. 材质 ----

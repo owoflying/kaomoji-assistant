@@ -37,18 +37,16 @@ def page_layout(widget, spacing=PAGE_SPACING, margins=PAGE_MARGIN,
     被压成细线"），但主页/词库/搜索/快捷短语几个页面漏了这层。
     统一在骨架层加，所有页面都受益，也避免以后新页面再踩一次。
 
-    ## 返回值说明
+    ## ⚠ 页面 widget 必须透明
 
-    返回的仍然是**内容布局**（可直接 `addWidget`），滚动区只是包在外层。
-    页面若需要访问滚动区本身（比如设置页要控制滚动位置），传
-    `scroll=False` 自己建。
+    裸 `QWidget` **默认会用 palette 的 Window 色填满自己**（Win10 上是
+    `#efefef`），即使 `autoFillBackground` 是 False。这层不透明底色会把
+    窗口的自定义背景图/毛玻璃整个挡住——用户调任何透明度都没反应
+    （实测：窗口层已透明，但「当前页」中心像素仍是 #efefef）。
 
-    ## 为什么横向不滚动
-
-    窗口有最小宽度 900px，各页内容都按这个宽度设计。允许横向滚动会
-    让用户能把内容拖出可视区，体验更差——所以固定 `ScrollBarAlwaysOff`，
-    靠 `setWidgetResizable(True)` 让内容自适应宽度。
+    所以这里显式让页面本身透明，背景交给窗口的 paintEvent。
     """
+    _make_transparent(widget)
     if not scroll:
         root = QVBoxLayout(widget)
         root.setContentsMargins(*margins)
@@ -78,12 +76,41 @@ def page_layout(widget, spacing=PAGE_SPACING, margins=PAGE_MARGIN,
     # 把卡片（QFrame#Card）的白底也清掉。QSS 里卡片规则明明存在却看不见
     # ——用户反馈的"根本就没有卡片"就是这个原因。
     body.setStyleSheet("QWidget#PageScrollBody{background:transparent;}")
+    _make_transparent(body)
     area.setWidget(body)
 
     root = QVBoxLayout(body)
     root.setContentsMargins(*margins)
     root.setSpacing(spacing)
     return root
+
+
+def _make_transparent(widget):
+    """让容器真正透明（不画 palette 的 Window 底）。
+
+    ## 原理
+
+    裸 `QWidget` 会主动用 palette 的 Window 色填充自己。要让它的背景
+    交给父级（窗口的 paintEvent 画背景图/毛玻璃），需要：
+
+        1. `WA_StyledBackground` —— 让 Qt 走 QSS 绘制路径而不是 palette
+        2. 一条 **带 ID 选择器** 的透明背景规则
+
+    ⚠ 选择器必须带 ID（`QWidget#名字{...}`）。不带选择器的
+    `background: transparent;` 会级联到**所有子孙**，把卡片白底也清掉
+    （这个坑踩过两次，见 page_layout 的注释）。
+    """
+    try:
+        widget.setAttribute(Qt.WA_StyledBackground, True)
+        widget.setAutoFillBackground(False)
+        name = widget.objectName() or "AutoTransparent"
+        if not widget.objectName():
+            widget.setObjectName(name)
+        widget.setStyleSheet(
+            "%s#%s{background:transparent;}"
+            % (type(widget).__name__, name))
+    except Exception:
+        pass
 
 
 def page_title(text):

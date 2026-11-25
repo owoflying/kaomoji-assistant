@@ -272,8 +272,22 @@ class UnifiedSettingsWindow(FramelessShell):
 
     def _init_ui(self):
         central = QWidget()
+        central.setObjectName("CentralBody")
         self.setCentralWidget(central)
         self.central = central
+        # ⚠ central widget 必须透明。
+        #
+        # 裸 `QWidget` 会主动用 palette 的 Window 色（Win10 上是 #efefef）
+        # 填满整个客户区。它盖在窗口 paintEvent 画的背景图/毛玻璃之上，
+        # 于是"调任何透明度都没反应"——实测这一层的中心像素是 #efefef，
+        # 而它下面的 ContentArea / 页面都已经是透明的。
+        #
+        # 背景必须由 `frameless_shell.paintEvent` 统一绘制，
+        # 中间任何一层画不透明底色都会把它挡死。
+        central.setAttribute(Qt.WA_StyledBackground, True)
+        central.setAutoFillBackground(False)
+        central.setStyleSheet(
+            "QWidget#CentralBody{background:transparent;}")
         root = QVBoxLayout(central)
         self._root_layout = root
         root.setContentsMargins(self._PAD, self._PAD, self._PAD, self._PAD)
@@ -924,17 +938,18 @@ class UnifiedSettingsWindow(FramelessShell):
         self.config_applied.emit(new_cfg)
 
     # ---------- 外观页回调 ----------
-    def _on_appearance_applied(self):
-        """外观页改了任何一项：广播配置，让 AppRuntime 落盘并重绘。
+    def _on_appearance_applied(self, new_cfg=None):
+        """外观页改了任何一项：把**目标配置快照**交给宿主落盘 + 重绘。
 
-        `appearance_ctrl.update()` 已经把改动写进 `self.config`（同一个
-        dict 实例），所以这里只要把配置发出去即可。
+        ⚠ 必须传 `new_cfg`（appearance_ctrl.changes_for() 算出来的），
+        不能传 `dict(self.config)`。
 
-        ⚠ 不要在这里再改 config——那是 controller 的职责，
-        重复写入会让"谁最后写谁生效"的竞态重新出现。
+        原因：`AppearanceController.update()` 已经**不再直接改** config
+        （那样宿主的 `apply_settings` 比对不出差异，切主题会静默失效）。
+        如果这里再传 `dict(self.config)`，那还是旧值，等于什么都没做。
         """
         try:
-            self.config_applied.emit(dict(self.config))
+            self.config_applied.emit(dict(new_cfg or self.config))
         except Exception:
             pass
 
@@ -1108,6 +1123,18 @@ class UnifiedSettingsWindow(FramelessShell):
 
         try:
             from PySide6.QtCore import QSize
+
+            # ⚠ 按**面板**尺寸渲染，不是窗口尺寸。
+            #
+            # 无边框窗口有 `_PAD` 边距（12px）用于画阴影，实际面板是
+            # `窗口 - 2*_PAD`。按窗口尺寸渲染材质图会让它比面板大一圈，
+            # 绘制时从 panel.topLeft() 开始贴 → 内容整体错位、
+            # 且边缘露出未处理的区域。
+
+            pad = getattr(self, "_PAD", 0)
+            maxed = self.isMaximized()
+            panel_w = max(1, self.width() - (0 if maxed else 2 * pad))
+            panel_h = max(1, self.height() - (0 if maxed else 2 * pad))
 
             pm = render_background(
                 QSize(panel_w, panel_h),

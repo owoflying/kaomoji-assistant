@@ -61,6 +61,23 @@ HTTOPLEFT, HTTOPRIGHT = 13, 14
 HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT = 15, 16, 17
 
 
+def _scale_alpha(spec, scale):
+    """把颜色（#rrggbb 或 rgba(...)）的 alpha 按 scale(0~1) 缩放。
+
+    :return: `rgba(r,g,b,a*scale)` 字符串；解析失败时原样返回
+    """
+    if not spec:
+        return spec
+    try:
+        from ui.frameless_panel import _as_color  # 复用同一套解析
+
+        c = _as_color(spec)
+        a = c.alphaF() * max(0.0, min(1.0, float(scale)))
+        return "rgba(%d,%d,%d,%.3f)" % (c.red(), c.green(), c.blue(), a)
+    except Exception:
+        return spec
+
+
 def _init_user32_signatures():
     """显式声明用到的 Win32 函数签名（模块导入时执行一次）。
 
@@ -533,16 +550,32 @@ class FramelessShell(QMainWindow):
         # 而上面的文字仍由面板底色保证可读性。
         self._paint_background_material(p, panel)
 
+        # ⚠ 竖向渐变必须跟随面板不透明度。
+        #
+        # `window_grad_top/bottom` 是固定的半透明白/黑（0.08 / 0.03）。
+        # 它们**不随 panel_alpha 缩放**，于是用户把不透明度拉到 0 时，
+        # 面板底色确实透明了，但这一层渐变还盖在上面——看起来仍是
+        # 一块不透明的灰色（实测：#ffffff 渐变叠在红色背景图上得到 #e6e6e6）。
+        #
+        # 现在按面板 max alpha 等比缩放，面板透明时渐变也一起消失。
+        grad_scale = self._panel_alpha_value()
         paint_frameless_panel(
             p, panel, radius=r,
             tint=self._adjusted_panel_base(),
-            grad_top=t.window_grad_top,
-            grad_bottom=t.window_grad_bottom,
+            grad_top=_scale_alpha(t.window_grad_top, grad_scale),
+            grad_bottom=_scale_alpha(t.window_grad_bottom, grad_scale),
             border=None if maximized else t.window_border,
             shadow=None if maximized else self._shadow_color,
             shadow_pad=P,
         )
         super().paintEvent(e)
+
+    def _panel_alpha_value(self):
+        """当前面板不透明度（0~1），供渐变等叠加层等比缩放。"""
+        try:
+            return max(0.0, min(1.0, float(self.config.get("panel_alpha", 0.92))))
+        except Exception:
+            return 0.92
 
     # ---------- 背景材质 ----------
     def _background_material(self):

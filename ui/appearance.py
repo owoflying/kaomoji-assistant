@@ -128,7 +128,23 @@ class AppearanceController(QObject):
 
     任何外观控件都通过它读写，不再直接操作 config。
 
-    :param config: 当前配置 dict（会被读，不会被直接改）
+    :param config: 当前配置 dict
+
+    ## ⚠ 为什么**不直接改** config
+
+    最初 `update()` 会把新值直接写进 `config` 再发 `changed` 信号。
+    但宿主（AppRuntime）的 `apply_settings(new_cfg)` 是这么判断变化的：
+
+        old = dict(self.config)      # 拷当前值
+        self.config.update(new_cfg)  # 写入
+        changed = {k for k in ... if old.get(k) != v}   # 比对
+
+    而 controller 已经把 `self.config` 改过了，于是 `old` 拿到的就是
+    **新值**，`changed` 恒为空 → 不触发换肤。
+    实测：切到深色后 `config["theme_mode"] == "dark"` 但界面仍是浅色。
+
+    所以现在 `update()` **只维护自己的状态并发出广播**，
+    不碰外部 config；落盘与应用的职责完全交给宿主。
     """
 
     #: 外观状态变化（参数是 AppearanceState）
@@ -154,11 +170,28 @@ class AppearanceController(QObject):
     def as_dict(self):
         return self._state.as_dict()
 
+    def changes_for(self, **changes):
+        """算出"如果应用这些改动，配置会变成什么样"（不落盘、不改内部状态）。
+
+        宿主拿它当 `apply_settings(new_cfg)` 的参数：宿主自己比对差异、
+        自己落盘、自己广播。controller 只是帮忙算目标值。
+        """
+        old = self._state
+        new = read(old.as_dict())
+        for k, v in changes.items():
+            if k in AppearanceState.__slots__:
+                setattr(new, k, v)
+        normalized = read(new.as_dict())
+
+        cfg = dict(self._config or {})
+        write(cfg, normalized)
+        return cfg
+
     # ------------------------------------------------------------ 写
     def update(self, **changes):
-        """更新若干外观项并广播。
+        """更新若干外观项并广播（**不改外部 config**）。
 
-        :return: 是否真的变了（没变就不广播、不落盘）
+        :return: 是否真的变了（没变就不广播）
 
         这是**唯一**的修改入口。控件只传自己想改的那几项，
         其余保持不动——从机制上杜绝"改 A 把 B 带歪"。
@@ -174,8 +207,6 @@ class AppearanceController(QObject):
         if normalized == old:
             return False
         self._state = normalized
-        if self._config is not None:
-            write(self._config, normalized)
         self.changed.emit(normalized)
         return True
 

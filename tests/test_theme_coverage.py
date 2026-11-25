@@ -242,6 +242,11 @@ def test_no_stray_hardcoded_colors():
         "#1f1f1f", "#f0f0f0",
         "#8a8a8e", "#a0a0a6", "#6b6b70", "#b8b8be",
         "255,255,255", "43,43,43",
+        # 以下是**注释里引用的实测值**（解释"为什么不能这样写"时的事实依据），
+        # 不是真正的代码颜色。列在这里避免误报。
+        "#6d7073",              # palette Window 色（标题栏遮挡的实测值）
+        "#e6e6e6",              # 白渐变叠红背景的错误结果
+        "#efefef",              # 裸 QWidget 默认填充色
     )
     pat = re.compile(r"#[0-9a-fA-F]{6}\b")
     offenders = []

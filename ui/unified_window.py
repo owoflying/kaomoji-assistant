@@ -271,23 +271,12 @@ class UnifiedSettingsWindow(FramelessShell):
         self._update_mask()
 
     def _init_ui(self):
-        central = QWidget()
-        central.setObjectName("CentralBody")
+        # central 也用自绘透明容器（理由同标题栏，见 _build_titlebar）
+        from ui.transparent_host import TransparentHost
+
+        central = TransparentHost(object_name="CentralBody")
         self.setCentralWidget(central)
         self.central = central
-        # ⚠ central widget 必须透明。
-        #
-        # 裸 `QWidget` 会主动用 palette 的 Window 色（Win10 上是 #efefef）
-        # 填满整个客户区。它盖在窗口 paintEvent 画的背景图/毛玻璃之上，
-        # 于是"调任何透明度都没反应"——实测这一层的中心像素是 #efefef，
-        # 而它下面的 ContentArea / 页面都已经是透明的。
-        #
-        # 背景必须由 `frameless_shell.paintEvent` 统一绘制，
-        # 中间任何一层画不透明底色都会把它挡死。
-        central.setAttribute(Qt.WA_StyledBackground, True)
-        central.setAutoFillBackground(False)
-        central.setStyleSheet(
-            "QWidget#CentralBody{background:transparent;}")
         root = QVBoxLayout(central)
         self._root_layout = root
         root.setContentsMargins(self._PAD, self._PAD, self._PAD, self._PAD)
@@ -397,9 +386,24 @@ class UnifiedSettingsWindow(FramelessShell):
         return out
 
     def _build_titlebar(self):
-        """自定义标题栏：最小化 / 最大化 / 关闭三键。"""
-        self.titlebar = QWidget()
-        self.titlebar.setFixedHeight(self._TITLEBAR_H)
+        """自定义标题栏：最小化 / 最大化 / 关闭三键。
+
+        ## ⚠ 为什么用 `TransparentHost` 而不是裸 `QWidget`
+
+        裸 `QWidget` 会用 palette 的 Window 色填充自己。实测在主窗口里
+        QSS 的 `background:transparent`、`setAutoFillBackground(False)`、
+        甚至覆盖实例 `paintEvent` **都压不住**——渲染出来是固定的
+        `#6d7073`，横跨整个标题栏，成为"调面板不透明度没反应、
+        背景图看不见"的最后一处遮挡。
+
+        `TransparentHost` 是**自带 paintEvent 的自绘控件**，Qt 对它
+        不会走 palette 自动填充路径。项目里 `MaterialCard` 同理且
+        已验证可靠。
+        """
+        from ui.transparent_host import TransparentHost
+
+        self.titlebar = TransparentHost(object_name="TitleBar",
+                                        height=self._TITLEBAR_H)
         troot = QHBoxLayout(self.titlebar)
         troot.setContentsMargins(8, 0, 8, 0)
         troot.setSpacing(8)

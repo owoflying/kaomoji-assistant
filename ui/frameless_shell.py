@@ -21,8 +21,11 @@
 import ctypes
 from ctypes.wintypes import DWORD, MSG, POINT, RECT
 
-from PySide6.QtCore import QPoint, QRect, QRectF, Qt, QEvent, QTimer
-from PySide6.QtGui import QPainter, QPainterPath, QRegion, QTransform
+from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, QEvent, QTimer
+from PySide6.QtGui import (
+    QColor, QImage, QPainter, QPainterPath, QPen, QPixmap, QRegion,
+    QTransform,
+)
 from PySide6.QtWidgets import QMainWindow
 
 from ui.frameless_panel import paint_frameless_panel
@@ -527,12 +530,18 @@ class FramelessShell(QMainWindow):
         return True, HTCLIENT
 
     def paintEvent(self, e):
-        """自绘：背景材质（可选）→ 面板底色 → 竖向渐变 → 1px 圆角边框 + 柔和外阴影。
+        """自绘窗口背景：**一层画完**（材质 → 底色 → 渐变 → 边框 → 阴影）。
 
-        最大化时取消阴影、圆角与边框，让面板贴合屏幕工作区。
-        具体笔法见 ui/frameless_panel（与日志窗口/插件弹窗共用同一实现）。
-        子类通过 `_adjusted_panel_base()` 提供按不透明度缩放后的基底色，
-        通过 `_background_material()` 提供背景材质（默认无）。
+        ## 为什么改成"一层"
+
+        之前分层画：先贴材质图、再画底色、再画渐变。层数一多就互相遮挡，
+        而且极难定位——实测出现过"材质图是纯红、绘制确实被调用、
+        坐标也匹配，但窗口像素始终不变"，排查二十多轮才逐个揪出
+        页面 palette 底、central 底色、固定渐变、材质图不透明填充等
+        五处遮挡。
+
+        现在把「材质 + 底色 + 渐变」合成**一张位图**再一次性贴上：
+        没有中间层，就不可能互相覆盖。
         """
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
@@ -545,30 +554,152 @@ class FramelessShell(QMainWindow):
         else:
             panel = QRect(P, P, self.width() - 2 * P, self.height() - 2 * P)
 
-        # 背景材质（自定义背景图 + 毛玻璃/磨砂/雾化）。
-        # 画在面板底色**之前**，由底色半透明地盖上去——这样材质透出来，
-        # 而上面的文字仍由面板底色保证可读性。
-        self._paint_background_material(p, panel)
+        # 外阴影（画在面板外侧的窗口留白里）
+        if not maximized and self._shadow_color is not None:
+            try:
+                from ui.frameless_panel import paint_shadow
 
-        # ⚠ 竖向渐变必须跟随面板不透明度。
-        #
-        # `window_grad_top/bottom` 是固定的半透明白/黑（0.08 / 0.03）。
-        # 它们**不随 panel_alpha 缩放**，于是用户把不透明度拉到 0 时，
-        # 面板底色确实透明了，但这一层渐变还盖在上面——看起来仍是
-        # 一块不透明的灰色（实测：#ffffff 渐变叠在红色背景图上得到 #e6e6e6）。
-        #
-        # 现在按面板 max alpha 等比缩放，面板透明时渐变也一起消失。
-        grad_scale = self._panel_alpha_value()
-        paint_frameless_panel(
-            p, panel, radius=r,
-            tint=self._adjusted_panel_base(),
-            grad_top=_scale_alpha(t.window_grad_top, grad_scale),
-            grad_bottom=_scale_alpha(t.window_grad_bottom, grad_scale),
-            border=None if maximized else t.window_border,
-            shadow=None if maximized else self._shadow_color,
-            shadow_pad=P,
-        )
+                paint_shadow(p, panel, self._shadow_color, P, r,
+                             spread=0.35, growth=0.5)
+            except Exception:
+                pass
+
+        composed = self._composed_background(panel)
+        if composed is not None and not composed.isNull():
+            p.save()
+            path = QPainterPath()
+            path.addRoundedRect(QRectF(panel), r, r)
+            p.setClipPath(path)
+            p.drawPixmap(panel.topLeft(), composed)
+            p.restore()
+        else:
+            # 兜底：没有合成图时退回纯色面板（保证任何情况下都画得出来）
+            paint_frameless_panel(
+                p, panel, radius=r,
+                tint=self._adjusted_panel_base(),
+                grad_top=t.window_grad_top,
+                grad_bottom=t.window_grad_bottom,
+                border=None,
+                shadow=None,
+                shadow_pad=P,
+            )
+
+        # 1px 圆角边框（画在合成图之上，保证清晰）
+        if not maximized and t.window_border:
+            try:
+                from ui.frameless_panel import _as_color
+
+                path = QPainterPath()
+                path.addRoundedRect(
+                    QRectF(panel).adjusted(0.5, 0.5, -0.5, -0.5), r, r)
+                pen = QPen(_as_color(t.window_border))
+                pen.setWidth(1)
+                p.strokePath(path, pen)
+            except Exception:
+                pass
+        p.end()
         super().paintEvent(e)
+
+    def _composed_background(self, panel):
+        """把「材质 + 底色 + 渐变」合成成一张位图；失败返回 None。
+
+        结果按「面板尺寸 + 材质参数 + 主题 + 背景图 + 面板不透明度」
+        缓存——模糊整窗 40~120ms，不能每帧算。
+        """
+        key = self._composed_cache_key(panel)
+        cached = getattr(self, "_composed_cache", None)
+        if cached is not None and getattr(self, "_composed_key", None) == key:
+            return cached
+        try:
+            pm = self._render_composed(panel)
+        except Exception:
+            pm = None
+        self._composed_cache = pm
+        self._composed_key = key
+        return pm
+
+    def _composed_cache_key(self, panel):
+        """合成图缓存键（任何输入变化都要重算）。"""
+        try:
+            from ui.window_material import background_path
+
+            bp = background_path()
+            mtime = 0.0
+            if bp:
+                import os as _os
+
+                mtime = _os.path.getmtime(bp)
+        except Exception:
+            bp, mtime = None, 0.0
+        return (
+            panel.width(), panel.height(),
+            self.theme.dark, self.theme.bg,
+            self.theme.window_grad_top, self.theme.window_grad_bottom,
+            self._panel_alpha_value(),
+            bool(self.config.get("material_enabled", False)),
+            str(self.config.get("material_type", "none")),
+            int(self.config.get("material_strength", 55)),
+            int(self.config.get("material_image_opacity", 100)),
+            int(self.config.get("material_dim", 0)),
+            bp, mtime,
+        )
+
+    def _render_composed(self, panel):
+        """真正合成那张位图：材质 → 底色 → 渐变，全部离屏完成。"""
+        from PySide6.QtGui import QLinearGradient
+
+        from ui.frameless_panel import _as_color
+
+        w, h = max(1, panel.width()), max(1, panel.height())
+        canvas = QImage(w, h, QImage.Format_ARGB32_Premultiplied)
+        canvas.fill(Qt.transparent)
+        p = QPainter(canvas)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+
+        # ---- 1. 背景材质 ----
+        if self._material_on():
+            from ui.window_material import (
+                background_path, normalize_material, render_background,
+            )
+
+            mat = normalize_material(self.config.get("material_type", "none"))
+            strength = int(self.config.get("material_strength", 55))
+            img_op = max(0, min(100, int(
+                self.config.get("material_image_opacity", 100)))) / 100.0
+            bp = background_path()
+            if bp and img_op > 0:
+                layer = render_background(QSize(w, h), material=mat,
+                                          strength=strength, image_path=bp)
+                # 暗化/提亮（让上层文字在花哨背景上仍可读）
+                dim = int(self.config.get("material_dim", 0))
+                if dim:
+                    ll = QPainter(layer)
+                    a = min(255, int(dim * 1.6))
+                    ll.fillRect(layer.rect(),
+                                QColor(0, 0, 0, a) if self.theme.dark
+                                else QColor(255, 255, 255, a))
+                    ll.end()
+                p.setOpacity(img_op)
+                p.drawPixmap(0, 0, layer)
+                p.setOpacity(1.0)
+
+        # ---- 2. 面板底色（按 panel_alpha）----
+        p.fillRect(0, 0, w, h, _as_color(self._adjusted_panel_base()))
+
+        # ---- 3. 竖向渐变（同样按 panel_alpha 缩放）----
+        scale = self._panel_alpha_value()
+        gt = _scale_alpha(self.theme.window_grad_top, scale)
+        gb = _scale_alpha(self.theme.window_grad_bottom, scale)
+        if gt and gb:
+            grad = QLinearGradient(0, 0, 0, h)
+            grad.setColorAt(0, _as_color(gt))
+            grad.setColorAt(1, _as_color(gb))
+            p.fillRect(0, 0, w, h, grad)
+
+        p.end()
+        return QPixmap.fromImage(canvas)
+
 
     def _panel_alpha_value(self):
         """当前面板不透明度（0~1），供渐变等叠加层等比缩放。"""

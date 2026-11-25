@@ -44,6 +44,14 @@ _DEFAULTS = {
     # 玻璃滤镜：饱和度/亮度决定"通透感"，是材质精致度的关键
     "material_saturate": (18, 10, 30),
     "material_brightness": (104, 80, 130),
+    # 候选条独立外观
+    "picker_material_strength": (55, 0, 100),
+    "picker_image_opacity": (100, 0, 100),
+    # 裁切是相对比例；默认全 0 表示"显示整张"
+    "picker_crop_x": (0.0, 0.0, 1.0),
+    "picker_crop_y": (0.0, 0.0, 1.0),
+    "picker_crop_w": (0.0, 0.0, 1.0),
+    "picker_crop_h": (0.0, 0.0, 1.0),
 }
 
 
@@ -65,7 +73,13 @@ class AppearanceState:
     __slots__ = ("theme_mode", "theme_preset", "accent_mode", "accent_custom",
                  "panel_alpha", "opacity", "material_enabled", "material_type",
                  "material_strength", "material_image_opacity", "material_dim",
-                 "material_saturate", "material_brightness")
+                 "material_saturate", "material_brightness",
+                 # 候选条独立外观
+                 "picker_material_enabled", "picker_use_own_image",
+                 "picker_material_type", "picker_material_strength",
+                 "picker_image_opacity",
+                 "picker_crop_x", "picker_crop_y",
+                 "picker_crop_w", "picker_crop_h")
 
     def __init__(self, **kw):
         for name in self.__slots__:
@@ -102,6 +116,12 @@ def read(cfg):
         accent_custom=str(cfg.get("accent_custom") or "#0067c0"),
         material_enabled=bool(cfg.get("material_enabled", False)),
         material_type=mtype,
+        # 候选条独立外观
+        picker_material_enabled=bool(cfg.get("picker_material_enabled", False)),
+        picker_use_own_image=bool(cfg.get("picker_use_own_image", False)),
+        picker_material_type=(str(cfg.get("picker_material_type") or "none").lower()
+                              if str(cfg.get("picker_material_type") or "").lower()
+                              in MATERIAL_TYPES else "none"),
     )
     for key in _DEFAULTS:
         setattr(st, key, _clamp(key, cfg.get(key, _DEFAULTS[key][0])))
@@ -123,6 +143,10 @@ def write(cfg, state):
     cfg["accent_custom"] = d["accent_custom"]
     cfg["material_enabled"] = bool(d["material_enabled"])
     cfg["material_type"] = d["material_type"]
+    # 候选条独立外观
+    cfg["picker_material_enabled"] = bool(d["picker_material_enabled"])
+    cfg["picker_use_own_image"] = bool(d["picker_use_own_image"])
+    cfg["picker_material_type"] = d["picker_material_type"]
     for key in _DEFAULTS:
         cfg[key] = _clamp(key, d.get(key))
     return cfg

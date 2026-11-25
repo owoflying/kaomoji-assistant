@@ -87,8 +87,189 @@ class AppearancePage(QWidget):
                         "没设背景图时显示主题实色面板。"
                         "「面板不透明度」是整窗透明度，拉低会透出桌面。")
         root.addWidget(c)
+
+        # ---- 候选条外观（独立于主窗口）----
+        #
+        # 候选条弹在光标附近，跟主窗口的视觉需求完全不同：它要"看得清字"，
+        # 主窗口要"背景好看"。所以给一套独立配置。
+        root.addWidget(section_title("候选条外观"))
+        c = card()
+        lay = card_layout(c)
+        self._add_row(lay, "启用材质", self._picker_material_toggle())
+        self._add_row(lay, "材质效果", self._picker_material_combo())
+        self._add_row(lay, "材质强度", self._picker_strength_row())
+        self._add_row(lay, "独立背景图", self._picker_own_image_toggle())
+        self._add_row(lay, "选择背景图", self._picker_image_row())
+        self._add_row(lay, "图片不透明度", self._picker_image_opacity_row())
+        self._add_row(lay, "显示图片的一部分", self._picker_crop_row())
+        self._hint(lay, "不勾选「独立背景图」时沿用主窗口那张；"
+                        "「显示图片的一部分」可以只取图片的某个区域，"
+                        "适合从整张壁纸里截一块好看的。")
+        root.addWidget(c)
         root.addStretch(1)
 
+    # ---------- 候选条外观 ----------
+    def _picker_material_toggle(self):
+        """候选条是否使用材质（与主窗口的开关互不影响）。"""
+        self.picker_material_check = ToggleSwitch(self._theme)
+        self.picker_material_check.setToolTip(
+            "候选条是否套用背景图/模糊效果。\n"
+            "候选条很小，材质过强会影响看字，建议低强度。")
+        self.picker_material_check.toggled.connect(
+            lambda *_a: self._push(picker_material_enabled=(
+                self.picker_material_check.isChecked())))
+        return self.picker_material_check
+
+    def _picker_material_combo(self):
+        from ui.window_material import material_choices
+
+        self.picker_material_combo = FluentComboBox(self._theme)
+        for mid, name in material_choices():
+            self.picker_material_combo.addItem(name, mid)
+        self.picker_material_combo.currentIndexChanged.connect(
+            lambda *_a: self._push(picker_material_type=(
+                self.picker_material_combo.currentData())))
+        self.picker_material_combo.setMinimumWidth(120)
+        return self.picker_material_combo
+
+    def _picker_strength_row(self):
+        return self._slider_row(
+            "picker_strength_slider", "picker_material_strength", 0, 100,
+            on_change=lambda k, s: self._push(
+                picker_material_strength=s.value()))
+
+    def _picker_own_image_toggle(self):
+        """是否用候选条自己的背景图（否则沿用主窗口的）。"""
+        self.picker_own_image_check = ToggleSwitch(self._theme)
+        self.picker_own_image_check.setToolTip(
+            "勾选后候选条用自己的背景图；不勾选沿用主窗口那张。")
+        self.picker_own_image_check.toggled.connect(
+            lambda *_a: self._push(picker_use_own_image=(
+                self.picker_own_image_check.isChecked())))
+        return self.picker_own_image_check
+
+    def _picker_image_row(self):
+        row = QHBoxLayout()
+        self.picker_image_btn = QPushButton("选择图片…")
+        self.picker_image_btn.clicked.connect(self._pick_picker_image)
+        row.addWidget(self.picker_image_btn)
+        self.picker_image_clear = QPushButton("清除")
+        self.picker_image_clear.clicked.connect(self._clear_picker_image)
+        row.addWidget(self.picker_image_clear)
+        self.picker_image_label = QLabel("")
+        self.picker_image_label.setObjectName("Caption")
+        row.addWidget(self.picker_image_label)
+        row.addStretch(1)
+        return row
+
+    def _picker_image_opacity_row(self):
+        return self._slider_row(
+            "picker_image_opacity_slider", "picker_image_opacity", 0, 100,
+            on_change=lambda k, s: self._push(
+                picker_image_opacity=s.value()))
+
+    def _picker_crop_row(self):
+        """「显示图片的一部分」：四个 0~100 的输入，对应 x/y/w/h 百分比。
+
+        用比例而不是像素：候选条尺寸会随候选数量变化，存像素会导致
+        窗口一变裁切就错位。
+        """
+        from PySide6.QtWidgets import QSpinBox
+
+        row = QHBoxLayout()
+        self._picker_crop_boxes = {}
+        for key, label in (("x", "左"), ("y", "上"),
+                           ("w", "宽"), ("h", "高")):
+            row.addWidget(QLabel(label))
+            sb = QSpinBox()
+            sb.setRange(0, 100)
+            sb.setFixedWidth(62)
+            sb.setSuffix("%")
+            if key in ("w", "h"):
+                sb.setValue(100)
+            sb.editingFinished.connect(self._on_picker_crop_changed)
+            row.addWidget(sb)
+            self._picker_crop_boxes[key] = sb
+        btn = QPushButton("重置")
+        btn.setToolTip("恢复为显示整张图片")
+        btn.clicked.connect(self._reset_picker_crop)
+        row.addWidget(btn)
+        row.addStretch(1)
+        return row
+
+    def _current_picker_crop(self):
+        """从四个输入框读出 (x, y, w, h) 相对比例。"""
+        try:
+            b = self._picker_crop_boxes
+            return (b["x"].value() / 100.0, b["y"].value() / 100.0,
+                    b["w"].value() / 100.0, b["h"].value() / 100.0)
+        except Exception:
+            return (0.0, 0.0, 0.0, 0.0)
+
+    def _on_picker_crop_changed(self):
+        if self._loading:
+            return
+        x, y, w, h = self._current_picker_crop()
+        self._push(picker_crop_x=x, picker_crop_y=y,
+                   picker_crop_w=w, picker_crop_h=h)
+
+    def _reset_picker_crop(self):
+        """恢复成"显示整张"（全 0 表示不裁切）。"""
+        self._loading = True
+        try:
+            for key, sb in self._picker_crop_boxes.items():
+                sb.setValue(0 if key in ("x", "y") else 100)
+        finally:
+            self._loading = False
+        self._push(picker_crop_x=0.0, picker_crop_y=0.0,
+                   picker_crop_w=0.0, picker_crop_h=0.0)
+
+    def _pick_picker_image(self):
+        """选候选条背景图（存到独立命名空间，不覆盖主窗口那张）。"""
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+        from ui.window_material import (
+            IMAGE_SUFFIXES, SLOT_PICKER, copy_background,
+        )
+
+        patterns = " ".join("*" + e for e in IMAGE_SUFFIXES)
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择候选条背景图", "",
+            "图片 (%s);;所有文件 (*.*)" % patterns)
+        if not path:
+            return
+        ok, result = copy_background(path, slot=SLOT_PICKER)
+        if not ok:
+            QMessageBox.warning(self, "候选条背景图", result)
+            return
+        self._refresh_picker_image_label()
+        self._sync_enabled()
+        self._push(picker_use_own_image=True)
+
+    def _clear_picker_image(self):
+        from ui.window_material import SLOT_PICKER, clear_background
+
+        if clear_background(slot=SLOT_PICKER):
+            self._refresh_picker_image_label()
+            self._sync_enabled()
+            if self._on_apply is not None:
+                self._on_apply(self._ctrl.changes_for())
+
+    def _refresh_picker_image_label(self):
+        import os
+
+        from ui.window_material import SLOT_PICKER, background_path
+
+        try:
+            p = background_path(SLOT_PICKER)
+            if p:
+                self.picker_image_label.setText(os.path.basename(p))
+            else:
+                self.picker_image_label.setText("未设置")
+        except Exception:
+            pass
+
+    # ---------- 候选条外观 ----------
     def _add_row(self, layout, label, widget_or_layout):
         """一行设置项：左标签 + 右控件（与设置页同样的视觉规格）。"""
         row = QHBoxLayout()
@@ -327,6 +508,19 @@ class AppearancePage(QWidget):
             from ui.window_material import background_path
 
             self.material_image_clear.setEnabled(on and bool(background_path()))
+
+            # 候选条：材质关时下方控件置灰
+            pon = bool(st.picker_material_enabled)
+            for w in (self.picker_material_combo,
+                      self.picker_strength_slider,
+                      self.picker_own_image_check,
+                      self.picker_image_btn,
+                      self.picker_image_opacity_slider, *self._picker_crop_boxes.values()):
+                w.setEnabled(pon)
+            from ui.window_material import SLOT_PICKER, background_path as _bp
+
+            self.picker_image_clear.setEnabled(
+                pon and bool(_bp(SLOT_PICKER)))
         except Exception:
             pass
 
@@ -449,6 +643,38 @@ class AppearancePage(QWidget):
                     if lbl is not None:
                         lbl.setText(fmt(s.value()))
             self._refresh_image_label()
+            # 候选条外观
+            self.picker_material_check.setChecked(
+                bool(st.picker_material_enabled))
+            self.picker_own_image_check.setChecked(
+                bool(st.picker_use_own_image))
+            idx = self.picker_material_combo.findData(
+                st.picker_material_type)
+            self.picker_material_combo.setCurrentIndex(idx if idx >= 0 else 0)
+            for attr, val in (
+                    ("picker_strength_slider",
+                     int(st.picker_material_strength)),
+                    ("picker_image_opacity_slider",
+                     int(st.picker_image_opacity))):
+                sl = getattr(self, attr, None)
+                if sl is not None:
+                    sl.setValue(max(sl.minimum(), min(sl.maximum(), val)))
+                    lbl = getattr(self, attr + "_value", None)
+                    if lbl is not None:
+                        lbl.setText("%d%%" % sl.value())
+            # 裁切：相对比例 → 百分比。
+            # ⚠ 存的全 0 表示"显示整张"，回填时要摆成 左0/上0/宽100/高100，
+            # 否则用户看到 0% 会以为图片被裁没了。
+            cx, cy = float(st.picker_crop_x), float(st.picker_crop_y)
+            cw, ch = float(st.picker_crop_w), float(st.picker_crop_h)
+            if cw <= 0 or ch <= 0:
+                cx, cy, cw, ch = 0.0, 0.0, 1.0, 1.0
+            for key, val in (("x", cx), ("y", cy),
+                             ("w", cw), ("h", ch)):
+                sb = self._picker_crop_boxes.get(key)
+                if sb is not None:
+                    sb.setValue(int(round(val * 100)))
+            self._refresh_picker_image_label()
         finally:
             self._loading = False
         self._sync_preset_btn()

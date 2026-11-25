@@ -44,6 +44,25 @@ DEFAULT_CONFIG = {
     "material_image_opacity": 100,
     #: 额外叠一层暗化/提亮 0~100（让上层文字更易读）
     "material_dim": 0,
+    # ---- 候选条独立外观（与主窗口互不影响）----
+    #
+    # 候选条是弹出在光标附近的小窗口，视觉需求与主窗口完全不同：
+    # 它要"看得清字"，主窗口要"背景好看"。所以给一套独立配置。
+    "picker_material_enabled": False,
+    #: 是否用**单独的背景图**（否则沿用主窗口那张）
+    "picker_use_own_image": False,
+    #: 候选条材质类型：none / blur / frosted / fog
+    "picker_material_type": "none",
+    #: 候选条材质强度 0~100
+    "picker_material_strength": 55,
+    #: 候选条自己的背景图不透明度 0~100
+    "picker_image_opacity": 100,
+    #: 背景图裁切区域（"只显示图片的一部分"）：x/y/w/h 均为 0~1 的相对比例。
+    #: 全 0 表示不裁切、整图铺满。存相对值是为了窗口尺寸变化时不变形。
+    "picker_crop_x": 0.0,
+    "picker_crop_y": 0.0,
+    "picker_crop_w": 0.0,
+    "picker_crop_h": 0.0,
     #: 玻璃饱和度倍数 ×10（10 = 1.0x 不变，18 = 1.8x 提艳）。
     #:
     #: 这是"玻璃精致感"的关键：纯模糊只会显得糊，把饱和度提上来
@@ -106,6 +125,7 @@ _CONFIG_ENUMS = {
     # 这里只校验类型（字符串），避免老预设 id 被误判非法。
     "accent_mode": ("preset", "system", "custom"),
     "material_type": ("none", "blur", "frosted", "fog"),
+    "picker_material_type": ("none", "blur", "frosted", "fog"),
     "input_method": ("clipboard", "direct", "type"),
 }
 
@@ -121,6 +141,13 @@ _CONFIG_RANGES = {
     "material_dim": (0, 100),
     "material_saturate": (10, 30),
     "material_brightness": (80, 130),
+    # 候选条独立外观
+    "picker_material_strength": (0, 100),
+    "picker_image_opacity": (0, 100),
+    "picker_crop_x": (0.0, 1.0),
+    "picker_crop_y": (0.0, 1.0),
+    "picker_crop_w": (0.0, 1.0),
+    "picker_crop_h": (0.0, 1.0),
 }
 
 

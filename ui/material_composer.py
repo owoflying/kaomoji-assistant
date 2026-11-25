@@ -47,24 +47,95 @@ class MaterialComposer:
 
     :param config: 配置 dict（读 material_*）
     :param theme_provider: 无参可调用，返回当前 Theme
+    :param key_prefix: 配置键前缀。默认 ""（主窗口读 `material_*`）；
+                       候选条传 `"picker_"`（读 `picker_material_*`）
+    :param slot: 背景图命名空间。默认主窗口的 `background`；
+                 候选条用 `picker_background`
+    :param own_image_only: True 时**只用** `slot` 里的图，不回退到主窗口那张。
+                           候选条勾了「独立背景图」才为 True。
     """
 
-    def __init__(self, config, theme_provider):
+    def __init__(self, config, theme_provider, key_prefix="",
+                 slot=None, own_image_only=False):
         self._config = config
         self._theme_provider = theme_provider
+        self._prefix = key_prefix or ""
+        self._slot = slot
+        self._own_only = own_image_only
         self._cache = None
         self._key = None
+
+    # ---------------------------------------------------------- 读配置
+    def _get(self, name, default):
+        """读带前缀的配置项。
+
+        候选条用 `picker_` 前缀，读 `picker_material_enabled`；
+        主窗口前缀为空，直接读 `material_enabled`。
+        """
+        key = self._prefix + name
+        try:
+            return self._config.get(key, default)
+        except Exception:
+            return default
+
+    def _image_path(self):
+        """当前该用哪张背景图。
+
+        ## 候选条的取图规则
+
+        1. 勾了「独立背景图」→ **只用**候选条自己的图，没有就当作无背景
+           （不能回退到主窗口那张，否则"独立"就不成立了）
+        2. 没勾 → 优先用候选条自己的（若存在），否则沿用主窗口那张
+        """
+        if self._slot is None:
+            return _background_path()
+        try:
+            from ui.window_material import background_path
+
+            own = background_path(self._slot)
+        except Exception:
+            own = None
+        if own:
+            return own
+        if self._own_only:
+            return None
+        if self._slot == "background":
+            return own
+        # 没勾独立 → 回退到主窗口的背景图
+        return _background_path()
+
+    def _crop(self):
+        """裁切参数 (x, y, w, h)。只有候选条支持。"""
+        if self._prefix != "picker_":
+            return None
+        try:
+            return (float(self._get("crop_x", 0.0)),
+                    float(self._get("crop_y", 0.0)),
+                    float(self._get("crop_w", 0.0)),
+                    float(self._get("crop_h", 0.0)))
+        except Exception:
+            return None
+
+    def _image_opacity(self):
+        """背景图不透明度（只有候选条读 `picker_image_opacity`）。"""
+        if self._prefix != "picker_":
+            return 1.0
+        try:
+            return max(0.0, min(1.0, float(
+                self._get("image_opacity", 100)) / 100.0))
+        except Exception:
+            return 1.0
 
     # ---------------------------------------------------------- 公开
     def enabled(self):
         """材质是否启用（总开关 + 有实际内容）。"""
         try:
-            if not bool(self._config.get("material_enabled", False)):
+            if not bool(self._get("material_enabled", False)):
                 return False
-            mat = str(self._config.get("material_type", "none") or "none").lower()
+            mat = str(self._get("material_type", "none") or "none").lower()
             if mat in ("blur", "frosted", "fog"):
                 return True
-            return bool(_background_path())
+            return bool(self._image_path())
         except Exception:
             return False
 
@@ -114,22 +185,23 @@ class MaterialComposer:
             bg = getattr(theme, "bg", "")
         except Exception:
             dark, bg = False, ""
-        bp = _background_path()
+        bp = self._image_path()
         mtime = 0.0
         if bp:
             try:
                 mtime = os.path.getmtime(bp)
             except Exception:
                 mtime = 0.0
-        c = self._config
         return (
             w, h, dark, bg, round(float(alpha), 4),
-            bool(c.get("material_enabled", False)),
-            str(c.get("material_type", "none")),
-            int(c.get("material_strength", 55)),
-            int(c.get("material_saturate", 18)),
-            int(c.get("material_brightness", 104)),
-            int(c.get("material_dim", 0)),
+            bool(self._get("material_enabled", False)),
+            str(self._get("material_type", "none")),
+            int(self._get("material_strength", 55)),
+            int(self._get("material_saturate", 18)),
+            int(self._get("material_brightness", 104)),
+            int(self._get("material_dim", 0)),
+            # 裁切与图片不透明度也必须进键，否则改了不重算
+            tuple(self._crop() or ()), round(self._image_opacity(), 3),
             bp, mtime,
         )
 
@@ -148,7 +220,7 @@ class MaterialComposer:
         # ---- 1. 背景图（有就不画底色，见 frameless_shell 的规则说明）----
         drew_image = False
         if self.enabled():
-            bp = _background_path()
+            bp = self._image_path()
             if bp:
                 from PySide6.QtCore import QSize
 
@@ -156,18 +228,17 @@ class MaterialComposer:
                     normalize_material, render_background,
                 )
 
-                mat = normalize_material(
-                    self._config.get("material_type", "none"))
-                strength = int(self._config.get("material_strength", 55))
+                mat = normalize_material(self._get("material_type", "none"))
+                strength = int(self._get("material_strength", 55))
                 sat = max(10, min(30, int(
-                    self._config.get("material_saturate", 18)))) / 10.0
+                    self._get("material_saturate", 18)))) / 10.0
                 bri = max(80, min(130, int(
-                    self._config.get("material_brightness", 104)))) / 100.0
+                    self._get("material_brightness", 104)))) / 100.0
                 layer = render_background(
                     QSize(w, h), material=mat, strength=strength,
                     image_path=bp, saturate=sat, brightness=bri,
-                    contrast=1.01, dark=dark)
-                dim = int(self._config.get("material_dim", 0))
+                    contrast=1.01, dark=dark, crop=self._crop())
+                dim = int(self._get("material_dim", 0))
                 if dim:
                     ll = QPainter(layer)
                     a = min(255, int(dim * 1.6))
@@ -175,7 +246,12 @@ class MaterialComposer:
                                 QColor(0, 0, 0, a) if dark
                                 else QColor(255, 255, 255, a))
                     ll.end()
+                # 图片不透明度（候选条可单独调）
+                iop = self._image_opacity()
+                if iop < 0.999:
+                    p.setOpacity(iop)
                 p.drawPixmap(0, 0, layer)
+                p.setOpacity(1.0)
                 drew_image = True
 
         # ---- 2. 没有背景图 → 实色面板 ----

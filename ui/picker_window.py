@@ -363,12 +363,22 @@ class PickerWindow(WindowMaterialMixin, QWidget):
         """
         hwnd = int(self.winId())
         apply_dark_mode(hwnd, resolved_mode_of(self.config) == "dark")
-        # 接入背景材质：候选条也能吃到用户设置的高级材质。
-        # 主题取 `_theme_obj`（`_apply_style` 每次换肤都会刷新它）。
+        # 接入**候选条自己的**材质配置。
+        #
+        # 候选条弹在光标附近，视觉需求和主窗口完全不同（它要看得清字），
+        # 所以读 `picker_*` 前缀的一套独立参数，背景图也存独立命名空间。
+        # 用户没勾「独立背景图」时，composer 会自动回退到主窗口那张。
         try:
-            self._init_material(
+            from ui.material_composer import MaterialComposer
+            from ui.window_material import SLOT_PICKER
+
+            self._material_composer = MaterialComposer(
                 self.config,
-                theme_provider=lambda: getattr(self, "_theme_obj", None))
+                lambda: getattr(self, "_theme_obj", None),
+                key_prefix="picker_",
+                slot=SLOT_PICKER,
+                own_image_only=bool(
+                    self.config.get("picker_use_own_image", False)))
         except Exception:
             pass
 

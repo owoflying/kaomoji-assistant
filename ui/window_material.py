@@ -96,25 +96,36 @@ def material_recipe(name):
 # ====================================================================
 # 背景图加载
 # ====================================================================
+# 背景图存取（支持多个命名空间：主窗口 / 候选条）
+# ====================================================================
 
 #: 支持的图片后缀
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp")
 
 
 def is_image_file(path):
+    """路径后缀是否是支持的图片格式。"""
     return bool(path) and os.path.splitext(str(path))[1].lower() in IMAGE_SUFFIXES
 
 
-def copy_background(source):
+#: 命名空间 → 数据目录里的文件名前缀
+#: 主窗口用 "background"，候选条用 "picker_background"——两者互不覆盖。
+SLOT_MAIN = "background"
+SLOT_PICKER = "picker_background"
+
+
+def copy_background(source, slot=SLOT_MAIN):
     """把用户选的背景图复制到数据目录，返回 (成功, 目标路径或错误)。
+
+    :param slot: 存到哪个命名空间（主窗口 / 候选条）。
 
     ## 为什么要复制
 
     用户可能从桌面/下载目录选一张图，那个文件随时可能被删被移动。
     直接引用原路径，下次启动就找不到背景了。
 
-    复制到 `%APPDATA%/KaomojiAssistant/background.<ext>`，
-    删掉旧的同名文件避免堆积。
+    复制到 `%APPDATA%/KaomojiAssistant/<slot>.<ext>`，并清掉同前缀
+    其它后缀的旧文件避免堆积。
     """
     if not source or not os.path.isfile(source):
         return False, "文件不存在"
@@ -126,16 +137,15 @@ def copy_background(source):
         data_dir = app_data_dir()
         os.makedirs(data_dir, exist_ok=True)
         ext = os.path.splitext(source)[1].lower()
-        # 清掉其它后缀的旧背景，避免残留
+        # 清掉同前缀其它后缀的旧图，避免残留
         for old in IMAGE_SUFFIXES:
-            p = os.path.join(data_dir, "background" + old)
+            p = os.path.join(data_dir, slot + old)
             if os.path.isfile(p):
                 try:
                     os.remove(p)
                 except Exception:
                     pass
-        dst = os.path.join(data_dir, "background" + ext)
-        # 用二进制读写，GIF 也能原样复制
+        dst = os.path.join(data_dir, slot + ext)
         with open(source, "rb") as f:
             data = f.read()
         if len(data) > 32 * 1024 * 1024:
@@ -147,14 +157,14 @@ def copy_background(source):
         return False, "复制失败：%r" % (e,)
 
 
-def background_path():
-    """当前背景图路径；没设置时返回 None。"""
+def background_path(slot=SLOT_MAIN):
+    """取某个命名空间的背景图路径；没设置时返回 None。"""
     try:
         from core.runtime import app_data_dir
 
         data_dir = app_data_dir()
         for ext in IMAGE_SUFFIXES:
-            p = os.path.join(data_dir, "background" + ext)
+            p = os.path.join(data_dir, slot + ext)
             if os.path.isfile(p):
                 return p
     except Exception:
@@ -162,9 +172,9 @@ def background_path():
     return None
 
 
-def clear_background():
-    """删除已设置的背景图。返回是否删掉了。"""
-    p = background_path()
+def clear_background(slot=SLOT_MAIN):
+    """删除某个命名空间的背景图。返回是否删掉了。"""
+    p = background_path(slot)
     if not p:
         return False
     try:
@@ -175,7 +185,49 @@ def clear_background():
 
 
 # ====================================================================
-# 材质渲染
+# 背景图裁切（"只显示图片的一部分"）
+# ====================================================================
+
+def normalize_crop(crop):
+    """把裁切参数归一成合法的 (x, y, w, h)。
+
+    :param crop: (x, y, w, h) 相对比例 0~1；或 None / 全 0 表示不裁切
+    :return: (x, y, w, h)，w/h 至少 0.05，且不超出图片边界
+
+    ## 为什么用相对比例
+
+    候选条尺寸会随候选数量/字号变化。存像素值的话，窗口一变裁切区域
+    就错位。存比例则"裁右边 60%"永远成立。
+    """
+    if not crop:
+        return (0.0, 0.0, 0.0, 0.0)
+    try:
+        x, y, w, h = [float(v) for v in crop]
+    except Exception:
+        return (0.0, 0.0, 0.0, 0.0)
+    # 全 0 = 不裁切
+    if w <= 0 or h <= 0:
+        return (0.0, 0.0, 0.0, 0.0)
+    x = max(0.0, min(1.0, x))
+    y = max(0.0, min(1.0, y))
+    w = max(0.05, min(1.0 - x, w))
+    h = max(0.05, min(1.0 - y, h))
+    return (x, y, w, h)
+
+
+def crop_rect_px(img_size, crop):
+    """把相对裁切比例换算成像素矩形（QRect）。"""
+    from PySide6.QtCore import QRect
+
+    x, y, w, h = normalize_crop(crop)
+    iw = max(1, int(img_size.width()))
+    ih = max(1, int(img_size.height()))
+    if w <= 0 or h <= 0:
+        return QRect(0, 0, iw, ih)
+    return QRect(int(x * iw), int(y * ih),
+                 max(1, int(w * iw)), max(1, int(h * ih)))
+
+
 # ====================================================================
 
 def _apply_blur(img, radius):
@@ -405,13 +457,14 @@ def _apply_color_adjust(img, saturate=1.0, brightness=1.0, contrast=1.0):
 def render_background(size, material="none", strength=DEFAULT_STRENGTH,
                       image_path=None, fallback_color=None,
                       saturate=1.0, brightness=1.0, contrast=1.0,
-                      dark=False):
+                      dark=False, crop=None):
     """渲染一张"窗口背景"图，供 paintEvent 直接 drawPixmap。
 
     :param size: QSize，窗口客户区尺寸
     :param material: none / blur / frosted / fog
     :param strength: 0~100，材质强度
     :param image_path: 背景图路径；None 时**返回全透明图**（不画底色）
+    :param crop: (x, y, w, h) 相对比例，只显示图片的这一部分；None/全 0 = 整图
     :param fallback_color: 兼容参数，已不用于填充（见下）
     :return: QPixmap；没有背景图时返回一张全透明图
 
@@ -447,17 +500,23 @@ def render_background(size, material="none", strength=DEFAULT_STRENGTH,
 
     p = QPainter(canvas)
     p.setRenderHint(QPainter.SmoothPixmapTransform, True)
-    # 等比缩放并居中裁切（cover）：铺满窗口且不变形
     iw, ih = loaded.width(), loaded.height()
     if iw > 0 and ih > 0:
-        scale = max(w / iw, h / ih)
-        nw, nh = int(iw * scale + 0.5), int(ih * scale + 0.5)
+        # ---- 先按「用户选的裁切区域」取源图的一块 ----
+        #
+        # crop 为 (x, y, w, h) 相对比例；全 0 表示不裁切（整图）。
+        # 先裁再铺满，语义是"只显示图片的这一部分，并且让它铺满窗口"。
+        src_rect = crop_rect_px(loaded.size(), crop)
+        part = loaded.copy(src_rect)
+        pw, ph = max(1, part.width()), max(1, part.height())
+        # 再按 cover 方式缩放铺满，保证不变形
+        scale = max(w / pw, h / ph)
+        nw, nh = int(pw * scale + 0.5), int(ph * scale + 0.5)
         src_x = max(0, (nw - w) // 2)
         src_y = max(0, (nh - h) // 2)
-        scaled = loaded.scaled(nw, nh, Qt.IgnoreAspectRatio,
-                               Qt.SmoothTransformation)
-        p.drawImage(QRect(0, 0, w, h),
-                    scaled, QRect(src_x, src_y, w, h))
+        scaled = part.scaled(nw, nh, Qt.IgnoreAspectRatio,
+                             Qt.SmoothTransformation)
+        p.drawImage(QRect(0, 0, w, h), scaled, QRect(src_x, src_y, w, h))
     p.end()
 
     # ---- 2. 材质 ----

@@ -1,4 +1,4 @@
-"""无边框窗口外壳：WinUI 3 风格窗口的"机械部分"基类。
+﻿"""无边框窗口外壳：WinUI 3 风格窗口的"机械部分"基类。
 
 **拆出来的理由**：`UnifiedSettingsWindow` 原先 1172 行里混着三件互不相干的事——
 1. 无边框窗口的机械逻辑（圆角遮罩、八向缩放热区、最大化贴工作区、状态保持）；
@@ -652,9 +652,27 @@ class FramelessShell(QMainWindow):
         )
 
     def _render_composed(self, panel):
-        """真正合成那张位图：材质 → 底色 → 渐变，全部离屏完成。"""
-        from PySide6.QtGui import QLinearGradient
+        """合成窗口背景位图。
 
+        ## 三条清晰规则
+
+            1. **有背景图** → 始终画背景图，**不画**面板底色
+               （底色会盖住背景图，那正是"看不到背景"的原因）
+            2. **没背景图** → 画实色面板底色
+            3. **整窗不透明度**（panel_alpha）→ 以上内容统一按它缩放，
+               拉到 0 时完全透明、直接看到桌面
+
+        所以「不透明度」是**唯一的透明度旋钮**，语义是"整个窗口有多实"，
+        和背景图、底色都没有耦合关系。
+
+        ## 之前的错误
+
+        我把"背景图"和"面板底色"当成两个可独立调透明的层，
+        于是有过两个方向的 bug：底色盖住背景图、背景图挡住桌面。
+        根因是**让底色和背景图同时存在**——底色在背景图上本来就是遮挡物。
+
+        正确做法是互斥：有背景图就不画底色。
+        """
         from ui.frameless_panel import _as_color
 
         w, h = max(1, panel.width()), max(1, panel.height())
@@ -664,49 +682,25 @@ class FramelessShell(QMainWindow):
         p.setRenderHint(QPainter.Antialiasing, True)
         p.setRenderHint(QPainter.SmoothPixmapTransform, True)
 
-        # ---- 1. 背景材质 ----
-        #
-        # ## 两个不透明度是**独立的两件事**
-        #
-        # 这里踩过两个相反的坑，都源于把两者混成一个参数：
-        #
-        # * 只让底色乘 alpha、背景图全不透明 →
-        #   设了背景图后，面板拉到最低也看不到桌面（用户反馈 1）
-        # * 让"背景图和底色"一起乘 alpha →
-        #   面板拉满时背景图被底色盖死，看不到背景（用户反馈 2）
-        #
-        # 正确模型是两条独立的叠加层：
-        #
-        #   桌面
-        #    └─ 背景图        （material_image_opacity 控制它有多实）
-        #        └─ 面板底色   （panel_alpha 控制它有多实）
-        #            └─ 内容
-        #
-        # 所以：
-        #   * 想看**更多背景图** → 调低「面板不透明度」（底色变淡）
-        #   * 想看**更多桌面**   → 调低「背景图不透明度」（背景变淡）
-        #   * 想看**完全实色**   → 两个都拉满
-        #
-        # 两者都拉满时窗口完全不透明；任一拉低都会看到下一层，符合直觉。
-        img_op = max(0, min(100, int(self.config.get(
-            "material_image_opacity", 100)))) / 100.0
+        # ---- 1. 背景图（优先）----
+        drew_image = False
         if self._material_on():
             from ui.window_material import (
                 background_path, normalize_material, render_background,
             )
 
-            mat = normalize_material(self.config.get("material_type", "none"))
-            strength = int(self.config.get("material_strength", 55))
-            # 玻璃的"精致感"来自这三个滤镜（参考 CSS backdrop-filter）：
-            #   saturate(1.8) 大幅提艳 —— 最关键，少了它只会显得糊
-            #   brightness(1.04) 轻微提亮
-            #   contrast(1.01)   极轻压对比
-            sat = max(10, min(30, int(self.config.get(
-                "material_saturate", 18)))) / 10.0
-            bri = max(80, min(130, int(self.config.get(
-                "material_brightness", 104)))) / 100.0
             bp = background_path()
-            if bp and img_op > 0:
+            if bp:
+                mat = normalize_material(
+                    self.config.get("material_type", "none"))
+                strength = int(self.config.get("material_strength", 55))
+                # 玻璃质感三件套（参考 CSS backdrop-filter）：
+                #   saturate(1.8) 大幅提艳 —— 最关键，少了只会显得糊
+                #   brightness(1.04) 轻微提亮 / contrast(1.01) 极轻压对比
+                sat = max(10, min(30, int(self.config.get(
+                    "material_saturate", 18)))) / 10.0
+                bri = max(80, min(130, int(self.config.get(
+                    "material_brightness", 104)))) / 100.0
                 layer = render_background(
                     QSize(w, h), material=mat, strength=strength,
                     image_path=bp, saturate=sat, brightness=bri,
@@ -720,30 +714,28 @@ class FramelessShell(QMainWindow):
                                 QColor(0, 0, 0, a) if self.theme.dark
                                 else QColor(255, 255, 255, a))
                     ll.end()
-                # 背景图按**自己的**不透明度绘制（与面板不透明度无关）
-                p.setOpacity(img_op)
                 p.drawPixmap(0, 0, layer)
-                p.setOpacity(1.0)
+                drew_image = True
 
-        # ---- 2. 面板底色（按 panel_alpha）----
+        # ---- 2. 没有背景图 → 实色面板 ----
         #
-        # 这一步决定"背景透过多少"：alpha 越低，背景越明显。
-        # 面板透明度是**唯一**控制它的地方。
-        p.fillRect(0, 0, w, h, _as_color(self._adjusted_panel_base()))
+        # ⚠ 只在**没有背景图**时画，否则会把背景图盖死
+        if not drew_image:
+            p.fillRect(0, 0, w, h, _as_color(self._adjusted_panel_base()))
 
-        # ---- 3. 竖向渐变（同样按 panel_alpha 缩放）----
-        scale = self._panel_alpha_value()
-        gt = _scale_alpha(self.theme.window_grad_top, scale)
-        gb = _scale_alpha(self.theme.window_grad_bottom, scale)
-        if gt and gb:
-            grad = QLinearGradient(0, 0, 0, h)
-            grad.setColorAt(0, _as_color(gt))
-            grad.setColorAt(1, _as_color(gb))
-            p.fillRect(0, 0, w, h, grad)
+        # ---- 3. 整窗不透明度 ----
+        #
+        # 把上面画好的内容整体按 panel_alpha 缩放，得到最终透明度。
+        # 这是"整窗透明度"的唯一实现点：背景图和实色面板都受它控制。
+        alpha = self._panel_alpha_value()
+        if alpha < 0.999:
+            # 用一个与自身相乘的合成：源图 alpha *= panel_alpha
+            p.setCompositionMode(QPainter.CompositionMode_DestinationIn)
+            p.fillRect(0, 0, w, h, QColor(0, 0, 0, int(round(alpha * 255))))
+            p.setCompositionMode(QPainter.CompositionMode_SourceOver)
 
         p.end()
         return QPixmap.fromImage(canvas)
-
 
     def _panel_alpha_value(self):
         """当前面板不透明度（0~1），供渐变等叠加层等比缩放。"""

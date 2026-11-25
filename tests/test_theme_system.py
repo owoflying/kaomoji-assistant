@@ -335,12 +335,10 @@ def test_appearance_page_owns_theme_controls(qapp):
                  "material_brightness_slider", "material_dim_slider"):
         assert hasattr(appearance, name), "外观页缺少控件 %s" % name
 
-    # 「背景图不透明度」和「面板不透明度」是**两层独立的叠加层**：
-    #   背景图不透明度 → 背景图本身有多实（调低透出桌面）
-    #   面板不透明度   → 盖在背景图上的底色有多实（调低看清背景图）
-    # 两者必须都存在，否则会有一层永远调不动
-    assert hasattr(appearance, "material_image_opacity_slider"), \
-        "外观页缺少「背景图不透明度」滑块——没有它就无法让桌面透出来"
+    # 只保留**一个**透明度旋钮：面板不透明度 = 整窗透明度。
+    # 有背景图时面板底色不画（背景图始终可见），没背景图时才画实色面板。
+    assert not hasattr(appearance, "material_image_opacity_slider"), \
+        "外观页又出现「背景图不透明度」滑块了——透明度只该有一个旋钮"
 
     # 设置页不该有的（已迁走）
     for name in ("theme_combo", "preset_combo", "panel_alpha_slider",

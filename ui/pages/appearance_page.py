@@ -82,13 +82,10 @@ class AppearancePage(QWidget):
         self._add_row(lay, "玻璃饱和度", self._material_saturate_row())
         self._add_row(lay, "玻璃亮度", self._material_brightness_row())
         self._add_row(lay, "背景图", self._material_image_row())
-        self._add_row(lay, "背景图不透明度", self._material_image_opacity_row())
         self._add_row(lay, "背景暗化/提亮", self._material_dim_row())
-        self._hint(lay, "「背景图不透明度」控制背景图本身有多实"
-                        "（调低会透出桌面）；"
-                        "「面板不透明度」控制盖在背景图上的那层底色有多实"
-                        "（调低就能看清背景图）。"
-                        "两者相互独立：都拉满=完全不透明。")
+        self._hint(lay, "设置了背景图时，面板会自动让位给背景图（始终看得见）；"
+                        "没设背景图时显示主题实色面板。"
+                        "「面板不透明度」是整窗透明度，拉低会透出桌面。")
         root.addWidget(c)
         root.addStretch(1)
 
@@ -249,18 +246,6 @@ class AppearancePage(QWidget):
         self.material_brightness_slider_value = val
         return row
 
-    def _material_image_opacity_row(self):
-        """背景图不透明度：控制背景图本身有多实。
-
-        与「面板不透明度」是**两层不同的东西**：
-          * 本滑块调低 → 背景图变淡，透出后面的桌面
-          * 面板不透明度调低 → 盖在背景图上的底色变淡，看清背景图
-        """
-        return self._slider_row(
-            "material_image_opacity_slider", "material_image_opacity", 0, 100,
-            on_change=lambda k, s: self._push(
-                material_image_opacity=s.value()))
-
     def _material_dim_row(self):
         return self._slider_row(
             "material_dim_slider", "material_dim", 0, 100,
@@ -324,7 +309,6 @@ class AppearancePage(QWidget):
             for w in (self.material_combo, self.material_strength_slider,
                       self.material_saturate_slider,
                       self.material_brightness_slider,
-                      self.material_image_opacity_slider,
                       self.material_image_btn,
                       self.material_dim_slider):
                 w.setEnabled(on)
@@ -440,8 +424,6 @@ class AppearancePage(QWidget):
                      lambda v: "%d%%" % v),
                     ("material_strength_slider", int(st.material_strength),
                      lambda v: "%d%%" % v),
-                    ("material_image_opacity_slider",
-                     int(st.material_image_opacity), lambda v: "%d%%" % v),
                     ("material_saturate_slider", int(st.material_saturate),
                      lambda v: "%.1fx" % (v / 10.0)),
                     ("material_brightness_slider", int(st.material_brightness),

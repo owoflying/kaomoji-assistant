@@ -555,12 +555,17 @@ class FramelessShell(QMainWindow):
             panel = QRect(P, P, self.width() - 2 * P, self.height() - 2 * P)
 
         # 外阴影（画在面板外侧的窗口留白里）
-        if not maximized and self._shadow_color is not None:
+        #
+        # 阴影同样跟随面板不透明度：面板拉到全透明时若还留着一圈阴影，
+        # 视觉上会像"有个幽灵窗口贴在桌面上"。面板越透，阴影越淡。
+        shadow_scale = self._panel_alpha_value()
+        if not maximized and self._shadow_color is not None and shadow_scale > 0:
             try:
                 from ui.frameless_panel import paint_shadow
 
-                paint_shadow(p, panel, self._shadow_color, P, r,
-                             spread=0.35, growth=0.5)
+                paint_shadow(p, panel,
+                             _scale_alpha(self._shadow_color, shadow_scale),
+                             P, r, spread=0.35, growth=0.5)
             except Exception:
                 pass
 
@@ -660,6 +665,31 @@ class FramelessShell(QMainWindow):
         p.setRenderHint(QPainter.SmoothPixmapTransform, True)
 
         # ---- 1. 背景材质 ----
+        #
+        # ## 两个不透明度是**独立的两件事**
+        #
+        # 这里踩过两个相反的坑，都源于把两者混成一个参数：
+        #
+        # * 只让底色乘 alpha、背景图全不透明 →
+        #   设了背景图后，面板拉到最低也看不到桌面（用户反馈 1）
+        # * 让"背景图和底色"一起乘 alpha →
+        #   面板拉满时背景图被底色盖死，看不到背景（用户反馈 2）
+        #
+        # 正确模型是两条独立的叠加层：
+        #
+        #   桌面
+        #    └─ 背景图        （material_image_opacity 控制它有多实）
+        #        └─ 面板底色   （panel_alpha 控制它有多实）
+        #            └─ 内容
+        #
+        # 所以：
+        #   * 想看**更多背景图** → 调低「面板不透明度」（底色变淡）
+        #   * 想看**更多桌面**   → 调低「背景图不透明度」（背景变淡）
+        #   * 想看**完全实色**   → 两个都拉满
+        #
+        # 两者都拉满时窗口完全不透明；任一拉低都会看到下一层，符合直觉。
+        img_op = max(0, min(100, int(self.config.get(
+            "material_image_opacity", 100)))) / 100.0
         if self._material_on():
             from ui.window_material import (
                 background_path, normalize_material, render_background,
@@ -676,7 +706,7 @@ class FramelessShell(QMainWindow):
             bri = max(80, min(130, int(self.config.get(
                 "material_brightness", 104)))) / 100.0
             bp = background_path()
-            if bp:
+            if bp and img_op > 0:
                 layer = render_background(
                     QSize(w, h), material=mat, strength=strength,
                     image_path=bp, saturate=sat, brightness=bri,
@@ -690,11 +720,10 @@ class FramelessShell(QMainWindow):
                                 QColor(0, 0, 0, a) if self.theme.dark
                                 else QColor(255, 255, 255, a))
                     ll.end()
-                # 背景图本身不再单独设透明度：
-                # 「背景能透多少」由下面的面板底色（panel_alpha）统一决定。
-                # 原来还有一个 material_image_opacity 滑块，和 panel_alpha
-                # 是同一件事，两个都是 0~100 只会让用户困惑。
+                # 背景图按**自己的**不透明度绘制（与面板不透明度无关）
+                p.setOpacity(img_op)
                 p.drawPixmap(0, 0, layer)
+                p.setOpacity(1.0)
 
         # ---- 2. 面板底色（按 panel_alpha）----
         #

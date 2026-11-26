@@ -218,8 +218,10 @@ class NavController:
             if isinstance(page, DevPage):
                 page.set_active(True)
         if animate:
-            # 真实交叉淡入淡出 + 轻微上浮，旧页淡出、新页淡入，无文字残留
-            host.content.slide_to(page, 230, rise=10)
+            # 新页淡入。160ms 是能感受到过渡但不拖沓的长度：
+            # 原来 230ms 加上页面首次绘制（20~50ms），体感接近 300ms，
+            # 连续点侧边栏时会明显跟不上手。
+            host.content.slide_to(page, 160)
         else:
             host.content.setCurrentWidget(page)
         hook = getattr(host, "on_page_shown", None)

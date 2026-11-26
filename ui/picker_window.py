@@ -370,15 +370,11 @@ class PickerWindow(WindowMaterialMixin, QWidget):
         # 用户没勾「独立背景图」时，composer 会自动回退到主窗口那张。
         try:
             from ui.material_composer import MaterialComposer
-            from ui.window_material import SLOT_PICKER
 
             self._material_composer = MaterialComposer(
                 self.config,
                 lambda: getattr(self, "_theme_obj", None),
-                key_prefix="picker_",
-                slot=SLOT_PICKER,
-                own_image_only=bool(
-                    self.config.get("picker_use_own_image", False)))
+                surface="picker")
         except Exception:
             pass
 

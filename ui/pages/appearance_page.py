@@ -1,4 +1,4 @@
-"""外观页：主题、透明度、背景材质的统一入口。
+﻿"""外观页：主题、透明度、背景材质的统一入口。
 
 ## 为什么要独立成页
 
@@ -82,6 +82,7 @@ class AppearancePage(QWidget):
         self._add_row(lay, "玻璃饱和度", self._material_saturate_row())
         self._add_row(lay, "玻璃亮度", self._material_brightness_row())
         self._add_row(lay, "背景图", self._material_image_row())
+        self._add_row(lay, "显示图片的一部分", self._main_crop_row())
         self._add_row(lay, "背景暗化/提亮", self._material_dim_row())
         self._hint(lay, "设置了背景图时，面板会自动让位给背景图（始终看得见）；"
                         "没设背景图时显示主题实色面板。"
@@ -168,61 +169,118 @@ class AppearancePage(QWidget):
             on_change=lambda k, s: self._push(
                 picker_image_opacity=s.value()))
 
-    def _picker_crop_row(self):
-        """「显示图片的一部分」：四个 0~100 的输入，对应 x/y/w/h 百分比。
-
-        用比例而不是像素：候选条尺寸会随候选数量变化，存像素会导致
-        窗口一变裁切就错位。
-        """
-        from PySide6.QtWidgets import QSpinBox
-
+    def _main_crop_row(self):
+        """主窗口背景图的「只显示一部分」——用可视化裁切对话框。"""
         row = QHBoxLayout()
-        self._picker_crop_boxes = {}
-        for key, label in (("x", "左"), ("y", "上"),
-                           ("w", "宽"), ("h", "高")):
-            row.addWidget(QLabel(label))
-            sb = QSpinBox()
-            sb.setRange(0, 100)
-            sb.setFixedWidth(62)
-            sb.setSuffix("%")
-            if key in ("w", "h"):
-                sb.setValue(100)
-            sb.editingFinished.connect(self._on_picker_crop_changed)
-            row.addWidget(sb)
-            self._picker_crop_boxes[key] = sb
-        btn = QPushButton("重置")
-        btn.setToolTip("恢复为显示整张图片")
-        btn.clicked.connect(self._reset_picker_crop)
-        row.addWidget(btn)
+        self.main_crop_btn = QPushButton("选择显示区域…")
+        self.main_crop_btn.setToolTip("打开裁切窗口，拖拽选图里的一块")
+        self.main_crop_btn.clicked.connect(self._edit_main_crop)
+        row.addWidget(self.main_crop_btn)
+        self.main_crop_reset = QPushButton("整张")
+        self.main_crop_reset.clicked.connect(self._reset_main_crop)
+        row.addWidget(self.main_crop_reset)
+        self.main_crop_label = QLabel("")
+        self.main_crop_label.setObjectName("Caption")
+        row.addWidget(self.main_crop_label)
         row.addStretch(1)
         return row
 
-    def _current_picker_crop(self):
-        """从四个输入框读出 (x, y, w, h) 相对比例。"""
-        try:
-            b = self._picker_crop_boxes
-            return (b["x"].value() / 100.0, b["y"].value() / 100.0,
-                    b["w"].value() / 100.0, b["h"].value() / 100.0)
-        except Exception:
-            return (0.0, 0.0, 0.0, 0.0)
+    def _edit_main_crop(self):
+        """弹出可视化裁切框（拖拽选区，不是填数字）。"""
+        from ui.crop_dialog import edit_crop
+        from ui.window_material import SLOT_MAIN, background_path
 
-    def _on_picker_crop_changed(self):
-        if self._loading:
+        path = background_path(SLOT_MAIN)
+        if not path:
+            from PySide6.QtWidgets import QMessageBox
+
+            QMessageBox.information(self, "裁切", "请先选择一张背景图。")
             return
-        x, y, w, h = self._current_picker_crop()
-        self._push(picker_crop_x=x, picker_crop_y=y,
-                   picker_crop_w=w, picker_crop_h=h)
+        st = self._ctrl.state()
+        crop = edit_crop(path, (st.crop_x, st.crop_y,
+                                st.crop_w, st.crop_h),
+                         parent=self, title="主窗口背景图 - 选择显示区域")
+        if crop is None:
+            return
+        self._push(crop_x=crop[0], crop_y=crop[1],
+                   crop_w=crop[2], crop_h=crop[3])
+        self._refresh_main_crop_label()
+
+    def _reset_main_crop(self):
+        self._push(crop_x=0.0, crop_y=0.0, crop_w=0.0, crop_h=0.0)
+        self._refresh_main_crop_label()
+
+    def _refresh_main_crop_label(self):
+        st = self._ctrl.state()
+        try:
+            if st.crop_w <= 0 or st.crop_h <= 0:
+                self.main_crop_label.setText("整张")
+            else:
+                self.main_crop_label.setText(
+                    "%d%% × %d%% @ (%d%%, %d%%)" % (
+                        round(st.crop_w * 100), round(st.crop_h * 100),
+                        round(st.crop_x * 100), round(st.crop_y * 100)))
+        except Exception:
+            pass
+
+    def _picker_crop_row(self):
+        """候选条背景图的「只显示一部分」——可视化裁切对话框。
+
+        原来是四个百分比输入框。用户反馈"只给数字很难用"——
+        要取某块区域得先目测猜比例、填完再看效果、反复试。
+        现在改成拖拽选区的对话框，所见即所得。
+        """
+        row = QHBoxLayout()
+        self.picker_crop_btn = QPushButton("选择显示区域…")
+        self.picker_crop_btn.setToolTip("打开裁切窗口，拖拽选图里的一块")
+        self.picker_crop_btn.clicked.connect(self._edit_picker_crop)
+        row.addWidget(self.picker_crop_btn)
+        self.picker_crop_reset = QPushButton("整张")
+        self.picker_crop_reset.clicked.connect(self._reset_picker_crop)
+        row.addWidget(self.picker_crop_reset)
+        self.picker_crop_label = QLabel("")
+        self.picker_crop_label.setObjectName("Caption")
+        row.addWidget(self.picker_crop_label)
+        row.addStretch(1)
+        return row
+
+    def _edit_picker_crop(self):
+        from ui.crop_dialog import edit_crop
+        from ui.window_material import SLOT_PICKER, background_path
+
+        path = background_path(SLOT_PICKER) or background_path()
+        if not path:
+            from PySide6.QtWidgets import QMessageBox
+
+            QMessageBox.information(self, "裁切", "请先选择一张背景图。")
+            return
+        st = self._ctrl.state()
+        crop = edit_crop(path, (st.picker_crop_x, st.picker_crop_y,
+                                st.picker_crop_w, st.picker_crop_h),
+                         parent=self, title="候选条背景图 - 选择显示区域")
+        if crop is None:
+            return
+        self._push(picker_crop_x=crop[0], picker_crop_y=crop[1],
+                   picker_crop_w=crop[2], picker_crop_h=crop[3])
+        self._refresh_picker_crop_label()
 
     def _reset_picker_crop(self):
         """恢复成"显示整张"（全 0 表示不裁切）。"""
-        self._loading = True
-        try:
-            for key, sb in self._picker_crop_boxes.items():
-                sb.setValue(0 if key in ("x", "y") else 100)
-        finally:
-            self._loading = False
         self._push(picker_crop_x=0.0, picker_crop_y=0.0,
                    picker_crop_w=0.0, picker_crop_h=0.0)
+        self._refresh_picker_crop_label()
+
+    def _refresh_picker_crop_label(self):
+        st = self._ctrl.state()
+        try:
+            if st.picker_crop_w <= 0 or st.picker_crop_h <= 0:
+                self.picker_crop_label.setText("整张")
+            else:
+                self.picker_crop_label.setText(
+                    "%d%% × %d%%" % (round(st.picker_crop_w * 100),
+                                     round(st.picker_crop_h * 100)))
+        except Exception:
+            pass
 
     def _pick_picker_image(self):
         """选候选条背景图（存到独立命名空间，不覆盖主窗口那张）。"""
@@ -515,7 +573,8 @@ class AppearancePage(QWidget):
                       self.picker_strength_slider,
                       self.picker_own_image_check,
                       self.picker_image_btn,
-                      self.picker_image_opacity_slider, *self._picker_crop_boxes.values()):
+                      self.picker_image_opacity_slider,
+                      self.picker_crop_btn, self.picker_crop_reset):
                 w.setEnabled(pon)
             from ui.window_material import SLOT_PICKER, background_path as _bp
 
@@ -643,6 +702,7 @@ class AppearancePage(QWidget):
                     if lbl is not None:
                         lbl.setText(fmt(s.value()))
             self._refresh_image_label()
+            self._refresh_main_crop_label()
             # 候选条外观
             self.picker_material_check.setChecked(
                 bool(st.picker_material_enabled))
@@ -662,18 +722,7 @@ class AppearancePage(QWidget):
                     lbl = getattr(self, attr + "_value", None)
                     if lbl is not None:
                         lbl.setText("%d%%" % sl.value())
-            # 裁切：相对比例 → 百分比。
-            # ⚠ 存的全 0 表示"显示整张"，回填时要摆成 左0/上0/宽100/高100，
-            # 否则用户看到 0% 会以为图片被裁没了。
-            cx, cy = float(st.picker_crop_x), float(st.picker_crop_y)
-            cw, ch = float(st.picker_crop_w), float(st.picker_crop_h)
-            if cw <= 0 or ch <= 0:
-                cx, cy, cw, ch = 0.0, 0.0, 1.0, 1.0
-            for key, val in (("x", cx), ("y", cy),
-                             ("w", cw), ("h", ch)):
-                sb = self._picker_crop_boxes.get(key)
-                if sb is not None:
-                    sb.setValue(int(round(val * 100)))
+            self._refresh_picker_crop_label()
             self._refresh_picker_image_label()
         finally:
             self._loading = False

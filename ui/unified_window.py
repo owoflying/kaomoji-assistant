@@ -483,6 +483,19 @@ class UnifiedSettingsWindow(FramelessShell):
                 pass
             return page
 
+        def _theme_profile_page():
+            """主题包页：管主配置与各界面覆盖。
+
+            所有窗口的外观都从同一份主题包解析（core/theme_profile.py），
+            所以这张页不需要知道有几个窗口——它只是编辑那份配置。
+            """
+            from ui.pages.theme_profile_page import ThemeProfilePage
+
+            page = ThemeProfilePage(
+                lambda: self.config, self.theme,
+                on_apply=self._on_appearance_applied)
+            return page
+
         def _appearance_page():
             """外观页工厂：接统一入口 AppearanceController。
 
@@ -508,6 +521,7 @@ class UnifiedSettingsWindow(FramelessShell):
                                          self.theme.name),
             "settings": _settings_page,
             "appearance": _appearance_page,
+            "theme_profile": _theme_profile_page,
             "about": lambda: AboutPage(self.config, self.state,
                                        self.save_config, self.open_log),
         }

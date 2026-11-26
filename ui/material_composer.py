@@ -45,69 +45,69 @@ def _background_path():
 class MaterialComposer:
     """把「背景图 + 材质 + 面板底色 + 整窗透明度」合成成一张位图。
 
-    :param config: 配置 dict（读 material_*）
+    :param config: 配置 dict
     :param theme_provider: 无参可调用，返回当前 Theme
-    :param key_prefix: 配置键前缀。默认 ""（主窗口读 `material_*`）；
-                       候选条传 `"picker_"`（读 `picker_material_*`）
-    :param slot: 背景图命名空间。默认主窗口的 `background`；
-                 候选条用 `picker_background`
-    :param own_image_only: True 时**只用** `slot` 里的图，不回退到主窗口那张。
-                           候选条勾了「独立背景图」才为 True。
+    :param surface: 这个合成器服务于哪类窗口（"main"/"picker"/"log"/...）。
+                    参数通过 `core.theme_profile.resolve()` 算出：
+                    **默认沿用主配置**，该窗口有独立设置时才覆盖。
     """
 
-    def __init__(self, config, theme_provider, key_prefix="",
-                 slot=None, own_image_only=False):
+    def __init__(self, config, theme_provider, surface="main"):
         self._config = config
         self._theme_provider = theme_provider
-        self._prefix = key_prefix or ""
-        self._slot = slot
-        self._own_only = own_image_only
+        self._surface = surface or "main"
         self._cache = None
         self._key = None
 
     # ---------------------------------------------------------- 读配置
-    def _get(self, name, default):
-        """读带前缀的配置项。
-
-        候选条用 `picker_` 前缀，读 `picker_material_enabled`；
-        主窗口前缀为空，直接读 `material_enabled`。
-        """
-        key = self._prefix + name
+    def _params(self):
+        """这个表面实际生效的完整参数（主配置 + 该表面的覆盖）。"""
         try:
-            return self._config.get(key, default)
+            from core.theme_profile import resolve
+
+            return resolve(self._config, self._surface)
+        except Exception:
+            try:
+                from core.theme_profile import normalize
+
+                return normalize({})
+            except Exception:
+                return {}
+
+    def _get(self, name, default):
+        try:
+            return self._params().get(name, default)
         except Exception:
             return default
+
+    def _surface_config(self):
+        """把生效参数包成一个 dict，供 `render_background` 使用。
+
+        `render_background` 等的键名是 `material_type` / `strength` 等，
+        而主题包里已经就是这些名字，所以直接透传即可。
+        """
+        return self._params()
 
     def _image_path(self):
         """当前该用哪张背景图。
 
-        ## 候选条的取图规则
+        ## 取图规则
 
-        1. 勾了「独立背景图」→ **只用**候选条自己的图，没有就当作无背景
-           （不能回退到主窗口那张，否则"独立"就不成立了）
-        2. 没勾 → 优先用候选条自己的（若存在），否则沿用主窗口那张
+        1. **所有窗口默认沿用主窗口那张**（`background`）——
+           这是"主题包"的核心：主配置一改，所有界面跟着变
+        2. 只有候选条显式设了独立图，才用 `picker_background`
         """
-        if self._slot is None:
-            return _background_path()
         try:
+            from core.theme_profile import effective_image_slot
             from ui.window_material import background_path
 
-            own = background_path(self._slot)
+            slot = effective_image_slot(self._config, self._surface)
+            return background_path(slot)
         except Exception:
-            own = None
-        if own:
-            return own
-        if self._own_only:
-            return None
-        if self._slot == "background":
-            return own
-        # 没勾独立 → 回退到主窗口的背景图
-        return _background_path()
+            return _background_path()
 
     def _crop(self):
-        """裁切参数 (x, y, w, h)。只有候选条支持。"""
-        if self._prefix != "picker_":
-            return None
+        """裁切参数 (x, y, w, h)。"""
         try:
             return (float(self._get("crop_x", 0.0)),
                     float(self._get("crop_y", 0.0)),
@@ -117,9 +117,7 @@ class MaterialComposer:
             return None
 
     def _image_opacity(self):
-        """背景图不透明度（只有候选条读 `picker_image_opacity`）。"""
-        if self._prefix != "picker_":
-            return 1.0
+        """背景图不透明度 0~1。"""
         try:
             return max(0.0, min(1.0, float(
                 self._get("image_opacity", 100)) / 100.0))
@@ -142,8 +140,7 @@ class MaterialComposer:
     def alpha(self):
         """整窗不透明度 0~1。"""
         try:
-            return max(0.0, min(1.0, float(
-                self._config.get("panel_alpha", 0.92))))
+            return max(0.0, min(1.0, float(self._get("panel_alpha", 0.92))))
         except Exception:
             return 0.92
 

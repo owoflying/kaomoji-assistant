@@ -26,18 +26,113 @@
 from PySide6.QtCore import QRect
 
 
+def load_surface_config(surface="dialog"):
+    """给独立窗口取配置：优先读磁盘上的真实配置。
+
+    对话框可能是被直接 new 出来的（测试 / 插件 / 更新检查），拿不到
+    宿主的 config。这时从磁盘读一份——主题包本来就持久化在
+    config.json 里，所以独立窗口也能"自动沿用主配置"。
+    """
+    try:
+        from core.config_store import load_config
+
+        cfg = load_config()
+        from core.theme_profile import migrate_legacy
+
+        return migrate_legacy(cfg)
+    except Exception:
+        return {}
+
+
+def make_surface_composer(surface="dialog", config=None, theme_provider=None,
+                          widget=None):
+    """给任意独立窗口/对话框造一个 `MaterialComposer`。
+
+    :param surface: 窗口类别（"dialog" / "log" / "plugin" / "picker"）
+    :param config: 配置 dict；None 时从磁盘读
+    :param theme_provider: 无参可调用，返回 Theme；默认从主题包构建
+    :param widget: 目标控件（用于读取它自己的 _theme 属性）
+
+    ## 为什么需要这个函数
+
+    不是所有窗口都继承 `WindowMaterialMixin`（有些是 `QDialog`，
+    有自己的绘制逻辑）。这个helper 让它们也能一行拿到主题包解析后的
+    外观参数，不必新增任何配置键。
+    """
+    from ui.material_composer import MaterialComposer
+
+    cfg = config if config is not None else load_surface_config(surface)
+
+    if theme_provider is None:
+        def theme_provider():
+            # 控件自己的 _theme 优先（换肤时会被更新）
+            t = getattr(widget, "_theme", None) if widget is not None else None
+            if t is not None:
+                return t
+            try:
+                from ui.theme_manager import build_theme
+                from core.theme_profile import resolve
+
+                p = resolve(cfg, surface)
+                return build_theme({"theme_mode": p.get("theme_mode", "light"),
+                                    "theme_preset": p.get("theme_preset", "classic")})
+            except Exception:
+                return None
+
+    return MaterialComposer(cfg, theme_provider, surface=surface)
+
+
+def surface_theme(surface="dialog", config=None):
+    """给对话框/独立窗口解析出它该用的主题。
+
+    ## 为什么需要
+
+    这些窗口（更新提示/欢迎/组合/提取）原本各处写
+
+        Theme(theme_name)          # 只有明暗，丢配色预设
+        self.setStyleSheet(...)
+
+    于是它们各自为政：用户换了配色/自定义主题，这些窗口还是经典灰，
+    看起来"没有主题功能"。
+
+    本函数统一从**主题包**取：默认沿用主配置，某界面有覆盖时用覆盖的。
+    新窗口只要报一个 surface 名就能获得正确主题，无需新增配置键。
+    """
+    cfg = config
+    if cfg is None:
+        cfg = load_surface_config(surface)
+    try:
+        from core.theme_profile import resolve
+
+        p = resolve(cfg, surface)
+        mode = p.get("theme_mode", "light")
+    except Exception:
+        p, mode = {}, "light"
+    try:
+        from ui.theme_manager import build_theme
+
+        return build_theme(cfg, mode_override=mode), p
+    except Exception:
+        from ui.win11_theme import Theme, resolve_theme_name
+
+        return Theme(resolve_theme_name(mode)), p
+
+
 class WindowMaterialMixin:
     """给独立窗口提供背景材质绘制能力。"""
 
     _material_composer = None
     _material_config = None
 
-    def _init_material(self, config, theme_provider=None):
+    def _init_material(self, config, theme_provider=None, surface="dialog"):
         """初始化材质支持。
 
-        :param config: 配置 dict（读 material_* 各项）
+        :param config: 配置 dict
         :param theme_provider: 无参可调用，返回当前 Theme；
                                默认用 `self._theme` 属性
+        :param surface: 窗口类别（见 core.theme_profile.SURFACES）。
+                        默认 "dialog"——**自动沿用主配置**，
+                        不需要为该窗口新增任何配置键。
         """
         from ui.material_composer import MaterialComposer
 
@@ -46,7 +141,8 @@ class WindowMaterialMixin:
             def theme_provider():
                 return getattr(self, "_theme", None)
 
-        self._material_composer = MaterialComposer(config, theme_provider)
+        self._material_composer = MaterialComposer(
+            config, theme_provider, surface=surface)
 
     def _material_enabled(self):
         """材质是否真的会画东西。"""

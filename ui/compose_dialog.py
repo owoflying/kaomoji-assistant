@@ -42,7 +42,21 @@ class ComposeDialog(QDialog):
 
     def __init__(self, theme=None, initial="", parent=None):
         super().__init__(parent)
+        # theme 为 None 时从主题包取（默认沿用主配置）——
+        # 原来只存不用，窗口一直是系统默认白底
+        if theme is None:
+            try:
+                from ui.window_material_mixin import surface_theme
+
+                theme, _p = surface_theme("dialog")
+            except Exception:
+                theme = None
         self._theme = theme
+        if theme is not None:
+            try:
+                self.setStyleSheet(theme.style_sheet())
+            except Exception:
+                pass
         self._quiet = False          # 程序化改动期间屏蔽联动
 
         self.setWindowTitle("组合颜文字")

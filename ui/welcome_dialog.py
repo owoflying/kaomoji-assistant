@@ -30,7 +30,6 @@ from PySide6.QtWidgets import (
     QComboBox, QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
 )
 
-from ui.win11_theme import Theme
 
 #: 特色介绍（图标 + 标题 + 一句话）
 HIGHLIGHTS = (
@@ -69,7 +68,10 @@ class WelcomeDialog(QDialog):
         self.setWindowFlags(
             self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
         self._config = dict(config or {})
-        t = Theme(theme_name)
+        # 从主题包取主题（默认沿用主配置）
+        from ui.window_material_mixin import surface_theme
+
+        t, _params = surface_theme("dialog")
         self.setStyleSheet(t.style_sheet())
         self.setMinimumWidth(600)
 

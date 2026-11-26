@@ -60,7 +60,8 @@ class PluginDialog(WindowMaterialMixin, QWidget):
         # 接入背景材质（插件弹窗也能吃到高级材质）
         try:
             self._init_material(_load_material_config(),
-                                theme_provider=lambda: self._theme)
+                                theme_provider=lambda: self._theme,
+                                surface="plugin")
         except Exception:
             pass
         self._drag_pos = None

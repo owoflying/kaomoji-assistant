@@ -12,7 +12,6 @@ from PySide6.QtWidgets import (
     QDialog, QLabel, QPushButton, QSpacerItem, QSizePolicy, QVBoxLayout,
 )
 
-from ui.win11_theme import Theme
 
 
 class UpdateDialog(QDialog):
@@ -22,7 +21,10 @@ class UpdateDialog(QDialog):
         self.setWindowFlags(
             self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint
         )
-        t = Theme(theme_name)
+        # 从主题包取主题：默认沿用主配置，dialog 表面有覆盖时用覆盖的
+        from ui.window_material_mixin import surface_theme
+
+        t, _params = surface_theme("dialog")
         self.setStyleSheet(t.style_sheet())
         self.setMinimumWidth(440)
         self.setFixedHeight(280)

@@ -608,7 +608,8 @@ class FramelessShell(QMainWindow):
         if c is None:
             from ui.material_composer import MaterialComposer
 
-            c = MaterialComposer(self.config, lambda: self.theme)
+            c = MaterialComposer(self.config, lambda: self.theme,
+                                 surface=getattr(self, "SURFACE_NAME", "main"))
             self._material_composer = c
         return c
 

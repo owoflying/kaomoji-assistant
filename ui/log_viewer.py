@@ -74,8 +74,9 @@ class LogViewer(WindowMaterialMixin, QWidget):
         self.setAttribute(Qt.WA_DeleteOnClose, True)
         self._init_window()
         # 接入背景材质：日志窗口也能吃到用户设置的高级材质
-        self._init_material(theme.config if hasattr(theme, "config") else
-                            _load_material_config())
+        self._init_material(
+            theme.config if hasattr(theme, "config") else _load_material_config(),
+            surface="log")
         self._init_ui()
         self._refresh()
 

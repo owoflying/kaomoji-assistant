@@ -195,6 +195,21 @@ class AppRuntime:
     def __init__(self, app, config):
         self.app = app
         self.config = config          # 权威配置字典：**原地更新**，引用始终不变
+
+        # ---- 崩溃兜底（始终开启）----
+        #
+        # 异常不再静默：写日志 + 弹窗告知 + 可导出诊断报告。
+        # 这里注入弹窗回调（无头/测试环境里 UI 层可能还没准备好，
+        # 回调内部会兜住异常，不影响安装）。
+        self._install_crash_guard()
+        # 动画开关集中读取（core/anim_settings 缓存配置引用）
+        try:
+            from core import anim_settings
+
+            anim_settings.install(self.config)
+        except Exception:
+            pass
+
         self._uia_warn_shown = False
         #: 情绪推荐"已展示待确认"：(emotion, source_text)。
         #: 面板关闭时若它还在，说明用户没采用这次推荐 → 弱负反馈。
@@ -357,6 +372,87 @@ class AppRuntime:
                 self.unified.update()
         except Exception as e:
             append_log("warn", "theme", "背景材质刷新失败：%r" % (e,))
+
+    def _install_crash_guard(self):
+        """安装崩溃兜底：异常不静默、程序不退出、可导出报告。
+
+        ## 三层
+
+            1. `core.crash_guard.install()` 捕获 sys / threading 的未捕获异常
+            2. 回调里弹 `ui.crash_dialog.CrashDialog`（非阻塞）
+            3. 弹窗提供「导出报告」，内含堆栈 + 环境 + 最近日志 + 配置
+
+        同一异常 30 秒内只弹一次（`crash_guard` 内部去重），
+        否则循环里的异常会刷屏。
+        """
+        try:
+            from core import crash_guard
+
+            crash_guard.set_alert_callback(self._on_crash_alert)
+            crash_guard.install()
+            append_log("info", "app", "崩溃兜底已启用（异常会弹窗提示并记录）")
+        except Exception as e:
+            append_log("error", "app", "崩溃兜底安装失败：%r" % (e,))
+
+        # ---- 开发者模式：error/exception 级别日志即时弹窗 ----
+        #
+        # 订阅中央日志流，而不是改每一个 append_log 调用点。
+        # 只有 `developer_mode` 打开时才真的弹（普通用户仍只看日志）。
+        try:
+            from core.applog import subscribe
+
+            self._log_unsubscribe = subscribe(self._on_log_for_dev)
+        except Exception:
+            pass
+
+    def _on_log_for_dev(self, level, source, message):
+        """日志订阅者：开发者模式下把 error / exception 弹出来。"""
+        try:
+            if level not in ("error", "exception"):
+                return
+            if not bool(self.config.get("developer_mode", False)):
+                return
+            summary = "[%s] %s" % (source or "-", str(message)[:200])
+            self._dev_error_alert(summary, str(message))
+        except Exception:
+            pass
+
+    def _on_crash_alert(self, summary, detail):
+        """崩溃回调：弹窗告知用户（非阻塞）。"""
+        try:
+            from ui.crash_dialog import show_crash
+
+            parent = self.unified if getattr(self, "unified", None) else None
+            # 保存引用，避免被 GC 掉导致窗口一闪而过
+            self._crash_dialogs = getattr(self, "_crash_dialogs", [])
+            dlg = show_crash(summary, detail, parent=parent)
+            if dlg is not None:
+                self._crash_dialogs.append(dlg)
+                # 只保留最近 3 个引用
+                self._crash_dialogs = self._crash_dialogs[-3:]
+                append_log("error", "app", "已弹出崩溃提示：%s" % summary)
+        except Exception:
+            pass
+
+    def _dev_error_alert(self, summary, detail):
+        """开发者模式下的即时报错弹窗。
+
+        只有在 `developer_mode` 打开时才弹——普通用户不需要看到
+        每一次内部错误的细节（那些仍然写日志）。
+        """
+        try:
+            if not bool(self.config.get("developer_mode", False)):
+                return
+            from ui.crash_dialog import show_error
+
+            parent = self.unified if getattr(self, "unified", None) else None
+            self._error_dialogs = getattr(self, "_error_dialogs", [])
+            dlg = show_error(summary, detail, parent=parent)
+            if dlg is not None:
+                self._error_dialogs.append(dlg)
+                self._error_dialogs = self._error_dialogs[-3:]
+        except Exception:
+            pass
 
     def _apply_initial_theme(self):
         """启动时应用主题（含 "system" 解析）。"""

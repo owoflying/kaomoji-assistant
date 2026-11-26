@@ -157,6 +157,16 @@ class AnimatedStackedWidget(QStackedWidget):
             self.setCurrentWidget(widget)
             return
 
+        # 开关：关掉就静态切换，不留任何过渡
+        try:
+            from core.anim_settings import enabled as _anim_on
+
+            if not _anim_on("page_switch"):
+                self.setCurrentWidget(widget)
+                return
+        except Exception:
+            pass
+
         import time as _t
 
         self._busy = True

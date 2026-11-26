@@ -93,6 +93,17 @@ class HoverFader(QObject):
         return False
 
     def _animate_to(self, target):
+        # 开关：关掉时直接跳到目标值（无过渡，但功能仍正常）
+        try:
+            from core.anim_settings import enabled as _anim_on
+
+            if not _anim_on("hover"):
+                self._anim.stop()
+                self._progress = float(target)
+                self._on_value(target)
+                return
+        except Exception:
+            pass
         try:
             self._anim.stop()
             self._anim.setStartValue(float(self._progress))

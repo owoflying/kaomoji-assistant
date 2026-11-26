@@ -684,6 +684,23 @@ class PickerWindow(WindowMaterialMixin, QWidget):
         self._anim.setStartValue(self.windowOpacity())
         self._anim.setEndValue(0.0)
         self._anim.start()
+
+        # 淡出同时轻微下沉——与弹出时的上浮对称，动作才有"收回去"的感觉。
+        # 只下沉 3px（弹出是 4px）：消失比出现更应该"快走"，下移少一点显得利落。
+        try:
+            from core.anim_settings import enabled as _anim_on
+
+            if _anim_on("picker") and self._slide_anim is not None:
+                self._slide_anim.stop()
+                base = self.pos()
+                self._slide_anim = QPropertyAnimation(self, b"pos", self)
+                self._slide_anim.setDuration(FADE_MS)
+                self._slide_anim.setStartValue(base)
+                self._slide_anim.setEndValue(QPoint(base.x(), base.y() + 3))
+                self._slide_anim.setEasingCurve(QEasingCurve.OutQuad)
+                self._slide_anim.start(QAbstractAnimation.DeleteWhenStopped)
+        except Exception:
+            pass
     def _finalize_hide(self):
         """真正隐藏：停动画、透明度归零、清瞬态，再交给 QWidget.hide()。"""
         self._anim.stop()
@@ -869,13 +886,26 @@ class PickerWindow(WindowMaterialMixin, QWidget):
         """
         if self._hiding or not self.isVisible():
             return
+        # 开关：关掉动画时直接设为完全不透明（否则窗口会永远透明）
+        try:
+            from core.anim_settings import enabled as _anim_on
+
+            anim_on = _anim_on("picker")
+        except Exception:
+            anim_on = True
+        if not anim_on:
+            self._anim.stop()
+            self.setWindowOpacity(1.0)
+            return
         self._anim.stop()
         self._anim.setStartValue(0.0)
         self._anim.setEndValue(1.0)
         self._anim.start()
 
-        # ---- 上浮 ----
+        # ---- 上浮（同样受 picker 动画开关控制）----
         try:
+            if not anim_on:
+                raise RuntimeError("anim off")
             if self._slide_anim is not None:
                 self._slide_anim.stop()
             base = self.pos()

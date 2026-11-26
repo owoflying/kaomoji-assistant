@@ -104,7 +104,73 @@ class AppearancePage(QWidget):
         self._hint(lay, "设置了背景图时，面板会自动让位给背景图（始终看得见）；"
                         "没设背景图时显示主题实色面板。")
         root.addWidget(c)
+
+        # ---- 动画 ----
+        root.addWidget(section_title("动画"))
+        c = card()
+        lay = card_layout(c)
+        self._anim_checks = {}
+        from core.anim_settings import ANIMATIONS
+
+        for name, key, label, desc in ANIMATIONS:
+            chk = self._anim_toggle(name, key)
+            self._anim_checks[name] = chk
+            self._add_row(lay, label, chk)
+        self._add_row(lay, "一键全开/全关", self._anim_all_row())
+        self._hint(lay, "关掉只是让动画变成瞬间完成，功能本身不受影响。"
+                        "低配机器或远程桌面下全关能降低 CPU 占用。"
+                        "（首次启动的欢迎页动画不受这里控制）")
+        root.addWidget(c)
         root.addStretch(1)
+
+    # ---------- 动画开关 ----------
+    def _anim_toggle(self, name, key):
+        """单个动画开关。"""
+        chk = ToggleSwitch(self._theme)
+        chk.toggled.connect(lambda v, k=key: self._push_anim(k, v))
+        return chk
+
+    def _anim_all_row(self):
+        row = QHBoxLayout()
+        btn = QPushButton("全部开启")
+        btn.clicked.connect(lambda: self._set_all_anims(True))
+        row.addWidget(btn)
+        btn2 = QPushButton("全部关闭")
+        btn2.clicked.connect(lambda: self._set_all_anims(False))
+        row.addWidget(btn2)
+        row.addStretch(1)
+        return row
+
+    def _set_all_anims(self, value):
+        """一键开关所有动画。"""
+        if self._loading:
+            return
+        from core.anim_settings import set_all
+
+        cfg = self._ctrl.config()
+        set_all(cfg, value)
+        self.refresh_from_controller()
+        if self._on_apply is not None:
+            try:
+                self._on_apply(dict(cfg))
+            except Exception:
+                pass
+
+    def _push_anim(self, key, value):
+        """改一个动画开关。
+
+        ⚠ 动画开关不属于外观主题包，它管的是交互行为，
+        所以直接写配置、不走 _push（后者会把未知键丢掉）。
+        """
+        if self._loading:
+            return
+        cfg = self._ctrl.config()
+        cfg[key] = bool(value)
+        if self._on_apply is not None:
+            try:
+                self._on_apply(dict(cfg))
+            except Exception:
+                pass
 
     # ---------- 界面切换 ----------
     def _surface_row(self):
@@ -688,6 +754,16 @@ class AppearancePage(QWidget):
 
             self._refresh_image_label()
             self._refresh_main_crop_label()
+            # 动画开关（读原始配置，不属于主题包）
+            try:
+                from core.anim_settings import ANIMATIONS as _ANIMS
+
+                for name, key, _label, _desc in _ANIMS:
+                    chk = getattr(self, "_anim_checks", {}).get(name)
+                    if chk is not None:
+                        chk.setChecked(bool(cfg.get(key, True)))
+            except Exception:
+                pass
         finally:
             self._loading = False
         self._sync_preset_btn()

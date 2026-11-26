@@ -423,6 +423,16 @@ class ThemeFader(QObject):
             _drain(apply_fn)
             return
 
+        # 开关：用户关掉了"切换主题"动画 → 直接应用，不做遮罩过渡
+        try:
+            from core.anim_settings import enabled as _anim_on
+
+            if not _anim_on("theme"):
+                _drain(apply_fn)
+                return
+        except Exception:
+            pass
+
         self._stop_anim()
         self._cancel_pending()
         self._remember_margins()

@@ -22,6 +22,27 @@ _MUTED_QT_LOGS = (
 MUTED_LOG_COUNT = {"n": 0}
 
 
+#: 日志订阅者：`fn(level, source, line)`。
+#:
+#: 用于"开发者模式下 error/exception 即时弹窗"这类需求——
+#: 不去改每一个 `append_log` 调用点，而是让订阅者在中央收到通知。
+_LOG_SUBSCRIBERS = []
+
+
+def subscribe(fn):
+    """订阅新日志（返回取消订阅函数）。"""
+    if fn not in _LOG_SUBSCRIBERS:
+        _LOG_SUBSCRIBERS.append(fn)
+
+    def _off():
+        try:
+            _LOG_SUBSCRIBERS.remove(fn)
+        except ValueError:
+            pass
+
+    return _off
+
+
 def append_log(level, source, message):
     """把一条日志写入环形缓冲（超过上限丢弃最旧的）。"""
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -32,6 +53,12 @@ def append_log(level, source, message):
     LOG_BUFFER.append(line)
     if len(LOG_BUFFER) > LOG_BUFFER_MAX:
         del LOG_BUFFER[:len(LOG_BUFFER) - LOG_BUFFER_MAX]
+    # 通知订阅者（异常必须吞掉：日志系统自己不能因为订阅者报错而崩）
+    for fn in list(_LOG_SUBSCRIBERS):
+        try:
+            fn(level, source, message)
+        except Exception:
+            pass
 
 
 def install_qt_log_filter():

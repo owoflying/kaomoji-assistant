@@ -57,6 +57,16 @@ class ToggleSwitch(QAbstractButton):
             return
         self._checked = c
         self._anim.stop()
+        # 开关：关掉动画时直接跳到目标位置（滑块仍然会移动，只是瞬时）
+        try:
+            from core.anim_settings import enabled as _anim_on
+
+            if not _anim_on("toggle"):
+                self.set_pos(1.0 if c else 0.0)
+                self.toggled.emit(c)
+                return
+        except Exception:
+            pass
         self._anim.setStartValue(self._pos)
         self._anim.setEndValue(1.0 if c else 0.0)
         self._anim.start()

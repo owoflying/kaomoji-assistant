@@ -44,6 +44,7 @@ class GlassMenu(QMenu):
         self._cache = None
         self._cache_key = None
         self._init_material(config, theme_provider, surface)
+        self._apply_translucent()
 
     # ---------------------------------------------------------- 初始化
     def _init_material(self, config, theme_provider, surface):
@@ -71,6 +72,32 @@ class GlassMenu(QMenu):
             self._composer = None
 
     # ---------------------------------------------------------- 刷新
+    def _apply_translucent(self):
+        """让菜单窗口真正半透明。
+
+        ## 为什么必须做
+
+        普通 `QMenu` 是一个**不透明**的顶层窗口（`WA_TranslucentBackground`
+        为 False）。在这种窗口上画半透明内容，透明部分会被窗口的默认
+        底色（通常是 palette 的 Window 色）填掉，看起来仍是一块实色。
+
+        所以材质开启时要给菜单加：
+
+            WA_TranslucentBackground   窗口支持 alpha
+            FramelessWindowHint        由我们自己的圆角负责，不要系统边框
+
+        材质关闭（用户没开背景图）时不需要，保持原生外观即可。
+        """
+        try:
+            if not self.material_enabled():
+                return
+            self.setAttribute(Qt.WA_TranslucentBackground, True)
+            self.setWindowFlag(Qt.FramelessWindowHint, True)
+            # 让 QMenu 不再画自己的不透明底
+            self.setAttribute(Qt.WA_NoSystemBackground, True)
+        except Exception:
+            pass
+
     def refresh_material(self, config=None):
         """配置或主题变了：更新 composer 并重绘。"""
         try:
@@ -114,19 +141,35 @@ class GlassMenu(QMenu):
         if pm is not None and not pm.isNull():
             p.drawPixmap(0, 0, pm)
 
-        # 2. 半透明白/黑：菜单要保证文字可读，比窗口更"实"一些
-        veil = QColor(255, 255, 255, 200) if not dark else QColor(32, 32, 32, 205)
+        # 2. 半透明底色。
+        #
+        # ⚠ 这一层必须**很淡**。
+        #
+        # 第一版用了 alpha=200（78% 白），把下面的玻璃背景几乎完全遮住，
+        # 渲染出来就是一块白板——和没做材质一样。用户看到的仍然是
+        # "普通白菜单"。
+        #
+        # 菜单确实需要比窗口更实（文字要看清），但靠的是：
+        #   一次淡淡的底色（alpha≈70） + 一层更强的顶部高光
+        # 而不是一层厚白。这样既能看清字，又能看见背景。
+        if dark:
+            veil = QColor(24, 24, 28, 118)
+        else:
+            veil = QColor(255, 255, 255, 56)
         p.fillRect(0, 0, w, h, veil)
 
-        # 3. 釉面高光：顶部亮、往下衰减
+        # 3. 釉面高光：顶部亮、往下衰减。
+        #
+        # 菜单文字可读性主要由"顶部更亮"来保证——内容区在菜单上半部分，
+        # 那里高光最强，所以字始终清楚。
         g = QLinearGradient(0, 0, 0, h)
         if dark:
-            g.setColorAt(0.0, QColor(255, 255, 255, 22))
-            g.setColorAt(0.5, QColor(255, 255, 255, 8))
+            g.setColorAt(0.0, QColor(255, 255, 255, 26))
+            g.setColorAt(0.5, QColor(255, 255, 255, 10))
             g.setColorAt(1.0, QColor(255, 255, 255, 0))
         else:
-            g.setColorAt(0.0, QColor(255, 255, 255, 120))
-            g.setColorAt(0.5, QColor(255, 255, 255, 40))
+            g.setColorAt(0.0, QColor(255, 255, 255, 110))
+            g.setColorAt(0.5, QColor(255, 255, 255, 44))
             g.setColorAt(1.0, QColor(255, 255, 255, 0))
         p.fillRect(0, 0, w, h, g)
         p.end()

@@ -93,10 +93,12 @@ class WelcomeDialog(QDialog):
         root.addWidget(sub)
 
         # ---------- 特色 ----------
-        root.addWidget(self._highlight_block())
+        self._highlight_widget = self._highlight_block()
+        root.addWidget(self._highlight_widget)
 
         # ---------- 基本配置 ----------
-        root.addWidget(self._setup_block())
+        self._setup_widget = self._setup_block()
+        root.addWidget(self._setup_widget)
 
         # ---------- 按钮 ----------
         row = QHBoxLayout()
@@ -113,6 +115,56 @@ class WelcomeDialog(QDialog):
         start.clicked.connect(self.accept)
         row.addWidget(start)
         root.addLayout(row)
+
+        # 记住"逐块浮现"的顺序：标题 → 说明 → 特色 → 配置 → 按钮
+        self._reveal_widgets = [title, sub, self._highlight_widget,
+                                self._setup_widget, start]
+        self._reveal_anims = []
+        self._reveal_done = False
+
+    # ---------- 入场动画 ----------
+    def showEvent(self, e):
+        """显示时跑入场动画：窗口淡入 + 内容逐块浮现。
+
+        ## 为什么要在这里做
+
+        欢迎界面是用户第一次见到这个程序的地方，它决定了第一印象。
+        原来是个"啪地弹出来"的静态窗口——没有任何过渡，
+        和现在主界面的丝滑感完全脱节。
+
+        ## 顺序
+
+            0ms     所有内容 opacity=0（预先设好，避免闪现）
+            0ms     窗口整体淡入 220ms
+            180ms   标题出现
+            250ms   说明
+            320ms   特色块
+            390ms   配置块
+            460ms   按钮
+
+        窗口淡入先跑 180ms 再开始逐块，避免两者叠加显得糊。
+        """
+        super().showEvent(e)
+        if self._reveal_done:
+            return
+        self._reveal_done = True
+        try:
+            from ui.reveal_anim import (
+                install_button_hover, reveal_window, stagger_reveal,
+            )
+
+            reveal_window(self, fade_ms=220)
+            self._reveal_anims = stagger_reveal(
+                self._reveal_widgets, delay_step=70,
+                duration=300, start_delay=180)
+            install_button_hover(self)
+        except Exception:
+            # 动画失败不能影响窗口正常显示：把内容恢复成完全可见
+            for w in getattr(self, "_reveal_widgets", []):
+                try:
+                    w.setGraphicsEffect(None)
+                except Exception:
+                    pass
 
     def _highlight_block(self):
         box = QWidget()

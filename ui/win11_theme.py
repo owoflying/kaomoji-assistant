@@ -782,16 +782,22 @@ class Theme:
         """
 
 
-    def menu_style(self):
+    def menu_style(self, glass=False):
         """QMenu 专属样式表（菜单项/分隔符），供托盘菜单等独立弹出菜单显式 setStyleSheet。
+
+        :param glass: 材质开启时传 True —— 菜单背景设为**透明**，
+                      让 ui/glass_menu.GlassMenu 自绘的玻璃底露出来。
+                      否则 QSS 的纯色背景会把自绘层整个盖住。
 
         独立 QMenu（无父 widget）不一定继承 app 全局 QSS，因此由调用方显式应用并随主题刷新。
         """
         t = self
+        bg = "transparent" if glass else t.card
+        border = "transparent" if glass else t.card_border
         return f"""
         QMenu {{
-            background: {t.card};
-            border: 1px solid {t.card_border};
+            background: {bg};
+            border: 1px solid {border};
             border-radius: {RADIUS_CARD}px;
             padding: 6px;
             color: {t.text};

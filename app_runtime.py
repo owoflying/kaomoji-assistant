@@ -17,7 +17,7 @@
 """
 from PySide6.QtCore import QObject, QTimer, Qt, Signal
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QMenu, QMessageBox, QSystemTrayIcon
+from PySide6.QtWidgets import QMessageBox, QSystemTrayIcon
 
 from core import autostart, runtime, uia_elevation, win_utils
 from core.app_icon import make_icon
@@ -400,7 +400,8 @@ class AppRuntime:
             self.app.setStyleSheet(ss)
             _apply_tooltip_palette(self.app, theme)
             if self.menu is not None:
-                self.menu.setStyleSheet(theme.menu_style())
+                self.menu.setStyleSheet(theme.menu_style(
+            glass=getattr(self.menu, "material_enabled", lambda: False)()))
             self._applied_style = ss
             return None
 
@@ -410,7 +411,8 @@ class AppRuntime:
             self._applied_style = ss
             yield                      # 让事件循环跑一轮（遮罩/图标能刷一帧）
             if self.menu is not None:
-                self.menu.setStyleSheet(theme.menu_style())
+                self.menu.setStyleSheet(theme.menu_style(
+            glass=getattr(self.menu, "material_enabled", lambda: False)()))
             yield
 
         return _steps()
@@ -643,10 +645,21 @@ class AppRuntime:
         icon = make_icon()
         self.app.setWindowIcon(icon)
         self.tray = QSystemTrayIcon(icon, self.app)
-        self.menu = QMenu()
-        self.menu.setStyleSheet(
-            (getattr(self, "theme_obj", None)
-             or build_theme(self.config)).menu_style())
+        # 托盘菜单用 GlassMenu：**自绘**玻璃底（背景图裁剪 + 模糊 + 釉面高光）。
+        #
+        # 普通 QMenu 的背景由 Qt 样式引擎画，QSS 只能填纯色——
+        # 之前只做了换色，用户看到的就是个普通白菜单，
+        # 和高级背景放在一起非常割裂（用户反馈过多次）。
+        # GlassMenu 覆盖 paintEvent，复用 MaterialComposer，
+        # 所以它自动沿用主配置的材质。
+        from ui.glass_menu import GlassMenu
+
+        self.menu = GlassMenu(
+            config=self.config,
+            theme_provider=lambda: getattr(self, "theme_obj", None))
+        _t0 = (getattr(self, "theme_obj", None)
+               or build_theme(self.config))
+        self.menu.setStyleSheet(_t0.menu_style(glass=self.menu.material_enabled()))
 
         show_action = QAction("唤起面板", self.app)
         show_action.triggered.connect(self.window.toggle)
@@ -1264,7 +1277,8 @@ class AppRuntime:
         self.app.setStyleSheet(
             theme.style_sheet(glass=_glass_enabled(self.config)))
         if self.menu is not None:
-            self.menu.setStyleSheet(theme.menu_style())
+            self.menu.setStyleSheet(theme.menu_style(
+            glass=getattr(self.menu, "material_enabled", lambda: False)()))
         set_app_theme(theme)
         if self.window is not None:
             self.window.apply_config(self.config)
@@ -1330,7 +1344,11 @@ class AppRuntime:
                 from ui.theme_manager import build_theme
 
                 t = build_theme(self.config)
-            menu.setStyleSheet(t.menu_style())
+            # 材质开启 → 背景透明，露出 GlassMenu 自绘的玻璃层
+            glass = bool(getattr(menu, "material_enabled", lambda: False)())
+            if hasattr(menu, "refresh_material"):
+                menu.refresh_material()
+            menu.setStyleSheet(t.menu_style(glass=glass))
         except Exception as e:
             append_log("warn", "theme", "托盘菜单换肤失败：%r" % (e,))
 

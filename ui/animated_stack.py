@@ -1,17 +1,61 @@
-"""带平滑过渡的 QStackedWidget 替代：仅「新页轻微上浮就位」，无透明度淡入。
+"""带平滑过渡的 QStackedWidget 替代：新页上浮 + 旧页截图淡出。
 
-设计要点（修复「切换透出桌面 / 卡顿」两项问题）：
-  * 切换时**不**对任何页面施加 QGraphicsOpacityEffect —— 该效果每帧需把整页
-    渲染到离屏缓冲再合成，大页面下极慢 → 卡顿；且 opacity<1 会让页面透出下方
-    半透明窗体 → 露出桌面。
-  * 旧页在 setCurrentWidget 时即被隐藏，仅「新页」从下方 rise 像素上浮就位，
-    全程页面不透明度恒为 1，绝不透出背后画面；顶部几像素留白是内容区亚克力
-    背景（与常态一致，非硬露桌面）。
-  * 动画期间**不**调用 setStyleSheet（避免整棵内容树样式重算导致的卡顿）。
+## 为什么不用 QGraphicsOpacityEffect
+
+最初试过给页面控件直接挂 `QGraphicsOpacityEffect`，但那个效果每帧都要把
+整页渲染到离屏缓冲再合成——大页面下极慢（实测切页卡 200ms+），
+而且 opacity<1 会让页面透出下方的半透明窗体，露出桌面。
+
+## 现在怎么做
+
+    * 新页：从下方 rise 像素**上浮**就位（位移动画，很便宜）
+    * 旧页：切换**之前**先 `grab()` 一张截图，切换后把截图当覆盖层
+      叠在最上面淡出。截图只有一张位图，淡出全靠调它的不透明度，
+      不涉及任何真控件重绘。
+
+这样既有交叉过渡的观感，又不会拖慢或透出桌面。
+
+## 动画期间不做的事
+
+* 不调 `setStyleSheet`（整棵内容树重新 polish，实测 260ms）
+* 不给真控件挂 graphics effect
 """
-from PySide6.QtWidgets import QStackedWidget
-from PySide6.QtCore import QAbstractAnimation, QPropertyAnimation, QEasingCurve, QPoint
+from PySide6.QtWidgets import QStackedWidget, QWidget
+from PySide6.QtCore import (
+    QAbstractAnimation, QEasingCurve, QPoint, QPropertyAnimation, Qt,
+)
 from PySide6.QtGui import QColor, QPainter
+
+
+class _FadeOverlay(QWidget):
+    """盖在内容区上的淡化层：只画一张截图，透明度靠属性动画驱动。"""
+
+    def __init__(self, parent, pixmap):
+        super().__init__(parent)
+        self._pixmap = pixmap
+        self._opacity = 1.0
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WA_NoSystemBackground, True)
+        self.setGeometry(parent.rect())
+
+    def get_opacity(self):
+        return self._opacity
+
+    def set_opacity(self, v):
+        self._opacity = max(0.0, min(1.0, float(v)))
+        self.update()
+
+    #: 供 QPropertyAnimation 绑定
+    opacity = property(get_opacity, set_opacity)
+
+    def paintEvent(self, _e):
+        if self._pixmap is None or self._pixmap.isNull():
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        p.setOpacity(self._opacity)
+        p.drawPixmap(0, 0, self._pixmap)
+        p.end()
 
 
 class AnimatedStackedWidget(QStackedWidget):
@@ -20,6 +64,7 @@ class AnimatedStackedWidget(QStackedWidget):
         self._busy = False
         #: 内容区表面背景色（None = 不画，靠样式表/父级）
         self._surface = None
+        self._overlay = None
 
     # ---------- 背景自绘 ----------
     def set_surface(self, color):
@@ -51,41 +96,97 @@ class AnimatedStackedWidget(QStackedWidget):
             p.end()
         super().paintEvent(e)
 
-    def slide_to(self, widget, duration=200, rise=8):
-        """切换到指定 widget，仅让新页做「上浮就位」过渡（无透明度变化）。
+    def slide_to(self, widget, duration=240, rise=10):
+        """切换到指定 widget：旧页截图淡出 + 新页上浮就位。
 
-        旧页在 setCurrentWidget 时随之隐藏，新页从下方 rise 像素处上浮到原位。
-        全程页面不透明度恒为 1，不会透出窗口背后画面；也不重算样式表，无卡顿。
+        :param duration: 过渡时长（ms）。240ms 是"能感知到但不拖沓"的长度
+        :param rise: 新页起始时比最终位置低多少像素
+
+        ## 步骤
+
+            1. 抓旧页截图（在切换之前，否则抓不到）
+            2. setCurrentWidget 切到新页
+            3. 新页从下方 rise 处上浮到原位
+            4. 旧页截图作为覆盖层淡出
+
+        截图淡出是**位图**操作，不涉及真控件重绘，所以比
+        QGraphicsOpacityEffect 便宜几个数量级。
         """
         if widget is None or widget is self.currentWidget() or self._busy:
             return
 
-        self.setCurrentWidget(widget)  # 旧页随之隐藏
+        old = self.currentWidget()
 
-        # 窗口未显示时 geometry 为无效/零尺寸，此时运行动画会导致后续布局压缩错乱，
-        # 直接切页更安全。
+        # 窗口未显示时 geometry 为无效/零尺寸，运行动画会导致布局压缩错乱
         geo = widget.geometry()
-        if geo.width() <= 0 or geo.height() <= 0:
+        if geo.width() <= 0 or geo.height() <= 0 or not self.isVisible():
+            self.setCurrentWidget(widget)
             return
 
-        self._busy = True
-        widget.setGraphicsEffect(None)  # 确保无残留透明度效果
+        # ---- 1. 抓旧页截图（必须在切换前）----
+        snapshot = None
+        try:
+            if old is not None:
+                snapshot = old.grab()
+        except Exception:
+            snapshot = None
 
-        # 新页：从下方 rise 像素处上浮就位（仅位移动画，不透明度恒为 1）
+        self._busy = True
+        self.setCurrentWidget(widget)
+        widget.setGraphicsEffect(None)
+
+        # ---- 2. 新页上浮 ----
+        end_pos = QPoint(geo.x(), geo.y())
         start_pos = QPoint(geo.x(), geo.y() + rise)
         widget.move(start_pos)
 
         anim = QPropertyAnimation(widget, b"pos", self)
         anim.setDuration(duration)
         anim.setStartValue(start_pos)
-        anim.setEndValue(QPoint(geo.x(), geo.y()))
+        anim.setEndValue(end_pos)
         anim.setEasingCurve(QEasingCurve.OutCubic)
 
-        def _finished():
-            widget.move(geo.x(), geo.y())
-            self._busy = False
+        # ---- 3. 旧页截图淡出 ----
+        overlay = None
+        fade = None
+        if snapshot is not None and not snapshot.isNull():
+            try:
+                overlay = _FadeOverlay(self, snapshot)
+                overlay.show()
+                overlay.raise_()
+                fade = QPropertyAnimation(overlay, b"opacity", self)
+                fade.setDuration(duration)
+                fade.setStartValue(1.0)
+                fade.setEndValue(0.0)
+                # 淡出用 OutQuad：开头掉得快些，尾巴收得柔和，
+                # 避免和新页上浮"同时结束"显得仓促
+                fade.setEasingCurve(QEasingCurve.OutQuad)
+                fade.start(QAbstractAnimation.DeleteWhenStopped)
+                self._overlay = overlay
+            except Exception:
+                overlay = None
 
-        anim.finished.connect(_finished)
-        # 先放置到起始位置再启动，避免首帧闪现
+        def _cleanup():
+            widget.move(end_pos)
+            self._busy = False
+            if overlay is not None:
+                try:
+                    overlay.hide()
+                    overlay.setParent(None)
+                    overlay.deleteLater()
+                except Exception:
+                    pass
+            self._overlay = None
+
+        anim.finished.connect(_cleanup)
         widget.move(start_pos)
         anim.start(QAbstractAnimation.DeleteWhenStopped)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        # 覆盖层跟着内容区大小走
+        if self._overlay is not None:
+            try:
+                self._overlay.setGeometry(self.rect())
+            except Exception:
+                pass

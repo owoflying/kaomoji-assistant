@@ -215,7 +215,8 @@ class AppearancePage(QWidget):
         cur = self._current_params()
         crop = edit_crop(path, (cur.get("crop_x", 0.0), cur.get("crop_y", 0.0),
                                 cur.get("crop_w", 0.0), cur.get("crop_h", 0.0)),
-                         parent=self, title="主窗口背景图 - 选择显示区域")
+                         parent=self, title="主窗口背景图 - 选择显示区域",
+                         preview_label="主窗口效果预览")
         if crop is None:
             return
         # crop 来自裁切对话框，是全图的相对比例；None/全 0 表示整张

@@ -263,7 +263,8 @@ class CropDialog(QDialog):
     """
 
     def __init__(self, image_path, crop=None, title="选择显示区域",
-                 preview_size=(240, 90), parent=None):
+                 preview_size=(240, 90), parent=None,
+                 preview_label="效果预览"):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.setModal(True)
@@ -284,7 +285,7 @@ class CropDialog(QDialog):
         # 右侧：预览 + 说明
         side = QVBoxLayout()
         side.setSpacing(8)
-        side.addWidget(QLabel("候选条效果预览"))
+        side.addWidget(QLabel(preview_label))
         self.preview = QLabel()
         self.preview.setFixedSize(QSize(*preview_size))
         self.preview.setAlignment(Qt.AlignCenter)
@@ -335,14 +336,16 @@ class CropDialog(QDialog):
         return self.canvas.crop()
 
 
-def edit_crop(image_path, crop=None, parent=None, title="选择显示区域"):
+def edit_crop(image_path, crop=None, parent=None, title="选择显示区域",
+              preview_label="效果预览"):
     """弹出裁切对话框。
 
     :return: (x, y, w, h) 或 None（用户取消）
     """
     if not image_path:
         return None
-    dlg = CropDialog(image_path, crop, title=title, parent=parent)
+    dlg = CropDialog(image_path, crop, title=title, parent=parent,
+                     preview_label=preview_label)
     if dlg.exec() == QDialog.Accepted:
         return dlg.result_crop()
     return None

@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import (
     Qt, Signal, QEvent, QTimer, QPoint, QPropertyAnimation, QEasingCurve,
+    QAbstractAnimation,
 )
 from PySide6.QtGui import QColor, QPainter, QGuiApplication, QCursor
 
@@ -314,6 +315,8 @@ class PickerWindow(WindowMaterialMixin, QWidget):
         self._anim.setDuration(FADE_MS)
         self._anim.setEasingCurve(QEasingCurve.OutCubic)
         self._anim.finished.connect(self._on_anim_finished)
+        #: 弹出时的上浮动画（见 _start_fade_in）
+        self._slide_anim = None
         # 失焦检测：面板可见时定期检查焦点是否还在输入框
         self._focus_timer = QTimer(self)
         self._focus_timer.setInterval(350)
@@ -850,13 +853,41 @@ class PickerWindow(WindowMaterialMixin, QWidget):
         super().showEvent(e)
         self.isVisibleChanged.emit(True)
     def _start_fade_in(self):
-        """首帧重绘之后再启动淡入（见 showEvent 注释）。"""
+        """首帧重绘之后再启动淡入 + 上浮（见 showEvent 注释）。
+
+        ## 为什么加位移
+
+        原来只有 `windowOpacity` 淡入——透明度从 0 到 1，位置完全不动，
+        观感是"啪地出现然后渐显"，很生硬。
+
+        现在叠加一个 4px 的上浮：从一开始就"从光标下方轻轻升起"。
+        位移只有几像素，但正是这点让弹出有"从哪里来"的方向感，
+        是"丝滑"和"卡顿"的观感分界。
+
+        `windowOpacity` 那套不能省——它解决的是分层窗口贴陈旧位图的问题
+        （见 `_init_window` 的长注释），和这里的位移动画互不冲突。
+        """
         if self._hiding or not self.isVisible():
             return
         self._anim.stop()
         self._anim.setStartValue(0.0)
         self._anim.setEndValue(1.0)
         self._anim.start()
+
+        # ---- 上浮 ----
+        try:
+            if self._slide_anim is not None:
+                self._slide_anim.stop()
+            base = self.pos()
+            self._slide_anim = QPropertyAnimation(self, b"pos", self)
+            self._slide_anim.setDuration(FADE_MS)
+            self._slide_anim.setStartValue(QPoint(base.x(), base.y() + 4))
+            self._slide_anim.setEndValue(base)
+            self._slide_anim.setEasingCurve(QEasingCurve.OutCubic)
+            self.move(base.x(), base.y() + 4)
+            self._slide_anim.start(QAbstractAnimation.DeleteWhenStopped)
+        except Exception:
+            pass
     def hideEvent(self, e):
         super().hideEvent(e)
         self.isVisibleChanged.emit(False)

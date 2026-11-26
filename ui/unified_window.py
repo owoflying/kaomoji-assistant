@@ -587,7 +587,22 @@ class UnifiedSettingsWindow(FramelessShell):
         if page is None:
             self._nav._materialize(key)
             page = self._nav.pages.get(key)
+            if page is not None:
+                self._install_hover_feedback(page)
         return page
+
+    def _install_hover_feedback(self, widget):
+        """给页面里的按钮装上平滑的悬停过渡。
+
+        在**页面首次物化时**统一装一次：项目里有 60+ 处 `QPushButton(...)`，
+        逐个改造不现实；这样新页面也自动覆盖到。
+        """
+        try:
+            from ui.hover_feedback import install_hover_faders
+
+            install_hover_faders(widget)
+        except Exception:
+            pass
 
     def __getattr__(self, name):
         """让 `self.about_page` 这类懒加载属性在第一次访问时自动物化。
@@ -663,6 +678,15 @@ class UnifiedSettingsWindow(FramelessShell):
     # ==================================================================
     def _set_page(self, key, animate=True):
         self._nav.set_page(key, animate)
+        # 懒加载的页面在这里才被造出来——统一补装悬停过渡。
+        #
+        # ⚠ 必须延迟到下一轮事件循环：页面刚构造时，内部一些按钮还挂在
+        # 尚未布局完成的子容器里，`findChildren` 抓不全（实测 14 个只抓到 4 个）。
+        # singleShot(0) 让布局先跑完，再扫一次。
+        from PySide6.QtCore import QTimer as _QTimer
+
+        page = self._nav.pages.get(key)
+        _QTimer.singleShot(0, lambda p=page: self._install_hover_feedback(p))
 
     def on_page_shown(self, key):
         """页面切到前台后的刷新钩子。"""

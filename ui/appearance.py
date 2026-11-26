@@ -29,6 +29,7 @@ APPEARANCE_KEYS = frozenset({
     "material_enabled", "material_type", "material_strength",
     "material_image_opacity", "material_dim",
     "material_saturate", "material_brightness",
+    "crop_x", "crop_y", "crop_w", "crop_h",
 })
 
 #: 材质类型的合法值
@@ -44,6 +45,11 @@ _DEFAULTS = {
     # 玻璃滤镜：饱和度/亮度决定"通透感"，是材质精致度的关键
     "material_saturate": (18, 10, 30),
     "material_brightness": (104, 80, 130),
+    # 主窗口背景图裁切（相对比例，全 0 = 整张）
+    "crop_x": (0.0, 0.0, 1.0),
+    "crop_y": (0.0, 0.0, 1.0),
+    "crop_w": (0.0, 0.0, 1.0),
+    "crop_h": (0.0, 0.0, 1.0),
     # 候选条独立外观
     "picker_material_strength": (55, 0, 100),
     "picker_image_opacity": (100, 0, 100),
@@ -74,6 +80,9 @@ class AppearanceState:
                  "panel_alpha", "opacity", "material_enabled", "material_type",
                  "material_strength", "material_image_opacity", "material_dim",
                  "material_saturate", "material_brightness",
+    "crop_x", "crop_y", "crop_w", "crop_h",
+                 # 主窗口背景图的裁切区域（相对比例）
+                 "crop_x", "crop_y", "crop_w", "crop_h",
                  # 候选条独立外观
                  "picker_material_enabled", "picker_use_own_image",
                  "picker_material_type", "picker_material_strength",

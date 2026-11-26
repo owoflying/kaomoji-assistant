@@ -1,4 +1,4 @@
-﻿"""外观页：主题、透明度、背景材质的统一入口。
+"""外观页：主题、透明度、背景材质的统一入口。
 
 ## 为什么要独立成页
 
@@ -134,6 +134,20 @@ class AppearancePage(QWidget):
         except Exception:
             return "main"
 
+    def _current_params(self):
+        """当前选中界面**实际生效**的外观参数（主配置 + 该界面覆盖）。
+
+        ⚠ 不要用 `self._ctrl.state()`：controller 只认平铺的旧键，
+        而实际生效值是主题包按界面解析出来的。两者在"候选条独立配置"
+        时会不一致。
+        """
+        try:
+            from core.theme_profile import resolve
+
+            return resolve(self._ctrl.config(), self._current_surface())
+        except Exception:
+            return {}
+
     def _on_surface_changed(self):
         if self._loading:
             return
@@ -198,12 +212,13 @@ class AppearancePage(QWidget):
 
             QMessageBox.information(self, "裁切", "请先选择一张背景图。")
             return
-        st = self._ctrl.state()
-        crop = edit_crop(path, (st.crop_x, st.crop_y,
-                                st.crop_w, st.crop_h),
+        cur = self._current_params()
+        crop = edit_crop(path, (cur.get("crop_x", 0.0), cur.get("crop_y", 0.0),
+                                cur.get("crop_w", 0.0), cur.get("crop_h", 0.0)),
                          parent=self, title="主窗口背景图 - 选择显示区域")
         if crop is None:
             return
+        # crop 来自裁切对话框，是全图的相对比例；None/全 0 表示整张
         self._push(crop_x=crop[0], crop_y=crop[1],
                    crop_w=crop[2], crop_h=crop[3])
         self._refresh_main_crop_label()
@@ -213,15 +228,18 @@ class AppearancePage(QWidget):
         self._refresh_main_crop_label()
 
     def _refresh_main_crop_label(self):
-        st = self._ctrl.state()
+        cur = self._current_params()
         try:
-            if st.crop_w <= 0 or st.crop_h <= 0:
+            cw = float(cur.get("crop_w", 0.0))
+            ch = float(cur.get("crop_h", 0.0))
+            if cw <= 0 or ch <= 0:
                 self.main_crop_label.setText("整张")
             else:
                 self.main_crop_label.setText(
                     "%d%% × %d%% @ (%d%%, %d%%)" % (
-                        round(st.crop_w * 100), round(st.crop_h * 100),
-                        round(st.crop_x * 100), round(st.crop_y * 100)))
+                        round(cw * 100), round(ch * 100),
+                        round(float(cur.get("crop_x", 0.0)) * 100),
+                        round(float(cur.get("crop_y", 0.0)) * 100)))
         except Exception:
             pass
 
@@ -423,6 +441,10 @@ class AppearancePage(QWidget):
         cfg = self._ctrl.config()
 
         # 旧键名 → 主题包字段名
+        #
+        # ⚠ 漏了任何一项都会静默丢弃改动（用户点"选择显示区域"后
+        # 什么都没发生）。裁切四项就是漏掉过——报 AttributeError 之前
+        # 先被这里吃掉，表现为"点击没反应"。
         alias = {
             "material_strength": "material_strength",
             "material_saturate": "material_saturate",
@@ -431,6 +453,12 @@ class AppearancePage(QWidget):
             "material_type": "material_type",
             "material_enabled": "material_enabled",
             "panel_alpha": "panel_alpha",
+            "image_opacity": "image_opacity",
+            # 背景图裁切
+            "crop_x": "crop_x",
+            "crop_y": "crop_y",
+            "crop_w": "crop_w",
+            "crop_h": "crop_h",
         }
         patch = {}
         for key, val in changes.items():

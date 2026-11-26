@@ -1,49 +1,45 @@
-"""首次使用引导：教用户怎么用、帮做几项基本配置、顺带介绍亮点。
+"""首次使用引导：**分步向导**，一步一个功能。
 
-## 定位（重要）
+## 为什么改成分步
 
-这不是"免责声明"，而是**新手引导**。三件事：
+原来是一屏塞三块（特色列表 + 配置 + 按钮）。用户反馈：
 
-    1. 告诉用户这软件怎么用（热键、候选条、选字）
-    2. 帮他把最基本的两项配置定下来（热键、主题）
-    3. 介绍值得一试的能力（插件、UIA 提权、自动更新）
+    "多添加点东西啊，然后不要那么密集，优雅点，分步来，
+     一个功能一步，可以点击下一步"
 
-**风险提示不在这里**。UIA 提权和插件各自在"第一次启用时"单独提示
-（见 `ui/risk_dialog.py`）——谁用谁看，比在欢迎页一次性堆所有免责条款
-更符合用户的阅读习惯。
+确实——一屏把所有信息推给新用户，密集且没有重点，
+最后"读完再说"的心态占上风，什么都记不住。
 
-## 语言风格
+## 现在的结构
 
-说人话：写"能干什么"而不是"不会留下什么副作用"；
-写"按 Ctrl+Shift+K 叫出来"而不是"通过全局快捷键唤起候选面板"。
+    步骤 0  欢迎        （一句话说明这是什么）
+    步骤 1  唤起热键    （怎么用：按一下就叫出来）
+    步骤 2  智能推荐    （情绪联想）
+    步骤 3  插件扩展    （能装东西）
+    步骤 4  自动更新    （后台维护）
+    步骤 5  个性化      （主题 + 热键，唯一可以改设置的一步）
 
-## 只在真正第一次出现
+每页一个大图标、标题、一段说明，底部「上一步 / 下一步」。
+最后一页按钮变成「开始使用」。
 
-用独立标记文件判定（`welcome_shown.txt`），与版本号无关。
-点「开始使用」才算完成；关掉窗口的用户下次还会看到。
+## 动画
+
+* 窗口整体淡入
+* 每次翻页：新页从右侧轻滑入场 + 淡入（方向与"下一步"一致）
+* 内容元素在页内错峰浮现，不密集
 """
 import os
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import (
+    QAbstractAnimation, QEasingCurve, QPropertyAnimation, QPoint, Qt, QTimer,
+)
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
+    QComboBox, QDialog, QGraphicsOpacityEffect, QHBoxLayout, QLabel,
+    QPushButton, QVBoxLayout, QWidget,
 )
 
-
-#: 特色介绍（图标 + 标题 + 一句话）
-HIGHLIGHTS = (
-    ("⌨", "随手叫出来",
-     "任何程序里按 Ctrl+Shift+K，候选条就贴在光标旁边出现。"),
-    ("💬", "猜你想说什么",
-     "打出「开心」「好累」这类词，会自动推荐对应表情。"),
-    ("🧩", "可以装插件",
-     "在「插件」页能加新表情库、改上屏文字，甚至改界面。"),
-    ("🔄", "自己保持更新",
-     "新版本会在后台下好，关掉程序时顺手装上。"),
-)
-
-#: 可选热键（label, 配置值）
+#: 热键预设
 HOTKEY_PRESETS = (
     ("Ctrl+Shift+K（默认）", "<ctrl>+<shift>+k"),
     ("Ctrl+Alt+K", "<ctrl>+<alt>+k"),
@@ -51,16 +47,60 @@ HOTKEY_PRESETS = (
     ("Alt+`", "<alt>+`"),
 )
 
-#: 应用内固定用深/浅色
+#: 外观预设（应用内固定用词：浅色 / 深色）
 THEME_PRESETS = (
     ("跟随系统", "system"),
     ("浅色", "light"),
     ("深色", "dark"),
 )
 
+#: 向导步骤：(大图标, 标题, 正文, 附加行的标题（None = 没有）)
+STEPS = (
+    ("👋", "欢迎使用颜文字输入辅助器",
+     "一个常驻托盘的小工具，让你在任何程序里随手打出颜文字，不用记符号。\n\n"
+     "接下来用 30 秒带你看看它能做什么。", None),
+    ("⌨", "按一下，就叫出来",
+     "在任何程序里按下**唤起热键**，候选条就会贴在光标旁边出现。\n\n"
+     "用数字键 1~9 选，空格或回车直接上屏，Esc 关掉。", None),
+    ("💬", "听得懂你在说什么",
+     "输入框里打出「开心」「好累」这类词，它会认出情绪，"
+     "自动推荐对应的表情。\n\n"
+     "你每次的选择都会被记住——用久了，常点的那几个会排在前面。", None),
+    ("🧩", "能装插件",
+     "在「插件」页可以添加新的表情库、改写上屏文字，甚至改造界面外观。\n\n"
+     "不喜欢默认的？换掉就行。", None),
+    ("🔄", "自己保持更新",
+     "新版本会在后台悄悄下好，关掉程序时顺手装上。\n\n"
+     "不想被打扰可以在「设置」里关掉自动更新。", None),
+    ("🎨", "最后，挑两件事",
+     "选好唤起热键和外观偏好就能开始了。\n\n"
+     "这些之后随时都能在「设置 → 外观」里改。", "setup"),
+)
+
+
+#: 特色条目（图标, 名称, 说明）。
+#:
+#: ⚠ 这是**旧接口**：分步向导改造后内容已挪进 STEPS。
+#: 保留它是为了不破坏外部引用（测试、插件），值从 STEPS 派生，
+#: 两边永远一致。
+def _highlight_from_step(step):
+    """从 STEPS 的一个条目提取（图标, 名称, 首段说明）。"""
+    icon, title, text, _extra = step
+    first = text.split(chr(10) * 2)[0]
+    return (icon, title, first.replace('**', ''))
+
+
+#: 特色条目（图标, 名称, 说明）—— 旧接口，供外部引用。
+#:
+#: 分步向导改造后内容在 STEPS 里，这里派生出来保证两边一致。
+HIGHLIGHTS = tuple(_highlight_from_step(s) for s in STEPS[1:5])
+
 
 class WelcomeDialog(QDialog):
-    """首次使用引导（三步合一，不强制勾选任何东西）。"""
+    """首次使用引导：分步向导。"""
+
+    #: 兼容旧调用 WelcomeDialog.maybe_show(...)
+    maybe_show = staticmethod(lambda *a, **kw: maybe_show(*a, **kw))
 
     def __init__(self, theme_name="light", version="", config=None, parent=None):
         super().__init__(parent)
@@ -73,135 +113,106 @@ class WelcomeDialog(QDialog):
 
         t, _params = surface_theme("dialog")
         self.setStyleSheet(t.style_sheet())
-        self.setMinimumWidth(600)
+        self.setMinimumWidth(560)
+        self.setMinimumHeight(420)
 
         #: 用户在引导页里选的配置（点「开始使用」后由调用方合并进主配置）
         self.chosen = {}
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(30, 26, 30, 22)
-        root.setSpacing(16)
-
-        # ---------- 标题 ----------
-        title = QLabel("欢迎使用颜文字输入辅助器")
-        title.setFont(QFont("Microsoft YaHei UI", 17, QFont.Weight.Bold))
-        root.addWidget(title)
-
-        sub = QLabel("一款常驻托盘的小工具：随手打颜文字，不用记符号。")
-        sub.setObjectName("BodyText")
-        sub.setWordWrap(True)
-        root.addWidget(sub)
-
-        # ---------- 特色 ----------
-        self._highlight_widget = self._highlight_block()
-        root.addWidget(self._highlight_widget)
-
-        # ---------- 基本配置 ----------
-        self._setup_widget = self._setup_block()
-        root.addWidget(self._setup_widget)
-
-        # ---------- 按钮 ----------
-        row = QHBoxLayout()
-        row.setSpacing(10)
-        self._skip = QPushButton("跳过")
-        self._skip.clicked.connect(self.reject)
-        row.addWidget(self._skip)
-        row.addStretch(1)
-
-        start = QPushButton("开始使用")
-        start.setObjectName("AccentButton")
-        start.setMinimumHeight(36)
-        start.setMinimumWidth(130)
-        start.clicked.connect(self.accept)
-        row.addWidget(start)
-        root.addLayout(row)
-
-        # 记住"逐块浮现"的顺序：标题 → 说明 → 特色 → 配置 → 按钮
-        self._reveal_widgets = [title, sub, self._highlight_widget,
-                                self._setup_widget, start]
-        self._reveal_anims = []
+        self._step = 0
+        self._pages = []
+        self._anims = []
         self._reveal_done = False
+        self._busy = False
 
-    # ---------- 入场动画 ----------
-    def showEvent(self, e):
-        """显示时跑入场动画：窗口淡入 + 内容逐块浮现。
+        self._build()
 
-        ## 为什么要在这里做
+    # ------------------------------------------------------------ 构建
+    def _build(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        欢迎界面是用户第一次见到这个程序的地方，它决定了第一印象。
-        原来是个"啪地弹出来"的静态窗口——没有任何过渡，
-        和现在主界面的丝滑感完全脱节。
+        # ---- 内容区（每步一页）----
+        self._body = QWidget()
+        body_lay = QVBoxLayout(self._body)
+        body_lay.setContentsMargins(40, 32, 40, 8)
+        body_lay.setSpacing(0)
+        for i, (icon, title, text, extra) in enumerate(STEPS):
+            page = self._make_page(icon, title, text, extra)
+            page.hide()
+            body_lay.addWidget(page)
+            self._pages.append(page)
+        root.addWidget(self._body, 1)
 
-        ## 顺序
+        # ---- 底部：进度点 + 按钮 ----
+        foot = QWidget()
+        froot = QHBoxLayout(foot)
+        froot.setContentsMargins(40, 8, 40, 24)
+        froot.setSpacing(10)
 
-            0ms     所有内容 opacity=0（预先设好，避免闪现）
-            0ms     窗口整体淡入 220ms
-            180ms   标题出现
-            250ms   说明
-            320ms   特色块
-            390ms   配置块
-            460ms   按钮
+        self._dots = QLabel()
+        self._dots.setObjectName("Caption")
+        froot.addWidget(self._dots)
+        froot.addStretch(1)
 
-        窗口淡入先跑 180ms 再开始逐块，避免两者叠加显得糊。
-        """
-        super().showEvent(e)
-        if self._reveal_done:
-            return
-        self._reveal_done = True
-        try:
-            from ui.reveal_anim import (
-                install_button_hover, reveal_window, stagger_reveal,
-            )
+        self._back = QPushButton("上一步")
+        self._back.clicked.connect(self._go_back)
+        froot.addWidget(self._back)
 
-            reveal_window(self, fade_ms=220)
-            self._reveal_anims = stagger_reveal(
-                self._reveal_widgets, delay_step=70,
-                duration=300, start_delay=180)
-            install_button_hover(self)
-        except Exception:
-            # 动画失败不能影响窗口正常显示：把内容恢复成完全可见
-            for w in getattr(self, "_reveal_widgets", []):
-                try:
-                    w.setGraphicsEffect(None)
-                except Exception:
-                    pass
+        self._next = QPushButton("下一步")
+        self._next.setObjectName("AccentButton")
+        self._next.setMinimumHeight(34)
+        self._next.setMinimumWidth(110)
+        self._next.clicked.connect(self._go_next)
+        froot.addWidget(self._next)
 
-    def _highlight_block(self):
-        box = QWidget()
-        lay = QVBoxLayout(box)
+        root.addWidget(foot)
+        self._sync_buttons()
+        self._pages[0].show()
+
+    def _make_page(self, icon, title, text, extra):
+        """造一步的内容页。"""
+        page = QWidget()
+        lay = QVBoxLayout(page)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(8)
-        for icon, name, desc in HIGHLIGHTS:
-            line = QHBoxLayout()
-            line.setSpacing(10)
-            ico = QLabel(icon)
-            ico.setFixedWidth(22)
-            ico.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
-            line.addWidget(ico)
+        lay.setSpacing(14)
 
-            text = QVBoxLayout()
-            text.setSpacing(1)
-            n = QLabel(name)
-            n.setObjectName("BodyText")
-            text.addWidget(n)
-            d = QLabel(desc)
-            d.setObjectName("Caption")
-            d.setWordWrap(True)
-            text.addWidget(d)
-            line.addLayout(text, 1)
-            lay.addLayout(line)
-        return box
+        # 大图标
+        ic = QLabel(icon)
+        ic.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        f = QFont("Segoe UI Emoji", 40)
+        ic.setFont(f)
+        lay.addWidget(ic)
+
+        # 标题
+        tp = QLabel(title)
+        tp.setObjectName("PageTitle")
+        tp.setWordWrap(True)
+        lay.addWidget(tp)
+
+        # 正文
+        tx = QLabel(text.replace("**", ""))
+        tx.setObjectName("BodyText")
+        tx.setWordWrap(True)
+        tx.setTextFormat(Qt.PlainText)
+        lay.addWidget(tx)
+
+        # 附加：配置控件（只有最后一页有）
+        if extra == "setup":
+            lay.addSpacing(6)
+            lay.addWidget(self._setup_block())
+        lay.addStretch(1)
+
+        page._reveal_items = [ic, tp, tx]
+        return page
 
     def _setup_block(self):
-        """两项最基本的配置：热键 + 主题。"""
+        """最后一页的两项配置：热键 + 外观。"""
         from ui.pages._scaffold import card, card_layout
 
         box = card()
         lay = card_layout(box, margins=(16, 14, 16, 14), spacing=10)
-
-        head = QLabel("先定两件事")
-        head.setObjectName("CardTitle")
-        lay.addWidget(head)
 
         # 热键
         r1 = QHBoxLayout()
@@ -213,12 +224,12 @@ class WelcomeDialog(QDialog):
         self._hotkey_combo = QComboBox()
         for label, value in HOTKEY_PRESETS:
             self._hotkey_combo.addItem(label, value)
-        self._hotkey_combo.setMinimumWidth(220)
+        self._hotkey_combo.setMinimumWidth(240)
         r1.addWidget(self._hotkey_combo)
         r1.addStretch(1)
         lay.addLayout(r1)
 
-        # 主题
+        # 外观
         r2 = QHBoxLayout()
         r2.setSpacing(10)
         l2 = QLabel("外观")
@@ -228,7 +239,7 @@ class WelcomeDialog(QDialog):
         self._theme_combo = QComboBox()
         for label, value in THEME_PRESETS:
             self._theme_combo.addItem(label, value)
-        self._theme_combo.setMinimumWidth(220)
+        self._theme_combo.setMinimumWidth(240)
         r2.addWidget(self._theme_combo)
         r2.addStretch(1)
         lay.addLayout(r2)
@@ -244,45 +255,144 @@ class WelcomeDialog(QDialog):
             if self._theme_combo.itemData(i) == cur_theme:
                 self._theme_combo.setCurrentIndex(i)
                 break
-
-        tip = QLabel("之后随时能在「设置」里改。")
-        tip.setObjectName("Caption")
-        lay.addWidget(tip)
         return box
 
-    def accept(self):
-        """收集用户的选择，交给调用方合并进配置。"""
+    # ------------------------------------------------------------ 导航
+    def _sync_buttons(self):
+        total = len(self._pages)
+        self._dots.setText("%d / %d" % (self._step + 1, total))
+        self._back.setEnabled(self._step > 0)
+        self._back.setVisible(self._step > 0)
+        self._next.setText("开始使用" if self._step == total - 1
+                           else "下一步")
+
+    def _go_next(self):
+        if self._busy:
+            return
+        if self._step >= len(self._pages) - 1:
+            self.accept()
+            return
+        self._show_step(self._step + 1, forward=True)
+
+    def _go_back(self):
+        if self._busy or self._step <= 0:
+            return
+        self._show_step(self._step - 1, forward=False)
+
+    def _show_step(self, index, forward=True):
+        """切到某一步：旧页淡出，新页从侧向滑入 + 内容错峰浮现。"""
+        if index == self._step or not (0 <= index < len(self._pages)):
+            return
+        old = self._pages[self._step]
+        new = self._pages[index]
+        self._step = index
+        self._sync_buttons()
+
+        self._busy = True
+        old.hide()
+        new.show()
+        new.raise_()
+
+        # ---- 新页滑入 ----
+        base = QPoint(0, 0)
+        offset = 26 if forward else -26
+        new.move(QPoint(offset, 0))
+        anim = QPropertyAnimation(new, b"pos", self)
+        anim.setDuration(260)
+        anim.setStartValue(QPoint(offset, 0))
+        anim.setEndValue(base)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+
+        def _done():
+            try:
+                new.move(base)
+            except Exception:
+                pass
+            self._busy = False
+
+        anim.finished.connect(_done)
+        self._anims.append(anim)
+        anim.start(QAbstractAnimation.DeleteWhenStopped)
+
+        # ---- 页内内容错峰浮现 ----
+        self._reveal_items(new._reveal_items, start_delay=90)
+
+    def _reveal_items(self, items, start_delay=0):
+        """让元素依次淡入。"""
+        for i, w in enumerate(items):
+            if w is None:
+                continue
+            try:
+                eff = QGraphicsOpacityEffect(w)
+                eff.setOpacity(0.0)
+                w.setGraphicsEffect(eff)
+            except Exception:
+                continue
+            a = QPropertyAnimation(eff, b"opacity")
+            a.setDuration(280)
+            a.setStartValue(0.0)
+            a.setEndValue(1.0)
+            a.setEasingCurve(QEasingCurve.OutCubic)
+            self._anims.append(a)
+            QTimer.singleShot(int(start_delay + i * 70), a.start)
+
+    # ------------------------------------------------------------ 入场
+    def showEvent(self, e):
+        """显示时：窗口淡入 + 首屏内容错峰浮现。"""
+        super().showEvent(e)
+        if self._reveal_done:
+            return
+        self._reveal_done = True
         try:
-            hotkey = self._hotkey_combo.currentData()
-            theme = self._theme_combo.currentData()
-            if hotkey and hotkey != self._config.get("hotkey"):
-                self.chosen["hotkey"] = hotkey
-            if theme and theme != self._config.get("theme"):
-                self.chosen["theme"] = theme
+            from ui.reveal_anim import install_button_hover, reveal_window
+
+            reveal_window(self, fade_ms=200)
+            install_button_hover(self)
+            self._reveal_items(self._pages[0]._reveal_items, start_delay=160)
         except Exception:
-            pass
+            for w in self._pages[0]._reveal_items:
+                try:
+                    w.setGraphicsEffect(None)
+                except Exception:
+                    pass
+
+    # ------------------------------------------------------------ 收尾
+    def accept(self):
+        """点「开始使用」：把用户改过的配置交给调用方。"""
+        try:
+            self.chosen = {}
+            if getattr(self, "_hotkey_combo", None) is not None:
+                hk = self._hotkey_combo.currentData()
+                if hk and hk != self._config.get("hotkey"):
+                    self.chosen["hotkey"] = hk
+            if getattr(self, "_theme_combo", None) is not None:
+                th = self._theme_combo.currentData()
+                if th and th != self._config.get("theme"):
+                    self.chosen["theme"] = th
+                    self.chosen["theme_mode"] = th
+        except Exception:
+            self.chosen = {}
         super().accept()
 
-    # ---------- 入口 ----------
-    @staticmethod
-    def maybe_show(theme_name="light", config=None, force=False):
-        """按标记决定是否弹欢迎页。
 
-        :return: 用户选择的配置 dict（未改动或跳过时为空 dict）；
-                 没弹（已弹过）返回 None。
-        """
-        from core import version as ver
+def maybe_show(theme_name="light", config=None, force=False):
+    """按标记决定是否弹欢迎页。
 
-        if not ver.should_show_welcome(force=force):
-            return None
+    :return: 用户选择的配置 dict（未改动或跳过时为空 dict）；
+             没弹（已弹过）返回 None。
+    """
+    from core import version as ver
 
-        dlg = WelcomeDialog(theme_name=theme_name,
-                            version=ver.get_app_version(),
-                            config=config)
-        accepted = dlg.exec() == QDialog.Accepted
-        os.environ.pop("KAOMOJI_FORCE_WELCOME", None)
-        if accepted:
-            ver.mark_welcome_shown()
-            return dict(dlg.chosen)
-        # 跳过：不标记，下次启动还会看到引导
-        return {}
+    if not ver.should_show_welcome(force=force):
+        return None
+
+    dlg = WelcomeDialog(theme_name=theme_name,
+                        version=ver.get_app_version(),
+                        config=config)
+    accepted = dlg.exec() == QDialog.Accepted
+    os.environ.pop("KAOMOJI_FORCE_WELCOME", None)
+    if accepted:
+        ver.mark_welcome_shown()
+        return dict(dlg.chosen)
+    # 跳过：不标记，下次启动还会看到引导
+    return {}

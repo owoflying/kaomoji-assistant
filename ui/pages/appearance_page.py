@@ -48,9 +48,27 @@ class AppearancePage(QWidget):
         self._build()
 
     # ------------------------------------------------------------ 构建
+    # ------------------------------------------------------------ 构建
     def _build(self):
         root = page_layout(self)
         root.addWidget(page_title("外观"))
+
+        # ---- 作用于哪个界面 ----
+        #
+        # ⚠ 这里**合并了原来的「外观」页和「主题包」页**。
+        #
+        # 那两页曾同时存在，且都能改材质开关/材质效果/材质强度/整窗不透明度
+        # ——同一份配置两个入口，纯属重复。现在只有一个页面，顶部选界面，
+        # 下面所有控件都作用于选中的那个。
+        root.addWidget(section_title("应用于"))
+        c = card()
+        lay = card_layout(c)
+        self._add_row(lay, "界面", self._surface_row())
+        self._add_row(lay, "独立配置", self._follow_check_row())
+        self._hint(lay, "所有界面默认沿用「主窗口」的配置。"
+                        "打开「独立配置」后，该界面才会有自己的设置，"
+                        "不再跟随主窗口。")
+        root.addWidget(c)
 
         # ---- 主题 ----
         root.addWidget(section_title("主题"))
@@ -67,9 +85,8 @@ class AppearancePage(QWidget):
         c = card()
         lay = card_layout(c)
         self._add_row(lay, "面板不透明度", self._panel_alpha_row())
-        self._add_row(lay, "候选条不透明度", self._opacity_row())
-        self._hint(lay, "面板不透明度影响主窗口底板；"
-                        "拉到 100% 完全不透明，拉低会透出桌面和背景图。")
+        self._hint(lay, "整窗透明度：拉到 100% 完全不透明，"
+                        "拉低会透出桌面和背景图。")
         root.addWidget(c)
 
         # ---- 背景材质 ----
@@ -85,90 +102,75 @@ class AppearancePage(QWidget):
         self._add_row(lay, "显示图片的一部分", self._main_crop_row())
         self._add_row(lay, "背景暗化/提亮", self._material_dim_row())
         self._hint(lay, "设置了背景图时，面板会自动让位给背景图（始终看得见）；"
-                        "没设背景图时显示主题实色面板。"
-                        "「面板不透明度」是整窗透明度，拉低会透出桌面。")
-        root.addWidget(c)
-
-        # ---- 候选条外观（独立于主窗口）----
-        #
-        # 候选条弹在光标附近，跟主窗口的视觉需求完全不同：它要"看得清字"，
-        # 主窗口要"背景好看"。所以给一套独立配置。
-        root.addWidget(section_title("候选条外观"))
-        c = card()
-        lay = card_layout(c)
-        self._add_row(lay, "启用材质", self._picker_material_toggle())
-        self._add_row(lay, "材质效果", self._picker_material_combo())
-        self._add_row(lay, "材质强度", self._picker_strength_row())
-        self._add_row(lay, "独立背景图", self._picker_own_image_toggle())
-        self._add_row(lay, "选择背景图", self._picker_image_row())
-        self._add_row(lay, "图片不透明度", self._picker_image_opacity_row())
-        self._add_row(lay, "显示图片的一部分", self._picker_crop_row())
-        self._hint(lay, "不勾选「独立背景图」时沿用主窗口那张；"
-                        "「显示图片的一部分」可以只取图片的某个区域，"
-                        "适合从整张壁纸里截一块好看的。")
+                        "没设背景图时显示主题实色面板。")
         root.addWidget(c)
         root.addStretch(1)
 
+    # ---------- 界面切换 ----------
+    def _surface_row(self):
+        """选择当前要编辑哪个界面。"""
+        from core.theme_profile import SURFACES
+
+        self._surface_combo = FluentComboBox(self._theme)
+        for key, label in SURFACES.items():
+            self._surface_combo.addItem(label, key)
+        self._surface_combo.setMinimumWidth(150)
+        self._surface_combo.currentIndexChanged.connect(
+            lambda *_a: self._on_surface_changed())
+        return self._surface_combo
+
+    def _follow_check_row(self):
+        """是否给当前界面单独配置（关闭 = 沿用主窗口）。"""
+        self._follow_check = ToggleSwitch(self._theme)
+        self._follow_check.setToolTip(
+            "关闭 = 该界面完整沿用主窗口的外观；\n"
+            "打开 = 为该界面单独设置。")
+        self._follow_check.toggled.connect(self._on_follow_toggled)
+        return self._follow_check
+
+    def _current_surface(self):
+        try:
+            return self._surface_combo.currentData() or "main"
+        except Exception:
+            return "main"
+
+    def _on_surface_changed(self):
+        if self._loading:
+            return
+        self.refresh_from_controller()
+
+    def _on_follow_toggled(self, follow):
+        """切「独立配置」：开 = 把当前生效值落成一份覆盖；关 = 删掉覆盖。"""
+        if self._loading:
+            return
+        from core.theme_profile import clear_override, resolve, set_override
+
+        surface = self._current_surface()
+        if surface == "main":
+            return
+        cfg = self._ctrl.config()
+        if follow:
+            p = resolve(cfg, surface)
+            set_override(cfg, surface, {
+                "material_enabled": p.get("material_enabled"),
+                "material_type": p.get("material_type"),
+                "material_strength": p.get("material_strength"),
+                "material_saturate": p.get("material_saturate"),
+                "material_brightness": p.get("material_brightness"),
+                "material_dim": p.get("material_dim"),
+                "panel_alpha": p.get("panel_alpha"),
+                "image_opacity": p.get("image_opacity"),
+            })
+        else:
+            clear_override(cfg, surface)
+        if self._on_apply is not None:
+            try:
+                self._on_apply(dict(cfg))
+            except Exception:
+                pass
+        self.refresh_from_controller()
+
     # ---------- 候选条外观 ----------
-    def _picker_material_toggle(self):
-        """候选条是否使用材质（与主窗口的开关互不影响）。"""
-        self.picker_material_check = ToggleSwitch(self._theme)
-        self.picker_material_check.setToolTip(
-            "候选条是否套用背景图/模糊效果。\n"
-            "候选条很小，材质过强会影响看字，建议低强度。")
-        self.picker_material_check.toggled.connect(
-            lambda *_a: self._push(picker_material_enabled=(
-                self.picker_material_check.isChecked())))
-        return self.picker_material_check
-
-    def _picker_material_combo(self):
-        from ui.window_material import material_choices
-
-        self.picker_material_combo = FluentComboBox(self._theme)
-        for mid, name in material_choices():
-            self.picker_material_combo.addItem(name, mid)
-        self.picker_material_combo.currentIndexChanged.connect(
-            lambda *_a: self._push(picker_material_type=(
-                self.picker_material_combo.currentData())))
-        self.picker_material_combo.setMinimumWidth(120)
-        return self.picker_material_combo
-
-    def _picker_strength_row(self):
-        return self._slider_row(
-            "picker_strength_slider", "picker_material_strength", 0, 100,
-            on_change=lambda k, s: self._push(
-                picker_material_strength=s.value()))
-
-    def _picker_own_image_toggle(self):
-        """是否用候选条自己的背景图（否则沿用主窗口的）。"""
-        self.picker_own_image_check = ToggleSwitch(self._theme)
-        self.picker_own_image_check.setToolTip(
-            "勾选后候选条用自己的背景图；不勾选沿用主窗口那张。")
-        self.picker_own_image_check.toggled.connect(
-            lambda *_a: self._push(picker_use_own_image=(
-                self.picker_own_image_check.isChecked())))
-        return self.picker_own_image_check
-
-    def _picker_image_row(self):
-        row = QHBoxLayout()
-        self.picker_image_btn = QPushButton("选择图片…")
-        self.picker_image_btn.clicked.connect(self._pick_picker_image)
-        row.addWidget(self.picker_image_btn)
-        self.picker_image_clear = QPushButton("清除")
-        self.picker_image_clear.clicked.connect(self._clear_picker_image)
-        row.addWidget(self.picker_image_clear)
-        self.picker_image_label = QLabel("")
-        self.picker_image_label.setObjectName("Caption")
-        row.addWidget(self.picker_image_label)
-        row.addStretch(1)
-        return row
-
-    def _picker_image_opacity_row(self):
-        return self._slider_row(
-            "picker_image_opacity_slider", "picker_image_opacity", 0, 100,
-            on_change=lambda k, s: self._push(
-                picker_image_opacity=s.value()))
-
     def _main_crop_row(self):
         """主窗口背景图的「只显示一部分」——用可视化裁切对话框。"""
         row = QHBoxLayout()
@@ -223,111 +225,6 @@ class AppearancePage(QWidget):
         except Exception:
             pass
 
-    def _picker_crop_row(self):
-        """候选条背景图的「只显示一部分」——可视化裁切对话框。
-
-        原来是四个百分比输入框。用户反馈"只给数字很难用"——
-        要取某块区域得先目测猜比例、填完再看效果、反复试。
-        现在改成拖拽选区的对话框，所见即所得。
-        """
-        row = QHBoxLayout()
-        self.picker_crop_btn = QPushButton("选择显示区域…")
-        self.picker_crop_btn.setToolTip("打开裁切窗口，拖拽选图里的一块")
-        self.picker_crop_btn.clicked.connect(self._edit_picker_crop)
-        row.addWidget(self.picker_crop_btn)
-        self.picker_crop_reset = QPushButton("整张")
-        self.picker_crop_reset.clicked.connect(self._reset_picker_crop)
-        row.addWidget(self.picker_crop_reset)
-        self.picker_crop_label = QLabel("")
-        self.picker_crop_label.setObjectName("Caption")
-        row.addWidget(self.picker_crop_label)
-        row.addStretch(1)
-        return row
-
-    def _edit_picker_crop(self):
-        from ui.crop_dialog import edit_crop
-        from ui.window_material import SLOT_PICKER, background_path
-
-        path = background_path(SLOT_PICKER) or background_path()
-        if not path:
-            from PySide6.QtWidgets import QMessageBox
-
-            QMessageBox.information(self, "裁切", "请先选择一张背景图。")
-            return
-        st = self._ctrl.state()
-        crop = edit_crop(path, (st.picker_crop_x, st.picker_crop_y,
-                                st.picker_crop_w, st.picker_crop_h),
-                         parent=self, title="候选条背景图 - 选择显示区域")
-        if crop is None:
-            return
-        self._push(picker_crop_x=crop[0], picker_crop_y=crop[1],
-                   picker_crop_w=crop[2], picker_crop_h=crop[3])
-        self._refresh_picker_crop_label()
-
-    def _reset_picker_crop(self):
-        """恢复成"显示整张"（全 0 表示不裁切）。"""
-        self._push(picker_crop_x=0.0, picker_crop_y=0.0,
-                   picker_crop_w=0.0, picker_crop_h=0.0)
-        self._refresh_picker_crop_label()
-
-    def _refresh_picker_crop_label(self):
-        st = self._ctrl.state()
-        try:
-            if st.picker_crop_w <= 0 or st.picker_crop_h <= 0:
-                self.picker_crop_label.setText("整张")
-            else:
-                self.picker_crop_label.setText(
-                    "%d%% × %d%%" % (round(st.picker_crop_w * 100),
-                                     round(st.picker_crop_h * 100)))
-        except Exception:
-            pass
-
-    def _pick_picker_image(self):
-        """选候选条背景图（存到独立命名空间，不覆盖主窗口那张）。"""
-        from PySide6.QtWidgets import QFileDialog, QMessageBox
-
-        from ui.window_material import (
-            IMAGE_SUFFIXES, SLOT_PICKER, copy_background,
-        )
-
-        patterns = " ".join("*" + e for e in IMAGE_SUFFIXES)
-        path, _ = QFileDialog.getOpenFileName(
-            self, "选择候选条背景图", "",
-            "图片 (%s);;所有文件 (*.*)" % patterns)
-        if not path:
-            return
-        ok, result = copy_background(path, slot=SLOT_PICKER)
-        if not ok:
-            QMessageBox.warning(self, "候选条背景图", result)
-            return
-        self._refresh_picker_image_label()
-        self._sync_enabled()
-        self._push(picker_use_own_image=True)
-
-    def _clear_picker_image(self):
-        from ui.window_material import SLOT_PICKER, clear_background
-
-        if clear_background(slot=SLOT_PICKER):
-            self._refresh_picker_image_label()
-            self._sync_enabled()
-            if self._on_apply is not None:
-                self._on_apply(self._ctrl.changes_for())
-
-    def _refresh_picker_image_label(self):
-        import os
-
-        from ui.window_material import SLOT_PICKER, background_path
-
-        try:
-            p = background_path(SLOT_PICKER)
-            if p:
-                self.picker_image_label.setText(os.path.basename(p))
-            else:
-                self.picker_image_label.setText("未设置")
-        except Exception:
-            pass
-
-    # ---------- 候选条外观 ----------
     def _add_row(self, layout, label, widget_or_layout):
         """一行设置项：左标签 + 右控件（与设置页同样的视觉规格）。"""
         row = QHBoxLayout()
@@ -410,11 +307,6 @@ class AppearancePage(QWidget):
         return self._slider_row(
             "panel_alpha_slider", "panel_alpha", 0, 100,
             on_change=lambda k, s: self._push(panel_alpha=s.value() / 100.0))
-
-    def _opacity_row(self):
-        return self._slider_row(
-            "opacity_slider", "opacity", 0, 100,
-            on_change=lambda k, s: self._push(opacity=s.value() / 100.0))
 
     def _material_toggle(self):
         self.material_check = ToggleSwitch(self._theme)
@@ -506,34 +398,70 @@ class AppearancePage(QWidget):
 
     # ------------------------------------------------------------ 交互
     def _push(self, **changes):
-        """把改动交给唯一入口。
+        """把改动应用到**当前选中的界面**。
 
-        ## 关键
+        ## 两个去向
 
-        1. 只传"用户刚改的那几项"，其余由 controller 保持不变。
-        2. 用 `changes_for()` 算出**目标配置快照**，交给宿主的 `on_apply(cfg)`。
-           controller 自己**不改** config——否则宿主的 `apply_settings`
-           比对不出差异，切主题会静默失效（实测过：config 变了、界面没变）。
+        * 选的是「主窗口」→ 写进主配置（theme_profile），
+          所有**沿用主配置**的界面会一起跟着变
+        * 选的是某个独立配置的界面 → 只写该界面的覆盖层，
+          主窗口和其它界面不受影响
 
-        ## 动画策略
+        ## 为什么不用 controller
 
-        `material_type` 变化（换材质种类）时走完整过渡——那是一次明显的
-        视觉切换，需要动画遮掩重算停顿；其它参数（强度/饱和度滑块）
-        只重绘，不做动画，否则拖一次滑块就要看一遍淡入淡出，很拖沓。
+        `AppearanceController` 是"主配置"的编辑器，只认识平铺的旧键。
+        多界面覆盖是 `core.theme_profile` 的职责，两者语义不同，
+        所以这里直接写主题包，再交给宿主落盘。
         """
         if self._loading:
             return
-        target_cfg = self._ctrl.changes_for(**changes)
-        changed = self._ctrl.update(**changes)
-        self._sync_enabled()
-        if not changed or self._on_apply is None:
+        from core.theme_profile import (
+            get_profile, has_override, set_override, set_profile,
+        )
+
+        surface = self._current_surface()
+        cfg = self._ctrl.config()
+
+        # 旧键名 → 主题包字段名
+        alias = {
+            "material_strength": "material_strength",
+            "material_saturate": "material_saturate",
+            "material_brightness": "material_brightness",
+            "material_dim": "material_dim",
+            "material_type": "material_type",
+            "material_enabled": "material_enabled",
+            "panel_alpha": "panel_alpha",
+        }
+        patch = {}
+        for key, val in changes.items():
+            if key in alias:
+                patch[alias[key]] = val
+            elif key in ("opacity",):
+                continue        # 候选条透明度已合并到 panel_alpha
+
+        if not patch:
             return
-        kind_changed = "material_type" in changes
-        animated = getattr(self, "_animated_apply", None)
-        if kind_changed and animated is not None:
-            animated(lambda: self._on_apply(target_cfg))
+
+        if surface == "main":
+            prof = get_profile(cfg)
+            prof.update(patch)
+            set_profile(cfg, prof)
         else:
-            self._on_apply(target_cfg)
+            if not has_override(cfg, surface):
+                return          # 未开独立配置时控件本就置灰，不该走到这
+            set_override(cfg, surface, patch)
+
+        self._sync_enabled()
+        if self._on_apply is None:
+            return
+        target = dict(cfg)
+        # 换材质种类时走过渡动画（明显视觉切换，需要遮掩重算停顿）
+        if "material_type" in patch:
+            animated = getattr(self, "_animated_apply", None)
+            if animated is not None:
+                animated(lambda: self._on_apply(target))
+                return
+        self._on_apply(target)
 
     def _push_from_slider(self, _key, _slider):
         # 默认路径不会走到（各滑块都自带 on_change）
@@ -553,33 +481,34 @@ class AppearancePage(QWidget):
             pass
 
     def _sync_enabled(self):
-        """材质关着时，下方参数控件置灰。"""
+        """按「当前界面 + 是否开独立配置 + 材质是否开启」联动置灰。"""
+        from core.theme_profile import has_override, resolve
+
         try:
-            st = self._ctrl.state()
-            on = bool(st.material_enabled)
+            cfg = self._ctrl.config()
+            surface = self._current_surface()
+            own = surface == "main" or has_override(cfg, surface)
+            params = resolve(cfg, surface)
+            on = own and bool(params.get("material_enabled", False))
+
+            # 材质相关：关着就置灰
             for w in (self.material_combo, self.material_strength_slider,
                       self.material_saturate_slider,
                       self.material_brightness_slider,
                       self.material_image_btn,
+                      self.main_crop_btn, self.main_crop_reset,
                       self.material_dim_slider):
                 w.setEnabled(on)
-            from ui.window_material import background_path
 
-            self.material_image_clear.setEnabled(on and bool(background_path()))
+            from ui.window_material import SLOT_MAIN, background_path
 
-            # 候选条：材质关时下方控件置灰
-            pon = bool(st.picker_material_enabled)
-            for w in (self.picker_material_combo,
-                      self.picker_strength_slider,
-                      self.picker_own_image_check,
-                      self.picker_image_btn,
-                      self.picker_image_opacity_slider,
-                      self.picker_crop_btn, self.picker_crop_reset):
-                w.setEnabled(pon)
-            from ui.window_material import SLOT_PICKER, background_path as _bp
+            self.material_image_clear.setEnabled(
+                on and bool(background_path(SLOT_MAIN)))
 
-            self.picker_image_clear.setEnabled(
-                pon and bool(_bp(SLOT_PICKER)))
+            # 主题相关：只有开了独立配置（或就是主窗口）才能改
+            for w in (self.theme_combo, self.preset_combo,
+                      self.edit_preset_btn, self.panel_alpha_slider):
+                w.setEnabled(own)
         except Exception:
             pass
 
@@ -671,29 +600,55 @@ class AppearancePage(QWidget):
 
     # ------------------------------------------------------------ 刷新
     def refresh_from_controller(self):
-        """按 controller 的当前状态回填所有控件（不触发保存）。"""
-        st = self._ctrl.state()
+        """按**当前选中的界面**回填所有控件（不触发保存）。
+
+        参数来自 `core.theme_profile.resolve(cfg, surface)`——
+        主窗口读主配置，其它界面读"主配置 + 该界面覆盖"的合并结果。
+        """
+        from core.theme_profile import has_override, resolve
+
+        cfg = self._ctrl.config()
+        surface = self._current_surface()
+        params = resolve(cfg, surface)
+        is_main = surface == "main"
+        own = is_main or has_override(cfg, surface)
+
         self._loading = True
         try:
-            for combo, val in ((self.theme_combo, st.theme_mode),
-                               (self.preset_combo, st.theme_preset),
-                               (self.material_combo, st.material_type)):
-                idx = combo.findData(val)
-                combo.setCurrentIndex(idx if idx >= 0 else 0)
-            self.material_check.setChecked(bool(st.material_enabled))
-            # (控件, 目标值, 标签格式化) —— 三类滑块单位不同，必须分别格式化
+            # 界面选择器与「独立配置」开关
+            idx = self._surface_combo.findData(surface)
+            if idx >= 0 and self._surface_combo.currentIndex() != idx:
+                self._surface_combo.setCurrentIndex(idx)
+            self._follow_check.setEnabled(not is_main)
+            self._follow_check.setChecked(own)
+
+            # 主题
+            for combo, val in (
+                    (self.theme_combo, params.get("theme_mode", "light")),
+                    (self.preset_combo, params.get("theme_preset", "classic")),
+                    (self.material_combo, params.get("material_type", "none"))):
+                i2 = combo.findData(val)
+                combo.setCurrentIndex(i2 if i2 >= 0 else 0)
+
+            self.material_check.setChecked(bool(
+                params.get("material_enabled", False)))
+
+            # 滑块（单位不同，分别格式化）
             for attr, val, fmt in (
-                    ("panel_alpha_slider", int(round(st.panel_alpha * 100)),
+                    ("panel_alpha_slider",
+                     int(round(float(params.get("panel_alpha", 0.92)) * 100)),
                      lambda v: "%d%%" % v),
-                    ("opacity_slider", int(round(st.opacity * 100)),
+                    ("material_strength_slider",
+                     int(params.get("material_strength", 55)),
                      lambda v: "%d%%" % v),
-                    ("material_strength_slider", int(st.material_strength),
-                     lambda v: "%d%%" % v),
-                    ("material_saturate_slider", int(st.material_saturate),
+                    ("material_saturate_slider",
+                     int(params.get("material_saturate", 18)),
                      lambda v: "%.1fx" % (v / 10.0)),
-                    ("material_brightness_slider", int(st.material_brightness),
+                    ("material_brightness_slider",
+                     int(params.get("material_brightness", 104)),
                      lambda v: "%.2fx" % (v / 100.0)),
-                    ("material_dim_slider", int(st.material_dim),
+                    ("material_dim_slider",
+                     int(params.get("material_dim", 0)),
                      lambda v: "%d%%" % v)):
                 s = getattr(self, attr, None)
                 if s is not None:
@@ -701,29 +656,9 @@ class AppearancePage(QWidget):
                     lbl = getattr(self, attr + "_value", None)
                     if lbl is not None:
                         lbl.setText(fmt(s.value()))
+
             self._refresh_image_label()
             self._refresh_main_crop_label()
-            # 候选条外观
-            self.picker_material_check.setChecked(
-                bool(st.picker_material_enabled))
-            self.picker_own_image_check.setChecked(
-                bool(st.picker_use_own_image))
-            idx = self.picker_material_combo.findData(
-                st.picker_material_type)
-            self.picker_material_combo.setCurrentIndex(idx if idx >= 0 else 0)
-            for attr, val in (
-                    ("picker_strength_slider",
-                     int(st.picker_material_strength)),
-                    ("picker_image_opacity_slider",
-                     int(st.picker_image_opacity))):
-                sl = getattr(self, attr, None)
-                if sl is not None:
-                    sl.setValue(max(sl.minimum(), min(sl.maximum(), val)))
-                    lbl = getattr(self, attr + "_value", None)
-                    if lbl is not None:
-                        lbl.setText("%d%%" % sl.value())
-            self._refresh_picker_crop_label()
-            self._refresh_picker_image_label()
         finally:
             self._loading = False
         self._sync_preset_btn()

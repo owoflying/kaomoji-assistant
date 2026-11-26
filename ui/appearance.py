@@ -97,12 +97,35 @@ class AppearanceState:
 
 
 def read(cfg):
-    """从配置 dict 读出完整外观状态（缺失/非法值已归一）。"""
+    """从配置 dict 读出完整外观状态（缺失/非法值已归一）。
+
+    ## 主题包优先
+
+    新版把外观存在 `theme_profile` 里（一套主配置，各界面覆盖见
+    `core/theme_profile.py`）。旧版是平铺的 `theme_mode` / `theme_preset`
+    / `material_*` 等键。
+
+    这里先尝试读主题包；读不到（或字段缺失）才回落到旧键，
+    所以新旧配置都能正确回填——用户升级后设置不会"看起来丢了"。
+    """
     cfg = cfg or {}
-    mode = str(cfg.get("theme_mode") or cfg.get("theme") or "light").lower()
+
+    # ---- 主题包 ----
+    prof = {}
+    try:
+        from core.theme_profile import get_profile, migrate_legacy
+
+        migrate_legacy(cfg)
+        prof = get_profile(cfg)
+    except Exception:
+        prof = {}
+
+    mode = str(prof.get("theme_mode")
+               or cfg.get("theme_mode") or cfg.get("theme") or "light").lower()
     if mode not in ("light", "dark", "system"):
         mode = "light"
-    mtype = str(cfg.get("material_type") or "none").lower()
+    mtype = str(prof.get("material_type")
+                or cfg.get("material_type") or "none").lower()
     if mtype not in MATERIAL_TYPES:
         mtype = "none"
     accent = str(cfg.get("accent_mode") or "preset").lower()
@@ -111,20 +134,31 @@ def read(cfg):
 
     st = AppearanceState(
         theme_mode=mode,
-        theme_preset=str(cfg.get("theme_preset") or "classic"),
+        theme_preset=str(prof.get("theme_preset")
+                         or cfg.get("theme_preset") or "classic"),
         accent_mode=accent,
         accent_custom=str(cfg.get("accent_custom") or "#0067c0"),
-        material_enabled=bool(cfg.get("material_enabled", False)),
+        material_enabled=bool(prof.get("material_enabled",
+                                       cfg.get("material_enabled", False))),
         material_type=mtype,
         # 候选条独立外观
-        picker_material_enabled=bool(cfg.get("picker_material_enabled", False)),
-        picker_use_own_image=bool(cfg.get("picker_use_own_image", False)),
-        picker_material_type=(str(cfg.get("picker_material_type") or "none").lower()
-                              if str(cfg.get("picker_material_type") or "").lower()
-                              in MATERIAL_TYPES else "none"),
+        picker_material_enabled=bool(
+            cfg.get("picker_material_enabled", False)),
+        picker_use_own_image=bool(
+            cfg.get("picker_use_own_image", False)),
+        picker_material_type=(
+            str(cfg.get("picker_material_type") or "none").lower()
+            if str(cfg.get("picker_material_type") or "").lower()
+            in MATERIAL_TYPES else "none"),
     )
+
+    # ---- 数值项：主题包优先，其次旧键 ----
     for key in _DEFAULTS:
-        setattr(st, key, _clamp(key, cfg.get(key, _DEFAULTS[key][0])))
+        pk = "image_opacity" if key == "material_image_opacity" else key
+        v = prof.get(pk)
+        if v is None:
+            v = cfg.get(key, _DEFAULTS[key][0])
+        setattr(st, key, _clamp(key, v))
     return st
 
 

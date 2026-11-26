@@ -46,8 +46,6 @@ class NavController:
         # 外观单独成页：主题/透明度/背景材质都是高频调整项，
         # 挤在设置页里一屏放不下（详见 ui/pages/appearance_page.py）。
         ("appearance", "外观",     "flash"),
-        # 主题包：主配置 + 各界面沿用/覆盖（见 core/theme_profile.py）
-        ("theme_profile", "主题包", "share"),
         ("settings",   "设置",     "settings"),
         ("about",      "关于",     "about"),
     )

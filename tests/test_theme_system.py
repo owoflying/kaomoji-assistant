@@ -330,19 +330,21 @@ def test_appearance_page_owns_theme_controls(qapp):
 
     # 外观页该有的
     for name in ("theme_combo", "preset_combo", "panel_alpha_slider",
-                 "opacity_slider", "material_check", "material_combo",
+                 "material_check", "material_combo",
                  "material_strength_slider", "material_saturate_slider",
                  "material_brightness_slider", "material_dim_slider"):
         assert hasattr(appearance, name), "外观页缺少控件 %s" % name
 
-    # 只保留**一个**透明度旋钮：面板不透明度 = 整窗透明度。
-    # 有背景图时面板底色不画（背景图始终可见），没背景图时才画实色面板。
+    # 透明度只保留一个旋钮（面板不透明度=整窗透明度）
     assert not hasattr(appearance, "material_image_opacity_slider"), \
         "外观页又出现「背景图不透明度」滑块了——透明度只该有一个旋钮"
+    # 界面切换器：同一页编辑主窗口/候选条/日志/插件/对话框
+    assert hasattr(appearance, "_surface_combo"), \
+        "外观页缺少界面选择器——主题包必须有'主配置 + 各界面沿用'的能力"
 
     # 设置页不该有的（已迁走）
     for name in ("theme_combo", "preset_combo", "panel_alpha_slider",
-                 "opacity_slider", "material_check"):
+                 "material_check"):
         assert not hasattr(settings, name), \
             "设置页仍持有 %s，说明外观项没完全迁到「外观」页" % name
 

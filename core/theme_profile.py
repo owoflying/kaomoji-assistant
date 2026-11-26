@@ -169,10 +169,24 @@ def migrate_legacy(cfg):
 
     if "surface_overrides" not in cfg:
         ovr = {}
-        # 候选条的旧 picker_* 键 → picker 覆盖层
+        # 候选条的旧 picker_* 键 → picker 覆盖层。
+        #
+        # ⚠ 只有"值确实偏离默认"才算用户配过。
+        #
+        # 旧版本里这些键**总是存在**（出厂默认就写了 False/55/100/0），
+        # 无脑迁移会给每个人凭空造一条 picker 覆盖层——用户什么都没改，
+        # 界面却显示候选条"独立配置"，而它实际和主配置一模一样。
         picker = {}
+        _old_defaults = {
+            "picker_material_type": "none",
+            "picker_material_strength": 55,
+            "picker_image_opacity": 100,
+            "picker_crop_x": 0.0,
+            "picker_crop_y": 0.0,
+            "picker_crop_w": 0.0,
+            "picker_crop_h": 0.0,
+        }
         for old, new in (
-                ("picker_material_enabled", "material_enabled"),
                 ("picker_material_type", "material_type"),
                 ("picker_material_strength", "material_strength"),
                 ("picker_image_opacity", "image_opacity"),
@@ -180,10 +194,12 @@ def migrate_legacy(cfg):
                 ("picker_crop_y", "crop_y"),
                 ("picker_crop_w", "crop_w"),
                 ("picker_crop_h", "crop_h")):
-            if old in cfg:
+            if old in cfg and cfg.get(old) != _old_defaults.get(old):
                 picker[new] = cfg[old]
-        # `picker_use_own_image` 是"要不要独立外观"的开关：
-        # 看过就等价于"picker 有覆盖层"，不看就是完整沿用主配置。
+        # `picker_material_enabled` 同理：只有被设成 True 才说明配过。
+        if cfg.get("picker_material_enabled"):
+            picker["material_enabled"] = True
+        # `picker_use_own_image` 是显式开关，True 就说明用户确实单独配过。
         if cfg.get("picker_use_own_image") or picker:
             ovr["picker"] = picker
         cfg["surface_overrides"] = ovr
@@ -191,14 +207,58 @@ def migrate_legacy(cfg):
 
 
 def get_profile(cfg):
-    """取主配置（已归一化）。"""
+    """取主配置（已归一化）。
+
+    ## 旧键优先于主题包（仅限主题模式/配色）
+
+    `set_profile` 会同步写旧键，所以正常情况下两边一致。
+    但如果**外部代码直接写旧键**（测试、插件、旧版本数据），
+    主题包不会自动更新——读出来的就是旧值，表现为"改了没生效"。
+
+    这里对"主题模式 / 配色方案"两个键做一次兜底：旧键存在且与主题包
+    不同时，以旧键为准。只对这两个键这么做，因为它们是外部最常直接
+    写的外观键；其它材质参数仍以主题包为唯一真相，避免把用户在新界面
+    里的设置冲掉。
+    """
     migrate_legacy(cfg)
-    return normalize(cfg.get("theme_profile"))
+    prof = normalize(cfg.get("theme_profile"))
+    changed = False
+    for old, new in (("theme_mode", "theme_mode"),
+                     ("theme_preset", "theme_preset")):
+        v = cfg.get(old)
+        if isinstance(v, str) and v and v != prof.get(new):
+            prof[new] = v
+            changed = True
+    if changed:
+        cfg["theme_profile"] = prof
+    return prof
 
 
 def set_profile(cfg, profile):
-    """写回主配置。"""
-    cfg["theme_profile"] = normalize(profile)
+    """写回主配置，并**同步写旧键**。
+
+    ## 为什么要同步写旧键
+
+    旧键（`theme_mode` / `theme_preset` / `material_*`）还有别的代码在读
+    （降级兼容、插件、既有测试）。只写主题包会让两边**长期不一致**：
+    用户在界面里改成午夜蓝，读旧键的代码仍看到 classic —— 表现为
+    "改了没生效"。
+
+    同步写之后，无论读新的还是读旧的，拿到的都是同一个真相。
+    """
+    p = normalize(profile)
+    cfg["theme_profile"] = p
+    cfg["theme_mode"] = p["theme_mode"]
+    cfg["theme"] = p["theme_mode"]
+    cfg["theme_preset"] = p["theme_preset"]
+    cfg["material_enabled"] = p["material_enabled"]
+    cfg["material_type"] = p["material_type"]
+    cfg["material_strength"] = p["material_strength"]
+    cfg["material_saturate"] = p["material_saturate"]
+    cfg["material_brightness"] = p["material_brightness"]
+    cfg["material_dim"] = p["material_dim"]
+    cfg["material_image_opacity"] = p["image_opacity"]
+    cfg["panel_alpha"] = p["panel_alpha"]
     return cfg
 
 

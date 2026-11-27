@@ -38,7 +38,7 @@
 只在 GUI 主线程使用。`_notify()` 直接同步调用订阅者，
 因为换肤本身必须在主线程做（Qt 控件约束）。
 """
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Signal, Slot
 
 
 class ThemeController(QObject):
@@ -164,6 +164,33 @@ class ThemeController(QObject):
             self._notifying = False
 
     # ---------------------------------------------------------------- 订阅
+    @Slot()
+    def _run_pending_dispatch(self):
+        """执行主线程排队中的回调。
+
+        ## 为什么放在 ThemeController 上
+
+        子线程异常时需要在**主线程**弹窗（Qt 控件只能在主线程创建）。
+        `QMetaObject.invokeMethod(..., QueuedConnection)` 需要一个
+        **主线程已存在的** QObject 当接收者——ThemeController 正好是：
+        由 AppRuntime 在主线程构造，生命周期与程序一致。
+
+        详见 `AppRuntime._dispatch_to_main`。
+        """
+        owner = getattr(self, "_dispatch_owner", None)
+        if owner is None:
+            return
+        try:
+            pending = getattr(owner, "_pending_dispatch", None) or []
+            while pending:
+                fn = pending.pop(0)
+                try:
+                    fn()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     def subscribe(self, callback):
         """订阅主题变化。返回一个可调用的取消订阅函数。
 

@@ -50,11 +50,37 @@ _recent = {}
 #: 用户设置的弹窗回调（由 UI 层注入；None 时只记录不弹）
 _alert_callback = None
 
+#: 把回调调度到主线程的函数（由 UI 层注入）。
+#:
+#: ## ⚠ 为什么必须有这个
+#:
+#: Qt 的控件**只能在主线程创建**。子线程异常时如果在异常发生的线程里
+#: 直接 `new QDialog`，会触发
+#:
+#:     QObject::setParent: Cannot set parent, new parent is in a different thread
+#:
+#: 后果不是"弹窗没显示"这么简单——Qt 内部的父子关系处于无效状态，
+#: 后续的事件处理会让**整个进程无响应然后退出**，崩溃兜底等于没做。
+#:
+#: 所以异常处理只负责收集信息，真正弹窗必须经这里转到主线程。
+_dispatch_to_main = None
+
 #: 是否已经安装过（避免重复包装）
 _installed = False
 
 #: 保存最近一次异常的完整信息，供"导出报告"使用
 _last_crash = {}
+
+
+def set_dispatch(fn):
+    """注入"把可调用对象调度到主线程"的函数。
+
+    :param fn: `fn(callable) -> None`。UI 层用
+               `QTimer.singleShot(0, cb)` 或
+               `QMetaObject.invokeMethod(..., Qt.QueuedConnection)` 实现。
+    """
+    global _dispatch_to_main
+    _dispatch_to_main = fn
 
 
 def set_alert_callback(fn):
@@ -228,6 +254,44 @@ def export_report(path=None, **kw):
         return None
 
 
+def _on_main_thread():
+    """当前是否在 Qt 主线程上。
+
+    没有 Qt 应用时（纯 Python 测试）永远返回 True——那时不存在线程
+    限制，直接弹就行。
+    """
+    try:
+        from PySide6.QtCore import QCoreApplication, QThread
+
+        app = QCoreApplication.instance()
+        if app is None:
+            return True
+        return QThread.currentThread() == app.thread()
+    except Exception:
+        return True
+
+
+def _dispatch_alert(fn):
+    """把一次弹窗调度到主线程执行；已经在主线程就直接跑。"""
+    if _on_main_thread():
+        try:
+            fn()
+        except Exception:
+            pass
+        return
+    # 子线程：必须经 Qt 的排队机制转交，否则控件会在错误线程创建
+    if _dispatch_to_main is not None:
+        try:
+            _dispatch_to_main(fn)
+            return
+        except Exception:
+            pass
+    # 没有调度器时**宁可不弹**，也不要在子线程里造 QWidget——
+    # 那会触发 "Cannot set parent, new parent is in a different thread"，
+    # 进而让整个进程无响应退出，比不弹窗严重得多。
+    return
+
+
 def _handle(exc_type, exc_value, exc_tb, source="main"):
     """统一处理一次未捕获异常。"""
     global _last_crash
@@ -248,19 +312,24 @@ def _handle(exc_type, exc_value, exc_tb, source="main"):
         "exc_tb": exc_tb,
     }
 
-    # 3. 去重后弹窗提醒
+    # 3. 去重后弹窗提醒（**转到主线程**）
     sig = _signature(exc_type, exc_value, exc_tb)
     if _alert_callback is None or not _should_alert(sig):
         return
-    try:
-        summary = "%s: %s" % (getattr(exc_type, "__name__", "异常"),
-                              str(exc_value)[:200])
-        detail = "".join(traceback.format_exception(
-            exc_type, exc_value, exc_tb)).rstrip()
-        _alert_callback(summary, detail)
-    except Exception:
-        # 弹窗本身出错不能递归
-        pass
+
+    summary = "%s: %s" % (getattr(exc_type, "__name__", "异常"),
+                          str(exc_value)[:200])
+    detail = "".join(traceback.format_exception(
+        exc_type, exc_value, exc_tb)).rstrip()
+
+    def _show():
+        try:
+            _alert_callback(summary, detail)
+        except Exception:
+            # 弹窗本身出错不能递归
+            pass
+
+    _dispatch_alert(_show)
 
 
 def last_crash_report():

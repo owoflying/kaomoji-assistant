@@ -223,6 +223,8 @@ class AppRuntime:
         #: 主题唯一权威源。所有窗口从这里取主题，不要自己 build/cache。
         self.theme_ctrl = ThemeController(self.config)
         self.theme_ctrl.changed.connect(self._on_theme_changed)
+        # 让主线程槽能取到排队中的弹窗回调（见 _dispatch_to_main）
+        self.theme_ctrl._dispatch_owner = self
 
         self.data = None
         self.plugins = None
@@ -389,6 +391,14 @@ class AppRuntime:
             from core import crash_guard
 
             crash_guard.set_alert_callback(self._on_crash_alert)
+            # 关键：告诉 crash_guard 怎么把弹窗转回主线程。
+            #
+            # Qt 控件只能在主线程创建。子线程异常时若直接在异常线程里
+            # new QDialog，会触发
+            #   QObject::setParent: Cannot set parent, new parent is in
+            #   a different thread
+            # 进而让整个进程无响应退出——崩溃兜底反而成了崩溃源。
+            crash_guard.set_dispatch(self._dispatch_to_main)
             crash_guard.install()
             append_log("info", "app", "崩溃兜底已启用（异常会弹窗提示并记录）")
         except Exception as e:
@@ -406,7 +416,25 @@ class AppRuntime:
             pass
 
     def _on_log_for_dev(self, level, source, message):
-        """日志订阅者：开发者模式下把 error / exception 弹出来。"""
+        """日志订阅者：开发者模式下把 error / exception 弹出来。
+
+        ## ⚠ 这个函数可能在**子线程**里被调用
+
+        `append_log` 是全局的，任何线程都可能写日志（子线程崩溃时
+        `threading.excepthook` 就会写一条 exception 日志）。
+
+        如果在子线程里直接创建 QWidget 弹窗，会触发
+
+            QObject::setParent: Cannot set parent, new parent is in a
+            different thread
+
+        实测后果：**进程无响应然后退出**——崩溃兜底自己变成了崩溃源。
+        这就是用户报的"子线程异常会导致进程无响应后退出"。
+
+        所以这里必须：
+          1. 只读配置（纯 Python，线程安全）
+          2. 弹窗交给 `_dev_error_alert`，它内部会调度到主线程
+        """
         try:
             if level not in ("error", "exception"):
                 return
@@ -416,6 +444,59 @@ class AppRuntime:
             self._dev_error_alert(summary, str(message))
         except Exception:
             pass
+
+    def _dispatch_to_main(self, fn):
+        """把可调用对象调度到 Qt 主线程执行。
+
+        ## 为什么不能在子线程里造 QObject
+
+        第一版我 `new` 一个一次性 QObject 再 `moveToThread(app.thread())`，
+        结果反而触发了原本要避免的错误：
+
+            QObject::setParent: Cannot set parent, new parent is in a
+            different thread
+
+        因为**对象本身是在子线程创建的**，跨线程设置父子关系就是非法的。
+        这等于把问题原样搬了一遍，进程照样无响应退出。
+
+        ## 正确做法
+
+        用一个**主线程已经存在的** QObject 当接收者，通过
+        `QMetaObject.invokeMethod(..., Qt.QueuedConnection)` 投递。
+        队列连接由 Qt 内部把调用排进**接收者所属线程**的事件队列，
+        跨线程调用是合法的。
+
+        接收者用 `self.theme_ctrl`——它由 AppRuntime 在主线程构造，
+        生命周期与程序一致，不需要额外管理。回调内容存在
+        `self._pending_dispatch` 里，由接收者的槽取走。
+        """
+        try:
+            from PySide6.QtCore import QCoreApplication, Qt
+
+            app = QCoreApplication.instance()
+            if app is None:
+                fn()
+                return
+            receiver = getattr(self, "theme_ctrl", None)
+            if receiver is None:
+                fn()
+                return
+            # 队列里可能排着多个回调，用列表保序
+            pending = getattr(self, "_pending_dispatch", None)
+            if pending is None:
+                pending = []
+                self._pending_dispatch = pending
+            pending.append(fn)
+            from PySide6.QtCore import QMetaObject
+
+            QMetaObject.invokeMethod(receiver, "_run_pending_dispatch",
+                                     Qt.QueuedConnection)
+        except Exception:
+            # 兜底：直接调用。宁可冒线程风险，也不要让异常彻底消失
+            try:
+                fn()
+            except Exception:
+                pass
 
     def _on_crash_alert(self, summary, detail):
         """崩溃回调：弹窗告知用户（非阻塞）。"""
@@ -439,6 +520,13 @@ class AppRuntime:
 
         只有在 `developer_mode` 打开时才弹——普通用户不需要看到
         每一次内部错误的细节（那些仍然写日志）。
+
+        ## ⚠ 必须调度到主线程
+
+        这个方法可能被**子线程**调用（子线程崩溃 → `threading.excepthook`
+        → `append_log` → 日志订阅者 → 这里）。Qt 控件只能在主线程创建，
+        否则会触发 "Cannot set parent, new parent is in a different thread"，
+        进而让进程无响应退出。
         """
         try:
             if not bool(self.config.get("developer_mode", False)):
@@ -446,11 +534,22 @@ class AppRuntime:
             from ui.crash_dialog import show_error
 
             parent = self.unified if getattr(self, "unified", None) else None
-            self._error_dialogs = getattr(self, "_error_dialogs", [])
-            dlg = show_error(summary, detail, parent=parent)
-            if dlg is not None:
-                self._error_dialogs.append(dlg)
-                self._error_dialogs = self._error_dialogs[-3:]
+
+            def _show():
+                try:
+                    from core.crash_guard import _on_main_thread
+
+                    if not _on_main_thread():
+                        return
+                    self._error_dialogs = getattr(self, "_error_dialogs", [])
+                    dlg = show_error(summary, detail, parent=parent)
+                    if dlg is not None:
+                        self._error_dialogs.append(dlg)
+                        self._error_dialogs = self._error_dialogs[-3:]
+                except Exception:
+                    pass
+
+            self._dispatch_to_main(_show)
         except Exception:
             pass
 

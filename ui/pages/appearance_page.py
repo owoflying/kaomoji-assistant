@@ -507,38 +507,44 @@ class AppearancePage(QWidget):
         surface = self._current_surface()
         cfg = self._ctrl.config()
 
-        # 旧键名 → 主题包字段名
+        # ---- 键名白名单：**自动来自主题包字段表**，不再手写 ----
         #
-        # ⚠ 漏了任何一项都会静默丢弃改动（用户改了之后"什么都不发生"）。
-        # 这个坑踩过两次：
-        #   * 裁切四项（crop_x/y/w/h）漏了 → 点「选择显示区域」没反应
-        #   * **theme_mode / theme_preset 漏了** → 换主题完全不生效：
-        #     下拉框选项变了，但界面一直停在原主题。
-        #     因为 patch 为空时下面直接 return，连日志都不留。
-        alias = {
-            "material_strength": "material_strength",
-            "material_saturate": "material_saturate",
-            "material_brightness": "material_brightness",
-            "material_dim": "material_dim",
-            "material_type": "material_type",
-            "material_enabled": "material_enabled",
-            "panel_alpha": "panel_alpha",
-            "image_opacity": "image_opacity",
-            # 主题（明暗 / 配色方案）—— 漏了就等于换肤功能整个失效
-            "theme_mode": "theme_mode",
-            "theme_preset": "theme_preset",
-            # 背景图裁切
-            "crop_x": "crop_x",
-            "crop_y": "crop_y",
-            "crop_w": "crop_w",
-            "crop_h": "crop_h",
-        }
+        # ## 这里曾经是一张手写的 alias 表，反复出事
+        #
+        # 手写表的致命问题：`core.theme_profile.DEFAULT_PROFILE` 加了新字段，
+        # 但没人记得同步那张表 → 控件的改动走进 `_push` 后被静默丢弃，
+        # 用户看到的是"点了没反应"。
+        #
+        # 已经踩过的例子：
+        #   * 裁切四项（crop_x/y/w/h）漏了 → 「选择显示区域」点击无反应
+        #   * theme_mode / theme_preset 漏了 → 换主题整个失效
+        #
+        # 现在改成**直接从主题包字段表取**：只要字段进了 DEFAULT_PROFILE，
+        # 这里自动认识它。以后再也不用维护两处。
+        from core.theme_profile import DEFAULT_PROFILE
+
+        alias = {key: key for key in DEFAULT_PROFILE}
         patch = {}
+        ignored = []
         for key, val in changes.items():
             if key in alias:
                 patch[alias[key]] = val
             elif key in ("opacity",):
                 continue        # 候选条透明度已合并到 panel_alpha
+            else:
+                ignored.append(key)
+
+        # 有字段被丢弃时必须**留下痕迹**——静默丢弃是最难查的 bug 类型。
+        if ignored:
+            try:
+                from core.applog import append_log
+
+                append_log("warn", "appearance",
+                           "_push 丢弃了未登记的字段：%r"
+                           "（若这是外观选项，请加进 "
+                           "core.theme_profile.DEFAULT_PROFILE）" % (ignored,))
+            except Exception:
+                pass
 
         if not patch:
             return
@@ -708,6 +714,17 @@ class AppearancePage(QWidget):
         ok, msg = save_user_theme(dlg.result_data())
         if not ok:
             return
+        # 自定义主题的色板已经**写到磁盘**了。必须强制重载，
+        # 不能只调 `_push(theme_preset="custom")`——
+        # 若当前 preset 本来就是 custom，diff 为空、apply_settings 不触发，
+        # 结果就是"编辑器里改了强调色，点了确定却什么都不发生"。
+        # 这正是之前反复踩的"配置提前落盘、差异比对失效"坑。
+        cb2 = getattr(self, "_force_reload_cb", None)
+        if cb2 is not None:
+            try:
+                cb2()
+            except Exception:
+                pass
         if cb is not None:
             cb(self._ctrl.config(), None)
         self._loading = True

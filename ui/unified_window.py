@@ -495,6 +495,8 @@ class UnifiedSettingsWindow(FramelessShell):
                 self.appearance_ctrl, self.theme,
                 on_apply=self._on_appearance_applied)
             page._theme_preview_cb = self._appearance_theme_preview
+            # 主题编辑器保存后必须强制重载（色板已写盘，不能靠 diff 判断）
+            page._force_reload_cb = self._force_reload_theme
             # 换材质种类时走「后退 + 遮罩」过渡，与换肤体感一致
             page._animated_apply = self.apply_material_with_fade
             page.refresh_from_controller()
@@ -1042,6 +1044,26 @@ class UnifiedSettingsWindow(FramelessShell):
         """
         try:
             self.config_applied.emit(dict(new_cfg or self.config))
+        except Exception:
+            pass
+
+    def _force_reload_theme(self):
+        """强制重新加载主题（绕开差异比对）。
+
+        ## 为什么不能走 `config_applied` → `apply_settings`
+
+        主题编辑器保存时，色板已经写到 `themes.json`。如果当前
+        preset 本来就是 `custom`，配置里的 `theme_preset` 没有变化，
+        `apply_settings` 的 diff 为空 → 不重载 → 用户改的强调色
+        完全看不见（实测：编辑器点确定后 apply_settings 调用 0 次）。
+
+        所以这里直接让 controller rebuild，并广播新主题。
+        """
+        try:
+            ctrl = getattr(self, "theme_ctrl", None)
+            if ctrl is None:
+                return
+            ctrl.set_config(self.config, notify=True)
         except Exception:
             pass
 

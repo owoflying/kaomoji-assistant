@@ -252,17 +252,35 @@ class MaterialComposer:
                 drew_image = True
 
         # ---- 2. 没有背景图 → 实色面板 ----
+        #
+        # ⚠ 这里曾经 import 了 `ui.theme_presets`——那个模块**不存在**
+        # （实际是 `core.theme_presets`）。ImportError 被下面的
+        # `except Exception: pass` 吃掉，于是实色面板从来没画过。
+        #
+        # 后果：没设背景图时 `compose()` 返回**全透明图**。
+        # 主窗口有自己的底色兜底所以看不出来，但托盘菜单依赖这张图，
+        # 结果就是"菜单是透明的/白的"，而且怎么调主题都不对。
+        #
+        # 教训：这种 `except: pass` 会把"导入写错"伪装成"渲染没效果"，
+        # 排查时完全看不到线索。所以现在失败会**写日志**。
         if not drew_image:
             try:
-                from ui.theme_presets import parse_color
+                from core.theme_presets import parse_color
 
-                bg_spec = getattr(theme, "bg", None) or "" 
+                bg_spec = getattr(theme, "bg", None) or ""
                 r, g, b, a = parse_color(bg_spec)
                 p.fillRect(0, 0, w, h,
                            QColor(r, g, b, int(max(0.0, min(1.0, a)) * 255)))
-            except Exception:
-                # 主题都拿不到时不填色：留透明，让窗口自己的兜底绘制负责
-                pass
+            except Exception as e:
+                # 主题都拿不到时不填色：留透明，让窗口自己的兜底绘制负责。
+                # 但必须留下痕迹——静默吞掉会让上面那种导入错误隐身。
+                try:
+                    from core.applog import append_log
+
+                    append_log("warn", "material",
+                               "实色面板填充失败（合成图将为透明）：%r" % (e,))
+                except Exception:
+                    pass
 
         # ---- 3. 整窗透明度 ----
         if alpha < 0.999:

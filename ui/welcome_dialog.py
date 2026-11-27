@@ -108,6 +108,10 @@ class WelcomeDialog(QDialog):
         self.setWindowFlags(
             self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
         self._config = dict(config or {})
+        #: 启动时的配置快照。`accept()` 只跟它比差异——
+        #: 导入备份后 `self._config` 会被更新，拿它当基准会让
+        #: "刚导入的值"被判成没变化，导致当前会话不生效。
+        self._start_config = dict(self._config)
         # 从主题包取主题（默认沿用主配置）
         from ui.window_material_mixin import surface_theme
 
@@ -208,7 +212,7 @@ class WelcomeDialog(QDialog):
         return page
 
     def _setup_block(self):
-        """最后一页的两项配置：热键 + 外观。"""
+        """最后一页：热键 + 外观 + 从备份导入。"""
         from ui.pages._scaffold import card, card_layout
 
         box = card()
@@ -244,6 +248,38 @@ class WelcomeDialog(QDialog):
         r2.addStretch(1)
         lay.addLayout(r2)
 
+        # 从备份导入（老用户换机器时最需要的一步）
+        #
+        # 为什么放在欢迎页：
+        #   刚装好的第一次启动，正是"我之前用过，能不能把数据带过来"
+        #   这个念头最强的时候。让用户先走完向导、进了设置页再去找
+        #   「数据迁移」，等于要他多绕一圈。
+        #
+        # 这里导入会覆盖刚生成的全新配置，所以导入成功后要**立刻回填
+        # 上面两个下拉框**，让用户看见"确实生效了"。
+        #
+        # 导入后不重启也能让热键/外观立即对——这两项直接改界面上的值
+        # 并经 accept() 提交给宿主；其余数据（使用记录、训练数据）
+        # 会在下次启动时自然读入。
+        r3 = QHBoxLayout()
+        r3.setSpacing(10)
+        l3 = QLabel("已有备份")
+        l3.setObjectName("BodyText")
+        l3.setFixedWidth(72)
+        r3.addWidget(l3)
+        btn = QPushButton("从备份导入…")
+        btn.setMinimumHeight(30)
+        btn.setToolTip(
+            "如果你之前用过这个程序、做过「导出全部数据」，"
+            "可以在这里直接把设置、外观、训练数据和使用记录带过来。")
+        btn.clicked.connect(self._on_import_backup)
+        r3.addWidget(btn)
+        self._import_hint = QLabel("从旧机器迁移？选这个可以跳过手动配置。")
+        self._import_hint.setObjectName("Caption")
+        self._import_hint.setWordWrap(True)
+        r3.addWidget(self._import_hint, 1)
+        lay.addLayout(r3)
+
         # 回填当前值
         cur_hotkey = str(self._config.get("hotkey", ""))
         for i in range(self._hotkey_combo.count()):
@@ -256,6 +292,91 @@ class WelcomeDialog(QDialog):
                 self._theme_combo.setCurrentIndex(i)
                 break
         return box
+
+    def _on_import_backup(self):
+        """从备份包导入全部数据，并把热键/外观的选择同步到界面上。"""
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+        from core import backup, runtime
+
+        path, _f = QFileDialog.getOpenFileName(
+            self, "选择备份包", "", "Kaomoji 备份包 (*.zip)")
+        if not path:
+            return
+
+        ok, msg, manifest = backup.inspect(path)
+        if not ok:
+            QMessageBox.warning(self, "无法导入", msg)
+            return
+
+        # 展示内容摘要后二次确认——这是会覆盖刚生成配置的操作
+        lines = []
+        try:
+            created = manifest.get("created_at", "?")
+            lines.append("备份创建于：%s" % created)
+            lines.append("")
+            for label, n, size in backup.summarize(manifest):
+                lines.append("  · %s：%d 项（%s）"
+                             % (label, n, backup.human_size(size)))
+        except Exception:
+            pass
+        lines.append("")
+        lines.append("导入会覆盖当前的默认设置。确定继续？")
+
+        box = QMessageBox(self)
+        box.setWindowTitle("从备份导入")
+        box.setIcon(QMessageBox.Question)
+        box.setText("要用这个备份替换当前设置吗？")
+        box.setInformativeText("\n".join(lines))
+        yes = box.addButton("导入", QMessageBox.AcceptRole)
+        box.addButton("取消", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is not yes:
+            return
+
+        ok, msg, detail = backup.import_all(path, runtime.app_data_dir())
+        if not ok:
+            QMessageBox.warning(self, "导入失败", msg)
+            return
+
+        # 把导入后的设置同步到界面
+        self._sync_after_import()
+        self._import_hint.setText(
+            "已导入 %d 个文件。热键和外观已按备份更新。"
+            % len((detail or {}).get("written", [])))
+        QMessageBox.information(
+            self, "导入完成",
+            "%s。\n\n热键和外观已更新；使用记录、训练数据等会在"
+            "下次启动后生效。" % msg)
+
+    def _sync_after_import(self):
+        """导入后重新读配置，回填热键/外观下拉框，并记入 `chosen`。
+
+        导入写的是磁盘上的 config.json，而本对话框的 `self._config`
+        还是启动时的旧值。这里重新读一遍，让用户立刻看到变化，
+        并把差异放进 `chosen`，由 `accept()` 交给宿主应用。
+        """
+        try:
+            from core.config_store import load_config
+
+            fresh = load_config()
+        except Exception:
+            return
+
+        hk = str(fresh.get("hotkey", ""))
+        for i in range(self._hotkey_combo.count()):
+            if self._hotkey_combo.itemData(i) == hk:
+                self._hotkey_combo.setCurrentIndex(i)
+                break
+
+        th = str(fresh.get("theme_mode") or fresh.get("theme") or "system")
+        for i in range(self._theme_combo.count()):
+            if self._theme_combo.itemData(i) == th:
+                self._theme_combo.setCurrentIndex(i)
+                break
+
+        # 让 accept() 把这些变化交给宿主（它会写回并应用）
+        self._config.update(fresh)
 
     # ------------------------------------------------------------ 导航
     def _sync_buttons(self):
@@ -358,16 +479,28 @@ class WelcomeDialog(QDialog):
 
     # ------------------------------------------------------------ 收尾
     def accept(self):
-        """点「开始使用」：把用户改过的配置交给调用方。"""
+        """点「开始使用」：把用户改过的配置交给调用方。
+
+        ## 为什么和 `self._start_config` 比，而不是 `self._config`
+
+        `_sync_after_import()` 在导入后会把磁盘配置合并进
+        `self._config`。如果这里仍然和 `self._config` 比，那些
+        **刚刚从备份导入**的值就会被判定为"没变化"，
+        于是不会交给宿主 → 当前会话里热键和外观不生效，
+        用户得重启一次才看得到。
+
+        所以另存一份启动时的快照，只跟它比。
+        """
+        base = getattr(self, "_start_config", None) or self._config or {}
         try:
             self.chosen = {}
             if getattr(self, "_hotkey_combo", None) is not None:
                 hk = self._hotkey_combo.currentData()
-                if hk and hk != self._config.get("hotkey"):
+                if hk and hk != base.get("hotkey"):
                     self.chosen["hotkey"] = hk
             if getattr(self, "_theme_combo", None) is not None:
                 th = self._theme_combo.currentData()
-                if th and th != self._config.get("theme"):
+                if th and th != base.get("theme"):
                     self.chosen["theme"] = th
                     self.chosen["theme_mode"] = th
         except Exception:

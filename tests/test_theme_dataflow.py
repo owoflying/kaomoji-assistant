@@ -161,3 +161,78 @@ def test_snapshot_taken_before_mutating_config():
     assert "set_profile(cfg," not in body, (
         "不能直接 set_profile(cfg, ...) 改宿主配置，"
         "必须改 target 快照，让宿主自己去落盘+广播。")
+
+
+def test_animation_switches_are_all_wired():
+    """每个动画开关都必须有实际生效的检查点。
+
+    ## 为什么需要这条
+
+    四个动画开关（页面切换 / 按钮悬停 / 候选条 / 开关控件 / 换肤）
+    分散在不同文件里，各自检查一处。漏掉任何一处，用户关掉开关后
+    那个动画照样播——而**不会报错**，只能靠人肉发现。
+
+    实测踩到过：`page_switch` 只挡住了整体淡入，
+    `reveal_page()` 的页内逐块浮现没挡，用户看到的仍然是
+    "元素一个个冒出来"，于是反馈"界面切换开关无效"。
+    """
+    from core.anim_settings import ANIMATIONS
+
+    sources = {
+        "page_switch": "ui/unified_nav.py",
+        "hover": "ui/hover_feedback.py",
+        "picker": "ui/picker_window.py",
+        "theme": "ui/theme_fade.py",
+        "toggle": "ui/toggle_switch.py",
+    }
+    missing = []
+    for name, _key, label, _desc in ANIMATIONS:
+        rel = sources.get(name)
+        if rel is None:
+            missing.append("%s（没有登记检查点文件）" % label)
+            continue
+        src = _read(rel)
+        if ('_anim_on("%s")' % name) not in src and \
+                ("_anim_on('%s')" % name) not in src:
+            missing.append("%s（%s 里找不到 enabled(%r) 检查）"
+                           % (label, rel, name))
+    assert not missing, "动画开关没有生效检查点：\n  " + "\n  ".join(missing)
+
+
+def test_page_switch_also_gates_intro_reveal():
+    """「页面切换」开关必须同时管住页内逐块浮现。
+
+    这是实测踩过的坑：只关整体淡入、没关 `reveal_page()`，
+    用户会觉得开关完全无效。
+
+    实现上要保证 `reveal_page(...)` 出现在一个 `if animate:` 分支里
+    （`animate` 在 set_page 开头已按开关算好）。
+    """
+    src = _read("ui/unified_nav.py")
+    i = src.find("def set_page")
+    j = src.find("\n    def ", i + 10)
+    body = src[i:j]
+
+    assert "_anim_on(\"page_switch\")" in body or \
+        "_anim_on('page_switch')" in body, (
+        "set_page 必须检查 anim_settings.enabled('page_switch')——\n"
+        "否则关掉开关后仍有动画。")
+
+    lines = body.splitlines()
+    reveal_at = None
+    for idx, line in enumerate(lines):
+        if "reveal_page(" in line:
+            reveal_at = idx
+            break
+    assert reveal_at is not None, "set_page 里应该调用 reveal_page 做页内浮现"
+
+    # 往上找最近的 if 语句，必须是以 animate 为条件的
+    guard = ""
+    for k in range(reveal_at, max(-1, reveal_at - 12), -1):
+        s = lines[k].strip()
+        if s.startswith("if "):
+            guard = s
+            break
+    assert "animate" in guard, (
+        "reveal_page 必须包在 `if animate:` 里，当前最近的 if 是：%r\n"
+        "否则用户关掉「页面切换」后，页内元素仍会逐个浮现。" % (guard,))

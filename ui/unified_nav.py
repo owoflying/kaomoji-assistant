@@ -210,6 +210,21 @@ class NavController:
         # 窗口未显示时没有有效 geometry，动画会导致布局错乱，强制走静态切换
         if animate and not host.isVisible():
             animate = False
+        # 用户关掉「页面切换」动画 → 整体淡入和页内逐块浮现一起停。
+        #
+        # ⚠ 这个开关必须在**这里**统一判断，不能只依赖
+        # `AnimatedStackedWidget.slide_to()` 内部的检查：
+        # 那样只是"整体淡入"没了，下面 `reveal_page()` 的页内
+        # 逐块浮现照样执行，用户看到的仍然是"页面元素一个个冒出来"，
+        # 于是觉得开关无效（实测反馈）。
+        if animate:
+            try:
+                from core.anim_settings import enabled as _anim_on
+
+                if not _anim_on("page_switch"):
+                    animate = False
+            except Exception:
+                pass
         # 进入/离开时管理开发者页后台计时器：离开即停止（含退出动画期间），
         # 避免淡出过程中后台仍刷新文本导致「文字跳动/闪烁」；进入时启动。
         leaving = host.content.currentWidget()
@@ -236,12 +251,16 @@ class NavController:
         #
         # 插件页走的是同一段代码，所以**插件作者不需要任何适配**
         # 就能获得这个效果（用户明确提过要"插件的侧边独立界面也这样"）。
-        try:
-            from ui.page_reveal import reveal_page
+        #
+        # ⚠ `animate` 为 False（用户关掉了「页面切换」）时**必须跳过**，
+        # 否则关掉开关后元素仍然逐个浮现，等于开关无效。
+        if animate:
+            try:
+                from ui.page_reveal import reveal_page
 
-            host._reveal_anims = reveal_page(page, delay=40)
-        except Exception:
-            pass
+                host._reveal_anims = reveal_page(page, delay=40)
+            except Exception:
+                pass
 
     def current_page(self):
         return self.host.content.currentWidget()

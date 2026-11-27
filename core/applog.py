@@ -111,7 +111,30 @@ def install_qt_log_filter():
 
 
 def install_excepthook():
-    """把未捕获的 Python 异常也收进日志缓冲（含 Qt 信号槽里抛出的异常）。"""
+    """把未捕获的 Python 异常收进日志缓冲。
+
+    ## 已委托给 crash_guard
+
+    原来这里只做"写一行日志"，用户完全不知道出事了（详见
+    `core/crash_guard.py` 的模块说明）。现在转发到 `crash_guard.install()`，
+    于是**程序一启动就有完整兜底**——包括 `main.py` 里 QApplication
+    构造之前那段时间的异常。
+
+    保留这个函数名是为了不破坏既有调用点。
+
+    ⚠ 它必须在 `AppRuntime` 之前调用（`main.py` 开头就是这个顺序）。
+    `AppRuntime` 还会再调一次 `crash_guard.install()`，但那是幂等的
+    （内部有 `_installed` 标志），重复调用只补上弹窗回调。
+    """
+    try:
+        from core.crash_guard import install as _install_crash_guard
+
+        _install_crash_guard()
+        return
+    except Exception:
+        pass
+
+    # 兜底：crash_guard 不可用时至少保证日志里能看到
     def hook(exc_type, exc_value, exc_tb):
         text = "".join(
             traceback.format_exception(exc_type, exc_value, exc_tb)).rstrip()

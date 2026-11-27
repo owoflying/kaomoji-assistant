@@ -325,7 +325,102 @@ class DevPage(QWidget):
         btn = QPushButton("刷新诊断")
         btn.clicked.connect(self._refresh_diag)
         v.addWidget(btn)
+
+        # ---- 异常测试 ----
+        #
+        # 用来验证崩溃兜底是否真的工作：点击后**故意抛一个异常**，
+        # 应该看到弹窗提示 + 可导出报告，而程序不退出。
+        #
+        # 三种抛法覆盖不同链路：
+        #   1. 普通异常    → sys.excepthook
+        #   2. 子线程异常  → threading.excepthook
+        #   3. 日志报错    → 开发者模式下的 error 日志即时弹窗
+        sep = QLabel("异常测试")
+        sep.setObjectName("CardTitle")
+        v.addWidget(sep)
+
+        hint = QLabel("点下去会真的抛异常，用来确认崩溃兜底是否生效——"
+                      "应该弹出提示窗、程序不退出，并且能导出报告。")
+        hint.setObjectName("Caption")
+        hint.setWordWrap(True)
+        v.addWidget(hint)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        b1 = QPushButton("抛出异常")
+        b1.setToolTip("在主线程抛出 ValueError，走 sys.excepthook")
+        b1.clicked.connect(self._test_raise_exception)
+        row.addWidget(b1)
+
+        b2 = QPushButton("子线程异常")
+        b2.setToolTip("在工作线程里抛出，走 threading.excepthook")
+        b2.clicked.connect(self._test_raise_in_thread)
+        row.addWidget(b2)
+
+        b3 = QPushButton("打一条错误日志")
+        b3.setToolTip("写一条 error 日志，验证开发者模式的即时弹窗")
+        b3.clicked.connect(self._test_error_log)
+        row.addWidget(b3)
+
+        b4 = QPushButton("导出崩溃报告")
+        b4.setToolTip("把最近一次异常导出成 txt（不抛新异常）")
+        b4.clicked.connect(self._test_export_report)
+        row.addWidget(b4)
+        row.addStretch(1)
+        v.addLayout(row)
         return card
+
+    # ---- 异常测试 ----
+
+    def _test_raise_exception(self):
+        """故意在主线程抛异常，验证 sys.excepthook → 弹窗。
+
+        ## 为什么用 raise 而不是 sys.excepthook(...) 直接调
+
+        直接调只是"模拟回调"，而 `raise` 走的是**真实路径**：
+        异常从 Qt 槽函数里冒出来，PySide6 把它转给 `sys.excepthook`。
+        这才是用户实际会遇到的场景——如果是槽函数里的异常，
+        直接调 `sys.excepthook` 测不出来。
+        """
+        raise ValueError("这是一次异常测试（来自开发者页）")
+
+    def _test_raise_in_thread(self):
+        """在工作线程里抛异常，验证 threading.excepthook。"""
+        import threading
+
+        def _boom():
+            raise RuntimeError("这是一次子线程异常测试（来自开发者页）")
+
+        t = threading.Thread(target=_boom, name="devtest", daemon=True)
+        t.start()
+
+    def _test_error_log(self):
+        """写一条 error 日志，验证开发者模式的即时弹窗。"""
+        try:
+            from core.applog import append_log
+
+            append_log("error", "devtest",
+                       "这是一条错误日志测试（来自开发者页）")
+        except Exception:
+            pass
+
+    def _test_export_report(self):
+        """导出最近一次崩溃报告（不抛新异常）。"""
+        try:
+            from core import crash_guard
+
+            path = crash_guard.export_report()
+            from core.applog import append_log
+
+            append_log("info", "devtest",
+                       "崩溃报告已导出：%s" % (path or "失败"))
+        except Exception as e:
+            try:
+                from core.applog import append_log
+
+                append_log("error", "devtest", "导出崩溃报告失败：%r" % (e,))
+            except Exception:
+                pass
 
     # ---- 3. 情绪可视化 ----
     def _build_emotion_card(self):

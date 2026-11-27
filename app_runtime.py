@@ -845,17 +845,17 @@ class AppRuntime:
         self.app.setWindowIcon(icon)
         self.tray = QSystemTrayIcon(icon, self.app)
         # 托盘菜单用 GlassMenu：**自绘**玻璃底（背景图裁剪 + 模糊 + 釉面高光）。
-        #
-        # 用 QSS 渐变模拟玻璃质感（顶部亮、底部暗 + 主题高光）。
-        #
-        # ⚠ 不要覆盖 QMenu.paintEvent 自绘：那会把菜单弄成全透明、
-        # 点不到，而且每帧重算材质图极卡。QSS 渐变在 QMenu 上实测完全
-        # 有效，稳定可靠。
+        # 托盘菜单用**自绘玻璃材质**（背景图裁剪 + 模糊 + 釉面高光）。
+        # 与统一主窗口共用一套 MaterialComposer，材质开关/强度跟着主配置走。
+        # 深色玻璃的额外压暗在 `GlassMenu._render_glass()` 里按主题处理。
         from ui.glass_menu import GlassMenu
 
         _t0 = (getattr(self, "theme_obj", None)
                or build_theme(self.config))
-        self.menu = GlassMenu(theme=_t0)
+        self.menu = GlassMenu(
+            config=self.config,
+            theme_provider=lambda: self._menu_surface_theme(),
+            surface="menu")
         # 若用户给托盘菜单单独配了外观，立刻应用
         self._theme_tray_menu(_t0)
 
@@ -1552,12 +1552,12 @@ class AppRuntime:
             return
         try:
             t = self._menu_surface_theme(theme)
-            # GlassMenu 自己按主题生成渐变玻璃样式（纯 QSS，不覆盖
-            # paintEvent——自绘那版把菜单弄成全透明且极卡，已废弃）。
-            if hasattr(menu, "set_theme"):
-                menu.set_theme(t)
-            else:
-                menu.setStyleSheet(t.menu_style())
+            # 自绘玻璃：刷新 composer（读 menu 表面配置）+ 清缓存重绘。
+            # QSS 只负责菜单项的文字/选中色，背景由 GlassMenu 自绘。
+            if hasattr(menu, "refresh_material"):
+                menu.refresh_material()
+            menu.setStyleSheet(t.menu_style(
+                glass=bool(getattr(menu, "material_enabled", lambda: False)())))
         except Exception as e:
             append_log("warn", "theme", "托盘菜单换肤失败：%r" % (e,))
 

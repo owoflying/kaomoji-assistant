@@ -220,10 +220,29 @@ class AppearancePage(QWidget):
         self.refresh_from_controller()
 
     def _on_follow_toggled(self, follow):
-        """切「独立配置」：开 = 把当前生效值落成一份覆盖；关 = 删掉覆盖。"""
+        """切「独立配置」：开 = 把当前生效值落成一份覆盖；关 = 删掉覆盖。
+
+        ## ⚠ 字段必须全量复制，不能手写清单
+
+        这里原先是手写的 8 个字段，漏了 8 个——包括 **theme_mode /
+        theme_preset**（明暗与配色），于是打开独立配置后：
+
+            在这个界面改深浅色 → patch 有 theme_mode
+            → set_override 能写进去
+            但覆盖层是**从漏了 theme_mode 的快照**建的
+
+        更糟的是 `resolve()` 合并时，覆盖层里没有的键会回落到主配置，
+        所以"打开独立配置 → 改深浅色 → 界面没反应"，
+        用户完全看不出哪里错了。
+
+        现在直接从 `DEFAULT_PROFILE` 全量复制：主题包加字段，
+        这里自动跟上，不会再漏。
+        """
         if self._loading:
             return
-        from core.theme_profile import clear_override, resolve, set_override
+        from core.theme_profile import (
+            DEFAULT_PROFILE, clear_override, resolve, set_override,
+        )
 
         surface = self._current_surface()
         if surface == "main":
@@ -231,16 +250,13 @@ class AppearancePage(QWidget):
         cfg = self._ctrl.config()
         if follow:
             p = resolve(cfg, surface)
-            set_override(cfg, surface, {
-                "material_enabled": p.get("material_enabled"),
-                "material_type": p.get("material_type"),
-                "material_strength": p.get("material_strength"),
-                "material_saturate": p.get("material_saturate"),
-                "material_brightness": p.get("material_brightness"),
-                "material_dim": p.get("material_dim"),
-                "panel_alpha": p.get("panel_alpha"),
-                "image_opacity": p.get("image_opacity"),
-            })
+            # 全量快照：把这个界面当前**实际生效**的每个字段都固化下来，
+            # 之后改动任何一项都由覆盖层接管。
+            snapshot = {}
+            for key in DEFAULT_PROFILE:
+                if key in p:
+                    snapshot[key] = p[key]
+            set_override(cfg, surface, snapshot)
         else:
             clear_override(cfg, surface)
         if self._on_apply is not None:
@@ -587,8 +603,32 @@ class AppearancePage(QWidget):
             animated = getattr(self, "_animated_apply", None)
             if animated is not None:
                 animated(lambda: self._on_apply(target))
+                self._refresh_after_apply()
                 return
         self._on_apply(target)
+        self._refresh_after_apply()
+
+    def _refresh_after_apply(self):
+        """应用改动后回填控件，让界面反映**真实生效值**。
+
+        ## 为什么需要它
+
+        `_on_apply` 最终由宿主异步处理（写盘 + 广播 + 重绘）。
+        而先前那些 `refresh_from_controller()` 调用都发生在
+        **配置还没更新**的时刻，于是读到的仍是旧值：
+
+            点候选条 → 独立配置 → 选「深色」
+            → `resolve(picker)` 已经是 dark
+            → 但下拉框显示 light（回填时配置还没落）
+
+        用户看到的是"选了深色，下拉框跳回浅色"——看起来像没保存。
+
+        这里在应用之后再回填一次，保证界面与实际生效值一致。
+        """
+        try:
+            self.refresh_from_controller()
+        except Exception:
+            pass
 
     def _push_from_slider(self, _key, _slider):
         # 默认路径不会走到（各滑块都自带 on_change）
@@ -758,7 +798,11 @@ class AppearancePage(QWidget):
             if idx >= 0 and self._surface_combo.currentIndex() != idx:
                 self._surface_combo.setCurrentIndex(idx)
             self._follow_check.setEnabled(not is_main)
-            self._follow_check.setChecked(own)
+            # 主窗口没有"独立配置"这个概念——它就是基准本身。
+            # 之前写 `setChecked(own)` 而 own 含 is_main，于是切到主窗口时
+            # 开关显示成"开"，但它是禁用的：用户看到一个亮着又点不动的开关，
+            # 会以为主窗口的独立配置被锁死了。
+            self._follow_check.setChecked(False if is_main else own)
 
             # 主题
             for combo, val in (

@@ -282,3 +282,47 @@ def test_glass_menu_cache_key_includes_dark():
         "theme_key" in body, (
         "glass_menu._render_glass 的缓存 key 必须包含主题明暗，\n"
         "否则切换深浅色后菜单玻璃底不会重算（缓存命中旧颜色）。")
+
+
+def test_override_snapshot_is_complete():
+    """打开「独立配置」时，覆盖层必须包含主题包的**全部字段**。
+
+    ## 实测踩到的现象
+
+    `_on_follow_toggled()` 原来手写 8 个字段建覆盖层，漏了 8 个，
+    其中包含 **theme_mode / theme_preset**（明暗与配色）。
+
+    后果：打开独立配置 → 在这个界面改深浅色 → 表面上 `_push`
+    写进了覆盖层，但因为快照里压根没有这个键，`resolve()` 合并时
+    又从主配置回落，于是"改了没反应"，且没有任何报错。
+
+    这与 `_push` 的 alias 手写漏字段是**同一类错误**，
+    修法也一致：从 DEFAULT_PROFILE 派生，不要手写。
+    """
+    src = _read("ui/pages/appearance_page.py")
+    i = src.find("def _on_follow_toggled")
+    assert i > 0
+    j = src.find("\n    def ", i + 10)
+    body = _strip_comments(src[i:j])
+
+    assert "DEFAULT_PROFILE" in body, (
+        "创建覆盖层时必须遍历 DEFAULT_PROFILE 全量快照——\n"
+        "手写字段清单必然漏，漏了就是静默失效（改深浅色没反应）。")
+    assert "for key in DEFAULT_PROFILE" in body, (
+        "_on_follow_toggled 里应当 `for key in DEFAULT_PROFILE` 逐项拷贝。")
+
+
+def test_every_profile_field_is_snapshotted():
+    """反过来验证：DEFAULT_PROFILE 的每个键都能被 resolve 出来。
+
+    覆盖层是按 resolve 的结果拷的，如果某个键 resolve 不出来，
+    快照里就会缺它。这条防止将来加字段时 resolve 没跟上。
+    """
+    from core.theme_profile import DEFAULT_PROFILE, resolve
+
+    cfg = {}
+    resolved = resolve(cfg, "picker")
+    missing = sorted(set(DEFAULT_PROFILE) - set(resolved))
+    assert not missing, (
+        "这些主题包字段 resolve() 没有返回，覆盖层快照会漏掉它们：%r"
+        % (missing,))

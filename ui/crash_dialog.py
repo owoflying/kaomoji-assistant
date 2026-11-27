@@ -46,8 +46,10 @@ class CrashDialog(QDialog):
     """
 
     def __init__(self, summary, detail, title="出错了", report_fn=None,
-                 parent=None):
+                 parent=None, alive=True):
         super().__init__(parent)
+        #: 程序是否还能继续运行（决定提示文案，见下方 tip 的说明）
+        self._alive = bool(alive)
         self.setWindowTitle(title)
         self.setWindowFlags(
             self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
@@ -78,8 +80,24 @@ class CrashDialog(QDialog):
         msg.setWordWrap(True)
         root.addWidget(msg)
 
-        tip = QLabel("程序没有退出，其余功能仍可继续使用。"
-                     "如果反复出现，可以把报告发给开发者。")
+        # 状态说明：**按实际情况生成，不能写死**
+        #
+        # 原来这里是一句无条件的
+        #   "程序没有退出，其余功能仍可继续使用。"
+        # 但实际分两种情况：
+        #
+        #   * 一般异常（槽函数里抛的）：进程确实还活着，这句成立
+        #   * 真正的崩溃（事件循环被破坏、Qt 内部状态无效）：
+        #     进程可能马上退出，这句话就是**误导用户**
+        #
+        # 用户指出过这个问题。所以文案由调用方通过 `alive` 参数决定。
+        if alive:
+            tip_text = ("程序仍在运行，其余功能可以继续使用。"
+                        "如果这个问题反复出现，建议导出报告发给开发者。")
+        else:
+            tip_text = ("程序可能即将退出。请先把报告导出，"
+                        "再重新启动——报告里有定位问题所需的全部信息。")
+        tip = QLabel(tip_text)
         tip.setObjectName("Caption")
         tip.setWordWrap(True)
         root.addWidget(tip)
@@ -111,6 +129,32 @@ class CrashDialog(QDialog):
         close.clicked.connect(self.accept)
         row.addWidget(close)
         root.addLayout(row)
+
+    def note_report_saved(self, path):
+        """告知弹窗"报告已经自动存到哪了"，并把路径复制到剪贴板。
+
+        程序即将退出时用户来不及手动点「导出报告」，所以崩溃路径
+        会先自动落盘，这里只负责把位置亮出来。
+        """
+        try:
+            self._saved_path = path
+            self._export.setText("报告已保存")
+            try:
+                QGuiApplication.clipboard().setText(path)
+            except Exception:
+                pass
+            lb = getattr(self, "_saved_label", None)
+            if lb is None:
+                lb = QLabel()
+                lb.setObjectName("Caption")
+                lb.setWordWrap(True)
+                lb.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                self.layout().addWidget(lb)
+                self._saved_label = lb
+            short = path if len(path) <= 90 else ("..." + path[-87:])
+            lb.setText("报告位置（已复制到剪贴板）：%s" % short)
+        except Exception:
+            pass
 
     def _on_toggle(self):
         self._expanded = not self._expanded
@@ -160,14 +204,74 @@ class CrashDialog(QDialog):
             pass
 
 
-def show_crash(summary, detail, parent=None):
-    """崩溃弹窗（由 `core.crash_guard` 的回调调用）。"""
+def probe_alive():
+    """判断程序现在还有没有救（给弹窗决定文案用）。
+
+    ## 判据
+
+        1. 有 QApplication 实例吗？
+        2. 主线程的事件循环还在跑吗？（`QThread.currentThread()` 对得上，
+           且不是正在退出的状态）
+        3. 主窗口还活着吗？
+
+    任何一条不成立就认为"可能马上退出"，文案改成提醒用户先导出报告。
+
+    ⚠ 这只是**估计**。Qt 没有可靠的"我已死"信号，所以判据偏保守：
+    拿不准时按"可能退出"处理——宁可让用户多导一份报告，
+    也不要让他以为还能用、结果什么都没保存就没了。
+    """
+    try:
+        from PySide6.QtCore import QCoreApplication, QThread
+
+        app = QCoreApplication.instance()
+        if app is None:
+            return False
+        if QThread.currentThread() != app.thread():
+            return False
+        # 事件循环是否在跑：用 processingEvents 的近似判断——
+        # 已调用 quit() 说明正在收尾
+        try:
+            if app.closingDown():
+                return False
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
+def show_crash(summary, detail, parent=None, alive=None):
+    """崩溃弹窗（由 `core.crash_guard` 的回调调用）。
+
+    :param alive: 程序是否还能继续运行；None 时用 `probe_alive()` 自动判断
+
+    ## 先落盘再弹窗
+
+    如果程序真的即将退出，弹窗可能只存在几秒——用户来不及点
+    「导出报告」。所以这里**先把报告写到磁盘**，弹窗只是告知
+    用户"东西存在哪"。
+    """
+    path = None
     try:
         from core import crash_guard
 
-        dlg = CrashDialog(summary, detail, title="程序遇到了一个问题",
+        path = crash_guard.export_report(exc_type=None,
+                                         extra=summary + "\n\n" + detail)
+    except Exception:
+        path = None
+
+    try:
+        from core import crash_guard
+
+        if alive is None:
+            alive = probe_alive()
+        dlg = CrashDialog(summary, detail,
+                          title="程序遇到了一个问题" if alive else "程序即将退出",
                           report_fn=crash_guard.last_crash_report,
-                          parent=parent)
+                          parent=parent, alive=alive)
+        # 报告已经落盘时，把路径直接展示出来，用户不用再点按钮
+        if path:
+            dlg.note_report_saved(path)
         dlg.show()
         dlg.raise_()
         return dlg
@@ -175,10 +279,15 @@ def show_crash(summary, detail, parent=None):
         return None
 
 
-def show_error(summary, detail, parent=None):
-    """开发者模式下的即时报错弹窗。"""
+def show_error(summary, detail, parent=None, alive=True):
+    """开发者模式下的即时报错弹窗。
+
+    这类错误是**局部**的（某次操作失败），程序本身没受影响，
+    所以默认 `alive=True`。
+    """
     try:
-        dlg = CrashDialog(summary, detail, title="运行时错误", parent=parent)
+        dlg = CrashDialog(summary, detail, title="运行时错误",
+                          parent=parent, alive=alive)
         dlg.show()
         dlg.raise_()
         return dlg

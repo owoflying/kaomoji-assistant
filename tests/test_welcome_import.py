@@ -155,3 +155,88 @@ def test_user_manual_change_still_works(isolated_data, qapp):
         assert dlg.chosen.get("hotkey") == "<alt>+`", dlg.chosen
     finally:
         dlg.close()
+
+
+def test_preview_mode_flag_is_set(qapp):
+    """开发者页用的预览模式必须能被识别。"""
+    from ui.welcome_dialog import WelcomeDialog
+
+    dlg = WelcomeDialog(theme_name="light", version="1.0",
+                        config={}, preview=True)
+    try:
+        assert dlg._preview is True
+    finally:
+        dlg.close()
+
+    dlg2 = WelcomeDialog(theme_name="light", version="1.0", config={})
+    try:
+        assert dlg2._preview is False
+    finally:
+        dlg2.close()
+
+
+def test_preview_import_never_writes(isolated_data, tmp_path, qapp,
+                                     monkeypatch):
+    """**预览模式下导入不能写盘**。
+
+    这是用户明确要求的：开发者页点「首次使用引导」只是看看界面，
+    如果在预览里真的导入，点一下就把自己真实数据覆盖了，
+    而且是在"只想看看"的意图下发生的。
+
+    这里不点真实按钮（会弹窗阻塞），而是验证那条分支的核心事实：
+    走到预览分支时，`backup.import_all` **一次都不会被调用**，
+    磁盘上的文件与调用前完全一致。
+    """
+    from core import backup
+    from core.config_store import load_config
+    from ui.welcome_dialog import WelcomeDialog
+
+    pkg = _make_backup(isolated_data, {
+        "hotkey": "<ctrl>+<alt>+k",
+        "theme_mode": "dark",
+        "theme": "dark",
+    }, tmp_path)
+
+    _write_cfg(isolated_data, {
+        "hotkey": "<ctrl>+<shift>+k",
+        "theme_mode": "light",
+        "theme": "light",
+    })
+
+    def _snapshot():
+        out = {}
+        for dp, _dns, fs in os.walk(isolated_data):
+            for f in fs:
+                p = os.path.join(dp, f)
+                out[os.path.relpath(p, isolated_data)] = os.path.getmtime(p)
+        return out
+
+    calls = {"n": 0}
+    real_import = backup.import_all
+
+    def _spy(*a, **kw):
+        calls["n"] += 1
+        return real_import(*a, **kw)
+
+    monkeypatch.setattr(backup, "import_all", _spy)
+
+    before = _snapshot()
+    dlg = WelcomeDialog(theme_name="light", version="1.0",
+                        config=load_config(), preview=True)
+    try:
+        ok, _msg, manifest = backup.inspect(pkg)
+        assert ok
+        # 预览分支应当只报告、不写盘
+        will = dlg._preview_import_files(manifest)
+        assert will, "预览应列出会还原的文件"
+    finally:
+        dlg.close()
+
+    after = _snapshot()
+    assert calls["n"] == 0, "预览模式调用了 import_all，会写盘！"
+    assert before == after, "预览模式改动了磁盘文件"
+    # 配置也没被改写
+    with open(os.path.join(isolated_data, "config.json"),
+              encoding="utf-8") as f:
+        cfg = json.load(f)
+    assert cfg["hotkey"] == "<ctrl>+<shift>+k"

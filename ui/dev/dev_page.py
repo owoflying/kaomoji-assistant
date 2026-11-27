@@ -686,15 +686,21 @@ class DevPage(QWidget):
         return getattr(t, "name", "light")
 
     def _preview_welcome(self):
-        """强制重看首次使用引导（不写标记）。"""
+        """强制重看首次使用引导（不写标记、不写盘）。
+
+        `preview=True` 让向导进入预览模式：界面完全一致，但
+        「从备份导入」只演练不落盘。否则开发者点一下预览，
+        就可能把用户真实数据覆盖掉。
+        """
         try:
             from ui.welcome_dialog import WelcomeDialog
             dlg = WelcomeDialog(theme_name=self._theme_name(),
                                 version=self._version_text(),
-                                config=self.config, parent=self.window())
+                                config=self.config, parent=self.window(),
+                                preview=True)
             dlg.exec()
             dlg.deleteLater()
-            self._log_preview("首次使用引导")
+            self._log_preview("首次使用引导（预览，不写盘）")
         except Exception as e:
             self._log_preview_error("首次使用引导", e)
         self._refresh_dialog_state()

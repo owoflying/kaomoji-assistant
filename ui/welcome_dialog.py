@@ -35,7 +35,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QGraphicsOpacityEffect, QHBoxLayout, QLabel,
+    QComboBox, QDialog, QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel,
     QPushButton, QVBoxLayout, QWidget,
 )
 
@@ -102,8 +102,22 @@ class WelcomeDialog(QDialog):
     #: 兼容旧调用 WelcomeDialog.maybe_show(...)
     maybe_show = staticmethod(lambda *a, **kw: maybe_show(*a, **kw))
 
-    def __init__(self, theme_name="light", version="", config=None, parent=None):
+    def __init__(self, theme_name="light", version="", config=None, parent=None,
+                 preview=False):
+        """欢迎向导。
+
+        :param preview: **预览模式**（开发者页「弹窗预览」用）。
+            预览时界面与真实向导完全一致，但：
+
+              * 「从备份导入」**不写盘**，只做一次演练（选包、检查、
+                展示摘要、给出"如果真导入会还原哪些文件"的结果）
+              * 不写任何标记文件
+
+            这样改界面时能完整点到每个按钮，又不会把用户真实数据覆盖掉
+            ——预览一次就把人家数据弄没了是不可接受的。
+        """
         super().__init__(parent)
+        self._preview = bool(preview)
         self.setWindowTitle("欢迎使用")
         self.setWindowFlags(
             self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
@@ -255,30 +269,44 @@ class WelcomeDialog(QDialog):
         #   这个念头最强的时候。让用户先走完向导、进了设置页再去找
         #   「数据迁移」，等于要他多绕一圈。
         #
-        # 这里导入会覆盖刚生成的全新配置，所以导入成功后要**立刻回填
-        # 上面两个下拉框**，让用户看见"确实生效了"。
+        # 为什么单独占一块（不和上面两行挤在一起）：
+        #   它和「热键 / 外观」是**不同性质**的操作——前两个是"选一个值"，
+        #   这个是"覆盖全部设置"。混在同一张卡片同一列里，视觉上像是
+        #   第三个下拉框，而且按钮 + 一长串提示挤在一行会显得拥挤。
         #
         # 导入后不重启也能让热键/外观立即对——这两项直接改界面上的值
         # 并经 accept() 提交给宿主；其余数据（使用记录、训练数据）
         # 会在下次启动时自然读入。
+        lay.addSpacing(4)
+        sep = QFrame()
+        sep.setObjectName("Divider")
+        sep.setFrameShape(QFrame.HLine)
+        sep.setFixedHeight(1)
+        lay.addWidget(sep)
+        lay.addSpacing(2)
+
         r3 = QHBoxLayout()
         r3.setSpacing(10)
         l3 = QLabel("已有备份")
         l3.setObjectName("BodyText")
         l3.setFixedWidth(72)
         r3.addWidget(l3)
-        btn = QPushButton("从备份导入…")
-        btn.setMinimumHeight(30)
-        btn.setToolTip(
+        self._import_btn = QPushButton("从备份导入…")
+        self._import_btn.setMinimumHeight(30)
+        self._import_btn.setMinimumWidth(120)
+        self._import_btn.setToolTip(
             "如果你之前用过这个程序、做过「导出全部数据」，"
             "可以在这里直接把设置、外观、训练数据和使用记录带过来。")
-        btn.clicked.connect(self._on_import_backup)
-        r3.addWidget(btn)
+        self._import_btn.clicked.connect(self._on_import_backup)
+        r3.addWidget(self._import_btn)
+        r3.addStretch(1)
+        lay.addLayout(r3)
+
+        # 提示单独一行：文字较长，和按钮挤一行会显得很满
         self._import_hint = QLabel("从旧机器迁移？选这个可以跳过手动配置。")
         self._import_hint.setObjectName("Caption")
         self._import_hint.setWordWrap(True)
-        r3.addWidget(self._import_hint, 1)
-        lay.addLayout(r3)
+        lay.addWidget(self._import_hint)
 
         # 回填当前值
         cur_hotkey = str(self._config.get("hotkey", ""))
@@ -294,7 +322,17 @@ class WelcomeDialog(QDialog):
         return box
 
     def _on_import_backup(self):
-        """从备份包导入全部数据，并把热键/外观的选择同步到界面上。"""
+        """从备份包导入全部数据，并把热键/外观的选择同步到界面上。
+
+        ## 预览模式下**不写盘**
+
+        开发者页点「首次使用引导」是来看界面长什么样的，不是来换数据的。
+        如果在预览里真的导入，用户点一下就把自己的设置覆盖了——
+        而且是在"只想看看界面"的意图下发生的，非常危险。
+
+        所以预览时只做演练：选包 → 检查 → 显示摘要 → 报告
+        "真实导入会还原哪些文件"，全程不碰磁盘。
+        """
         from PySide6.QtWidgets import QFileDialog, QMessageBox
 
         from core import backup, runtime
@@ -321,17 +359,27 @@ class WelcomeDialog(QDialog):
         except Exception:
             pass
         lines.append("")
-        lines.append("导入会覆盖当前的默认设置。确定继续？")
+        if self._preview:
+            lines.append("⚠ 当前是**预览模式**，不会真的写入任何数据。")
+        else:
+            lines.append("导入会覆盖当前的默认设置。确定继续？")
 
         box = QMessageBox(self)
         box.setWindowTitle("从备份导入")
         box.setIcon(QMessageBox.Question)
-        box.setText("要用这个备份替换当前设置吗？")
+        box.setText("要用这个备份替换当前设置吗？" if not self._preview
+                    else "（预览）这里会导入这个备份")
         box.setInformativeText("\n".join(lines))
-        yes = box.addButton("导入", QMessageBox.AcceptRole)
+        yes = box.addButton("导入" if not self._preview else "演示导入",
+                            QMessageBox.AcceptRole)
         box.addButton("取消", QMessageBox.RejectRole)
         box.exec()
         if box.clickedButton() is not yes:
+            return
+
+        # ---- 预览：只演练，不写盘 ----
+        if self._preview:
+            self._preview_import_result(path, manifest)
             return
 
         ok, msg, detail = backup.import_all(path, runtime.app_data_dir())
@@ -348,6 +396,40 @@ class WelcomeDialog(QDialog):
             self, "导入完成",
             "%s。\n\n热键和外观已更新；使用记录、训练数据等会在"
             "下次启动后生效。" % msg)
+
+    def _preview_import_result(self, path, manifest):
+        """预览模式下报告"真实导入会做什么"，不做任何写入。
+
+        只读 manifest，不碰磁盘——连"能还原几个文件"都是按清单统计的，
+        这样预览在任何情况下都不会改变用户数据。
+        """
+        from PySide6.QtWidgets import QMessageBox
+
+        will_write = self._preview_import_files(manifest)
+        lines = ["真实导入会还原以下文件（本次为预览，未写入）：", ""]
+        for p in will_write[:12]:
+            lines.append("  · %s" % p)
+        if len(will_write) > 12:
+            lines.append("  … 还有 %d 个" % (len(will_write) - 12))
+
+        QMessageBox.information(
+            self, "预览：导入效果",
+            "共 %d 个文件。\n\n%s" % (len(will_write), "\n".join(lines)))
+
+    def _preview_import_files(self, manifest):
+        """预览分支的**纯逻辑部分**：算出"会还原哪些文件"并更新提示。
+
+        单独拆出来是为了可测——`_preview_import_result()` 里有
+        模态弹窗，测试里点了会阻塞，没法自动化验证"不写盘"。
+        """
+        files = (manifest or {}).get("files", []) or []
+        will_write = [str(f.get("path", "?")) for f in files
+                      if str(f.get("path", "")).replace("\\", "/")
+                      != "manifest.json"]
+        self._import_hint.setText(
+            "（预览）这个备份包含 %d 个文件，真实导入会还原它们。"
+            "当前没有任何写入。" % len(will_write))
+        return will_write
 
     def _sync_after_import(self):
         """导入后重新读配置，回填热键/外观下拉框，并记入 `chosen`。

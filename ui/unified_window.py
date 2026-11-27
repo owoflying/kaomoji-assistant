@@ -40,7 +40,7 @@ from ui.fluent_icons import icon_label, recolor
 from ui.animated_stack import AnimatedStackedWidget
 from ui.pages import (
     HomePage, LibraryPage, CustomKaomojiPage, TriggerPage,
-    SearchPage, SettingsPage, AboutPage,
+    SearchPage, SettingsPage, AboutPage, UsageStatsPage,
 )
 from ui.unified_nav import NavController
 from ui.theme_fade import ThemeFader
@@ -504,6 +504,7 @@ class UnifiedSettingsWindow(FramelessShell):
             "library": lambda: LibraryPage(self.data),
             "custom": lambda: CustomKaomojiPage(self.user_kao, self.theme),
             "triggers": lambda: TriggerPage(self.triggers, self.theme),
+            "usage": lambda: UsageStatsPage(self.state, self.theme),
             "search": lambda: SearchPage(self.data, self.user_kao,
                                          self.theme.name),
             "settings": _settings_page,

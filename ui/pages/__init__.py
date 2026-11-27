@@ -3,6 +3,7 @@ from .library_page import LibraryPage
 from .custom_kaomoji_page import CustomKaomojiPage
 from .trigger_page import TriggerPage
 from .search_page import SearchPage
+from .usage_stats_page import UsageStatsPage
 from .settings_page import SettingsPage
 from .about_page import AboutPage
 from .plugin_page import PluginPage
@@ -10,5 +11,5 @@ from .plugin_page import PluginPage
 __all__ = [
     "HomePage", "LibraryPage", "CustomKaomojiPage",
     "TriggerPage", "SearchPage", "SettingsPage", "AboutPage",
-    "PluginPage",
+    "PluginPage", "UsageStatsPage",
 ]

@@ -43,6 +43,7 @@ class NavController:
         ("custom",     "我的颜文字", "custom"),
         ("triggers",   "快捷短语", "triggers"),
         ("search",     "搜索",     "search"),
+        ("usage",      "使用分析", "library"),
         # 外观单独成页：主题/透明度/背景材质都是高频调整项，
         # 挤在设置页里一屏放不下（详见 ui/pages/appearance_page.py）。
         ("appearance", "外观",     "flash"),

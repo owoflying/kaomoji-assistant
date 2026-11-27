@@ -375,6 +375,20 @@ class AppRuntime:
         except Exception as e:
             append_log("warn", "theme", "背景材质刷新失败：%r" % (e,))
 
+    def _refresh_home_cards(self):
+        """让主页重新同步插件卡片（窗口就绪后补一次）。
+
+        插件的 `setup()` 在宿主窗口构造之前跑，那时 `register_home_card`
+        只能登记 spec、没法挂 widget。窗口就绪后需要主动推一次。
+        """
+        try:
+            u = getattr(self, "unified", None)
+            fn = getattr(u, "_sync_home_cards", None)
+            if callable(fn):
+                fn()
+        except Exception:
+            pass
+
     def _install_crash_guard(self):
         """安装崩溃兜底：异常不静默、程序不退出、可导出报告。
 
@@ -904,6 +918,10 @@ class AppRuntime:
         QTimer.singleShot(0, self._maybe_show_welcome)
         QTimer.singleShot(0, self._maybe_show_update)
         QTimer.singleShot(0, lambda: self.plugins.emit("startup"))
+        # 插件 setup() 在主窗口构造**之前**执行，那时 register_home_card
+        # 登记的卡片还没有宿主可挂。这里在窗口就绪后补一次同步，
+        # 否则插件卡片要等到插件管理页刷新才出现。
+        QTimer.singleShot(0, self._refresh_home_cards)
         # 自动更新：延迟检查（避开启动高峰），见 core/updater.py
         self._schedule_auto_update()
 

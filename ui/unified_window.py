@@ -540,6 +540,8 @@ class UnifiedSettingsWindow(FramelessShell):
             self.plugins.changed.connect(self._on_plugins_changed)
             # UI 登记项变化（注册/注销设置面板、独立页）时同步界面
             self.plugins.ui_changed.connect(self._nav.sync_plugin_pages)
+            # 主页插件卡片：注册/撤销后重建插槽内容
+            self.plugins.ui_changed.connect(self._sync_home_cards)
             self._nav.sync_plugin_pages()
 
     #: 懒加载页面 key -> 对外属性名（外部模块直接访问这些属性）
@@ -705,6 +707,78 @@ class UnifiedSettingsWindow(FramelessShell):
 
     def _sync_plugin_pages(self):
         self._nav.sync_plugin_pages()
+
+    def _sync_home_cards(self):
+        """把插件注册的主页卡片同步到主页插槽。
+
+        ## 为什么需要这个方法
+
+        `HomePage` 早就有 `add_plugin_card()` / `clear_plugin_cards()`，
+        注释里也写着"由 UnifiedSettingsWindow 驱动，见 _sync_home_cards"
+        ——但这个方法**从来没被写出来**。于是：
+
+            api.register_home_card(...)  →  已登记（现在补齐之后）
+                                         →  但主页永远不显示
+
+        等于这个扩展点是空头支票。现在补上驱动逻辑。
+
+        ## 重建而不是增量更新
+
+        卡片数量很少（每个插件最多 6 张），一次全量重建最简单也最不容易
+        出错——增量更新要处理"插件 A 换位置、插件 B 被撤销"这类组合，
+        反而容易残留。
+
+        ## position 排序
+
+        top 的卡片按注册顺序在前，bottom 的在后。同一插件内保持注册顺序。
+        """
+        try:
+            page = getattr(self, "home_page", None)
+            if page is None:
+                return
+            page.clear_plugin_cards()
+
+            specs = []
+            try:
+                specs = self.plugins.home_cards()
+            except Exception:
+                specs = []
+            if not specs:
+                return
+
+            # 分组：top 先、bottom 后，组内保持注册顺序
+            top = [(k, s) for k, s in specs
+                   if str(s.get("position", "top")).lower() != "bottom"]
+            bottom = [(k, s) for k, s in specs
+                      if str(s.get("position", "top")).lower() == "bottom"]
+
+            for _key, spec in top + bottom:
+                factory = spec.get("factory")
+                if not callable(factory):
+                    continue
+                try:
+                    card = factory(page)
+                except Exception as e:
+                    try:
+                        from core.applog import append_log
+
+                        append_log("error", "plugin:%s" % spec.get("plugin"),
+                                   "主页卡片创建失败：%r" % (e,))
+                    except Exception:
+                        pass
+                    continue
+                if card is None:
+                    continue
+                # 宿主负责主题：插件不必自己处理深浅色
+                try:
+                    from ui.win11_theme import apply_child_theme
+
+                    apply_child_theme(card, self.theme)
+                except Exception:
+                    pass
+                page.add_plugin_card(card)
+        except Exception:
+            pass
 
     def _sync_plugin_tab(self):
         self._nav.sync_plugin_tab()

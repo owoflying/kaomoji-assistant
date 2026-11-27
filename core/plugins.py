@@ -70,6 +70,7 @@ _ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
 _PAGE_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,32}$")
 
 # 单个插件允许注册的侧边栏页数上限（防止恶意插件刷爆侧边栏）
+_MAX_PLUGIN_HOME_CARDS = 6     # 单个插件最多几张主页卡片
 _MAX_PLUGIN_PAGES = 8
 
 # 插件回调耗时告警阈值（秒）：回调在 Qt 主线程同步执行，越久界面卡顿越明显
@@ -530,7 +531,18 @@ class PluginManager(QObject):
                 self._log("warn", "plugins", "跳过目录 %s：目录名只能含字母/数字/下划线/连字符" % name)
                 continue
             try:
-                with open(manifest_path, "r", encoding="utf-8") as f:
+                # ⚠ 用 utf-8-sig 而不是 utf-8：它能自动吞掉 BOM。
+                #
+                # 实测踩到：用 PowerShell 的 `Set-Content -Encoding UTF8`
+                # 或某些编辑器写出来的 plugin.json 带 UTF-8 BOM，
+                # 标准 utf-8 解码会在开头留一个 \ufeff，json.load 直接抛
+                #   Unexpected UTF-8 BOM
+                # 插件就永远加载不了，而且报错信息对新手极不友好
+                # （看起来像"文件损坏"）。
+                #
+                # utf-8-sig 对**没有** BOM 的文件行为与 utf-8 完全一致，
+                # 所以这是纯增益的兼容性修复。
+                with open(manifest_path, "r", encoding="utf-8-sig") as f:
                     manifest = json.load(f)
             except Exception as e:
                 found[name] = self._record(
@@ -764,6 +776,55 @@ class PluginManager(QObject):
 
     def _add_listener(self, plugin_id, event, fn):
         self._listeners.setdefault(event, []).append({"plugin": plugin_id, "fn": fn})
+
+    # ---- 主页卡片（api.register_home_card 的后端） ----
+    #
+    # ⚠ 这三个方法原来**只有调用没有实现**：`PluginAPI.register_home_card`
+    # 里写着 `self._manager._add_home_card(...)`，而 PluginManager 上
+    # 根本没有这个名字。插件一调就 AttributeError，而文档
+    # （docs/PLUGIN_GUIDE.md）把它列为"修改自带界面的官方姿势"。
+    # 实测探针插件确实在那里挂掉，等于这个扩展点是空头支票。
+    #
+    # 现在按 `_add_page` 的既有模式补齐：只登记 spec/factory，
+    # widget 实例由 UI 层（主页的 plugin_cards_slot）创建持有。
+
+    def _home_cards_for(self, plugin_id):
+        """某插件已注册的主页卡片列表（按注册顺序）。"""
+        return [spec for spec in self._home_cards.values()
+                if spec.get("plugin") == plugin_id]
+
+    def _add_home_card(self, plugin_id, card_id, factory, position="top"):
+        """登记一张主页卡片，返回完整 key。
+
+        :param position: "top"（问候卡片之后）或 "bottom"（所有插件卡片之后）
+        """
+        key = "plugin:%s:home_card:%s" % (plugin_id, card_id)
+        owned = len(self._home_cards_for(plugin_id))
+        if owned >= _MAX_PLUGIN_HOME_CARDS:
+            raise PluginError(
+                "单个插件最多注册 %d 张主页卡片" % _MAX_PLUGIN_HOME_CARDS)
+        self._home_cards[key] = {
+            "plugin": plugin_id,
+            "card_id": str(card_id),
+            "factory": factory,
+            "position": str(position or "top").lower(),
+        }
+        self.ui_changed.emit()
+        return key
+
+    def _remove_home_card(self, plugin_id, card_id):
+        """撤销一张主页卡片（幂等，返回是否真的删掉了）。"""
+        key = "plugin:%s:home_card:%s" % (plugin_id, card_id)
+        if key in self._home_cards:
+            self._home_cards.pop(key, None)
+            self.ui_changed.emit()
+            return True
+        return False
+
+    def home_cards(self):
+        """所有已注册的主页卡片：[(key, spec), ...]（供 UI 层遍历）。"""
+        return list(self._home_cards.items())
+
 
     # ---------- UI 能力登记（由 PluginAPI 调用） ----------
     def _add_settings_widget(self, plugin_id, factory, title):

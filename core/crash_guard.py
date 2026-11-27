@@ -98,6 +98,9 @@ def _signature(exc_type, exc_value, tb):
 
     用指纹而不是完整堆栈做去重键——同一处代码抛同样的错，
     堆栈可能有细微差别（行号列号），但类型+消息+位置足够稳定。
+
+    ⚠ 全程兜住：`traceback.extract_tb` 在 tb 损坏时会抛，
+    `str(exc_value)` 在自定义异常里也可能抛。
     """
     try:
         frames = traceback.extract_tb(tb)
@@ -105,8 +108,9 @@ def _signature(exc_type, exc_value, tb):
         if frames:
             last = frames[-1]
             where = "%s:%s" % (os.path.basename(last.filename), last.lineno)
-        return "%s|%s|%s" % (getattr(exc_type, "__name__", "?"),
-                             str(exc_value)[:120], where)
+        return "%s|%s|%s" % (
+            _safe_str(getattr(exc_type, "__name__", "?"), 60),
+            _safe_str(exc_value, 120), where)
     except Exception:
         return "unknown"
 
@@ -292,42 +296,108 @@ def _dispatch_alert(fn):
     return
 
 
-def _handle(exc_type, exc_value, exc_tb, source="main"):
-    """统一处理一次未捕获异常。"""
-    global _last_crash
-    # 1. 记录日志（原有行为，保持）
-    try:
-        from core.applog import append_log
+def _safe_str(obj, limit=200):
+    """把任意对象转成字符串，**绝不抛异常**。
 
-        text = "".join(traceback.format_exception(
+    异常对象的 `__str__` 可能本身就是坏的（自定义异常里写着
+    `raise`、返回非字符串等）。这里要保证无论如何都能拿到一个值——
+    否则处理崩溃的代码会因为格式化而崩，那就什么都弹不出来了。
+    """
+    try:
+        s = str(obj)
+        if not isinstance(s, str):
+            s = repr(obj)
+    except Exception:
+        try:
+            s = repr(obj)
+        except Exception:
+            s = "<无法显示的异常>"
+    try:
+        return s[:limit]
+    except Exception:
+        return "<异常信息过长>"
+
+
+def _safe_traceback(exc_type, exc_value, exc_tb):
+    """格式化堆栈，失败时退回简化版本，**绝不抛异常**。"""
+    try:
+        return "".join(traceback.format_exception(
             exc_type, exc_value, exc_tb)).rstrip()
-        append_log("exception", source, text)
+    except Exception:
+        pass
+    # 退化：至少给出类型和消息
+    return "%s: %s" % (_safe_str(exc_type, 80), _safe_str(exc_value, 400))
+
+
+def _handle(exc_type, exc_value, exc_tb, source="main"):
+    """统一处理一次未捕获异常。
+
+    ## 核心原则：**处理崩溃的代码自己绝不能崩**
+
+    用户反馈"随便来个报错都能不弹窗直接崩溃"。原因是这个函数里
+    任何一步抛出异常，都会从 `sys.excepthook` 逃逸出去——
+    而 Python 在 excepthook 里抛异常时直接终止进程。
+
+    所以每一步都单独兜住：
+
+        1. 日志        失败就算了
+        2. 保存上下文  失败就算了
+        3. 弹窗        失败就算了
+
+    而且**所有格式化都延迟到弹窗时**——`_handle` 本身只做最简单的
+    赋值和判断，把"可能抛异常的事情"推到 `_show()` 里（那里还有
+    一层 try）。
+    """
+    global _last_crash
+
+    # 1. 保存上下文（赋值，不会失败）
+    try:
+        _last_crash = {
+            "exc_type": exc_type,
+            "exc_value": exc_value,
+            "exc_tb": exc_tb,
+        }
     except Exception:
         pass
 
-    # 2. 保存上下文供"导出报告"用
-    _last_crash = {
-        "exc_type": exc_type,
-        "exc_value": exc_value,
-        "exc_tb": exc_tb,
-    }
+    # 2. 记录日志
+    try:
+        from core.applog import append_log
 
-    # 3. 去重后弹窗提醒（**转到主线程**）
-    sig = _signature(exc_type, exc_value, exc_tb)
-    if _alert_callback is None or not _should_alert(sig):
+        append_log("exception", source,
+                   _safe_traceback(exc_type, exc_value, exc_tb))
+    except Exception:
+        pass
+
+    # 3. 去重判断
+    try:
+        sig = _signature(exc_type, exc_value, exc_tb)
+        should = _should_alert(sig)
+    except Exception:
+        should = True          # 去重本身出错时宁可弹
+
+    if _alert_callback is None or not should:
         return
 
-    summary = "%s: %s" % (getattr(exc_type, "__name__", "异常"),
-                          str(exc_value)[:200])
-    detail = "".join(traceback.format_exception(
-        exc_type, exc_value, exc_tb)).rstrip()
-
+    # 4. 弹窗（所有格式化都在这里做，且整体兜住）
     def _show():
         try:
-            _alert_callback(summary, detail)
+            callback = _alert_callback
+            if callback is None:
+                return
+            summary = "%s: %s" % (
+                _safe_str(getattr(exc_type, "__name__", "异常"), 80),
+                _safe_str(exc_value, 200))
+            detail = _safe_traceback(exc_type, exc_value, exc_tb)
+            callback(summary, detail)
         except Exception:
-            # 弹窗本身出错不能递归
+            # 弹窗本身出错不能递归，也不能影响主流程
             pass
+
+    try:
+        _dispatch_alert(_show)
+    except Exception:
+        pass
 
     _dispatch_alert(_show)
 
@@ -342,18 +412,102 @@ def last_crash_report():
         _last_crash.get("exc_tb"))
 
 
+def _dump_to_disk(exc_type, exc_value, exc_tb, source="main"):
+    """把崩溃信息追加写到一个固定文件里，**不依赖 Qt**。
+
+    位置：`<数据目录>/crashes/last-crash.log`
+
+    为什么还要单独写这个（`export_report` 已经能导出）：
+
+    弹窗依赖 Qt 事件循环。崩溃如果发生在事件循环还没起来、或者
+    事件循环已经被破坏的时候，弹窗永远出不来。这时磁盘上的记录
+    就是**唯一**的排查材料。
+
+    实现上只用标准库 + 字符串拼接，全程 try——写不出来也不能抛。
+    """
+    try:
+        import datetime
+
+        try:
+            from core.runtime import app_data_dir
+
+            base = os.path.join(app_data_dir(), "crashes")
+        except Exception:
+            base = os.path.join(os.path.expanduser("~"), ".kaomoji-crashes")
+        os.makedirs(base, exist_ok=True)
+        path = os.path.join(base, "last-crash.log")
+
+        try:
+            stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            stamp = "?"
+        lines = ["", "=" * 60,
+                 "[%s] source=%s" % (stamp, source),
+                 _safe_traceback(exc_type, exc_value, exc_tb),
+                 ""]
+        with open(path, "a", encoding="utf-8", errors="replace") as f:
+            f.write("\n".join(lines))
+        return path
+    except Exception:
+        return None
+
+
+def last_disk_dump():
+    """读取磁盘上最近一次崩溃记录（给排查用）。"""
+    try:
+        from core.runtime import app_data_dir
+
+        path = os.path.join(app_data_dir(), "crashes", "last-crash.log")
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            return f.read()[-8000:]
+    except Exception:
+        return ""
+
+
 def install():
-    """安装崩溃兜底（幂等）。"""
+    """安装崩溃兜底（幂等）。
+
+    ## 外围还有一层"绝不抛"的保护
+
+    `sys.excepthook` 里抛出异常时，Python 的行为是**直接终止进程**，
+    连原有 hook 都不会再跑。所以两个 hook 的外层都包了 try——
+
+    即使 `_handle` 内部出现任何意料之外的问题（某个库的异常对象
+    特别离谱、格式化时踩到递归等），也不会让进程直接死掉，
+    而是退回到"写 stderr"这种最原始的方式。
+    """
     global _installed
     if _installed:
         return
     _installed = True
 
+    # 记住原始 hook，退化时还能用
+    _orig_excepthook = sys.__excepthook__
+
     def _excepthook(exc_type, exc_value, exc_tb):
         # KeyboardInterrupt 是用户主动中断，不算崩溃
         if exc_type is KeyboardInterrupt:
             return
-        _handle(exc_type, exc_value, exc_tb, source="main")
+        try:
+            _handle(exc_type, exc_value, exc_tb, source="main")
+        except BaseException:
+            # 兜底：处理崩溃的代码自己崩了，至少把信息留在 stderr
+            try:
+                _orig_excepthook(exc_type, exc_value, exc_tb)
+            except BaseException:
+                pass
+        # 最后防线：不管上面成没成，都往磁盘写一份。
+        #
+        # ## 为什么需要它
+        #
+        # 弹窗依赖 Qt 事件循环。如果崩溃发生在事件循环还没起来的阶段
+        # （或事件循环已经被破坏），弹窗永远出不来。那时用户唯一能
+        # 拿到的东西就是磁盘上这个文件。
+        # 写文件是最低限度的保障：不依赖 Qt、不依赖主线程。
+        try:
+            _dump_to_disk(exc_type, exc_value, exc_tb, source="main")
+        except BaseException:
+            pass
 
     sys.excepthook = _excepthook
 
@@ -362,9 +516,21 @@ def install():
         def _thread_hook(args):
             if args.exc_type is SystemExit:
                 return
-            _handle(args.exc_type, args.exc_value, args.exc_traceback,
-                    source="thread:%s" % (args.thread.name if args.thread
-                                          else "?"))
+            try:
+                name = "?"
+                try:
+                    name = args.thread.name if args.thread else "?"
+                except Exception:
+                    pass
+                _handle(args.exc_type, args.exc_value, args.exc_traceback,
+                        source="thread:%s" % name)
+                # 与主线程 hook 同样的磁盘备份
+                _dump_to_disk(args.exc_type, args.exc_value,
+                              args.exc_traceback,
+                              source="thread:%s" % name)
+            except BaseException:
+                # 同上：绝不从 excepthook 里逃逸
+                pass
 
         threading.excepthook = _thread_hook
     except Exception:

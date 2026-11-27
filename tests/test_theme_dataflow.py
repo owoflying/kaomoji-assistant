@@ -236,3 +236,49 @@ def test_page_switch_also_gates_intro_reveal():
     assert "animate" in guard, (
         "reveal_page 必须包在 `if animate:` 里，当前最近的 if 是：%r\n"
         "否则用户关掉「页面切换」后，页内元素仍会逐个浮现。" % (guard,))
+
+
+def test_theme_controller_reads_profile_not_flat_key():
+    """ThemeController 必须从**主题包**取明暗，不能只读平铺键。
+
+    ## 实测踩到的现象
+
+    用户 config.json 里同时有：
+
+        theme_mode    = light
+        theme_profile = {theme_mode: dark, ...}
+
+    主题包是唯一真相，所以 `resolve()` 和外观页下拉框都是 dark，
+    但 `ThemeController` 还在读平铺的 `theme_mode`（light）——
+    结果**主窗口和托盘停在浅色，必须重启才恢复**。
+
+    重启能好，是因为重启后走的是另一条初始化路径。
+    """
+    src = _read("ui/theme_controller.py")
+    i = src.find("def rebuild")
+    j = src.find("\n    def ", i + 10)
+    body = src[i:j]
+    assert "get_profile" in body, (
+        "ThemeController.rebuild 必须用 get_profile() 取明暗/配色——\n"
+        "否则会和主题包（唯一真相）不一致，表现为换肤后界面不变。")
+
+
+def test_glass_menu_cache_key_includes_dark():
+    """托盘菜单的玻璃缓存 key 必须包含主题明暗。
+
+    ## 实测踩到的现象
+
+    缓存 key 原本是 `(w, h, id(composer))`。切换深浅色时尺寸不变、
+    composer 对象也不换，于是永远命中旧缓存——菜单玻璃底停在上一次的
+    颜色，用户以为"换了深浅色托盘不变，必须重启"。
+
+    重启能好，是因为重启后缓存是空的。
+    """
+    src = _read("ui/glass_menu.py")
+    i = src.find("def _render_glass")
+    j = src.find("\n    def ", i + 10)
+    body = src[i:j]
+    assert "dark" in body.split("key = ")[-1].split("\n")[0] or \
+        "theme_key" in body, (
+        "glass_menu._render_glass 的缓存 key 必须包含主题明暗，\n"
+        "否则切换深浅色后菜单玻璃底不会重算（缓存命中旧颜色）。")

@@ -119,9 +119,6 @@ class GlassMenu(QMenu):
     def _render_glass(self, size):
         """渲染菜单的玻璃底（圆角 + 模糊背景 + 半透明白 + 釉面高光）。"""
         w, h = max(1, size.width()), max(1, size.height())
-        key = (w, h, id(self._composer))
-        if self._cache is not None and self._cache_key == key:
-            return self._cache
 
         dark = False
         try:
@@ -129,6 +126,22 @@ class GlassMenu(QMenu):
             dark = bool(getattr(t, "dark", False))
         except Exception:
             pass
+
+        # 缓存 key 必须带上**主题明暗**。
+        #
+        # 之前是 `(w, h, id(composer))`——切换深浅色时尺寸不变、
+        # composer 对象也不换，于是永远命中旧缓存，菜单玻璃底停在
+        # 上一次的颜色（用户反馈"换了深浅色托盘不变，必须重启"）。
+        #
+        # 现在把 dark 和主题名字一起放进 key，换主题必然重算。
+        theme_key = "?"
+        try:
+            theme_key = "%s|%s" % (dark, getattr(t, "name", "?"))
+        except Exception:
+            pass
+        key = (w, h, id(self._composer), theme_key)
+        if self._cache is not None and self._cache_key == key:
+            return self._cache
 
         canvas = QImage(w, h, QImage.Format_ARGB32_Premultiplied)
         canvas.fill(Qt.transparent)

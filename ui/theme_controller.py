@@ -124,10 +124,38 @@ class ThemeController(QObject):
 
     # ---------------------------------------------------------------- 内部
     def rebuild(self, notify=True):
-        """按当前 state 重新构建色板，并按需广播。"""
+        """按当前 state 重新构建色板，并按需广播。
+
+        ## 必须从**主题包**取明暗/配色，不能读平铺旧键
+
+        `core.theme_profile` 确立为唯一真相后，`build_theme(cfg)` 仍会
+        优先看平铺的 `theme_mode`。而实际生效的配置在
+        `cfg["theme_profile"]["theme_mode"]` 里——两者可能不一致
+        （用户数据里就有 `theme_mode: light` + `theme_profile.theme_mode: dark`
+        同时存在的情况）。
+
+        之前的后果：外观页下拉框显示 dark、`resolve()` 也是 dark，
+        但 controller 读出 light，主窗口和托盘菜单都停在浅色，
+        **必须重启才恢复正常**（重启后走的是另一条初始化路径）。
+
+        现在先把主题包的值铺到 `cfg` 上，再交给 `build_theme`，
+        保证 controller 和其他所有读取方看到的是同一份真相。
+        """
         from ui.theme_manager import build_theme
 
         cfg = dict(self._config)
+        # 以主题包为准（迁移/归一都在 get_profile 内部完成）
+        try:
+            from core.theme_profile import get_profile
+
+            prof = get_profile(cfg)
+            cfg["theme_mode"] = prof.get("theme_mode", cfg.get("theme_mode"))
+            cfg["theme"] = cfg["theme_mode"]
+            cfg["theme_preset"] = prof.get("theme_preset",
+                                           cfg.get("theme_preset"))
+        except Exception:
+            pass
+
         # 预览态：色板来自编辑器，不走磁盘
         preview = None
         if self._preview is not None:

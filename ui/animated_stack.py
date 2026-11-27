@@ -1,4 +1,4 @@
-﻿"""带平滑过渡的 QStackedWidget 替代：新页上浮 + 旧页截图淡出。
+"""带平滑过渡的 QStackedWidget 替代：新页上浮 + 旧页截图淡出。
 
 ## 为什么不用 QGraphicsOpacityEffect
 

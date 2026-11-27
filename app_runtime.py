@@ -846,19 +846,18 @@ class AppRuntime:
         self.tray = QSystemTrayIcon(icon, self.app)
         # 托盘菜单用 GlassMenu：**自绘**玻璃底（背景图裁剪 + 模糊 + 釉面高光）。
         #
-        # 普通 QMenu 的背景由 Qt 样式引擎画，QSS 只能填纯色——
-        # 之前只做了换色，用户看到的就是个普通白菜单，
-        # 和高级背景放在一起非常割裂（用户反馈过多次）。
-        # GlassMenu 覆盖 paintEvent，复用 MaterialComposer，
-        # 所以它自动沿用主配置的材质。
+        # 用 QSS 渐变模拟玻璃质感（顶部亮、底部暗 + 主题高光）。
+        #
+        # ⚠ 不要覆盖 QMenu.paintEvent 自绘：那会把菜单弄成全透明、
+        # 点不到，而且每帧重算材质图极卡。QSS 渐变在 QMenu 上实测完全
+        # 有效，稳定可靠。
         from ui.glass_menu import GlassMenu
 
-        self.menu = GlassMenu(
-            config=self.config,
-            theme_provider=lambda: getattr(self, "theme_obj", None))
         _t0 = (getattr(self, "theme_obj", None)
                or build_theme(self.config))
-        self.menu.setStyleSheet(_t0.menu_style(glass=self.menu.material_enabled()))
+        self.menu = GlassMenu(theme=_t0)
+        # 若用户给托盘菜单单独配了外观，立刻应用
+        self._theme_tray_menu(_t0)
 
         show_action = QAction("唤起面板", self.app)
         show_action.triggered.connect(self.window.toggle)
@@ -1538,23 +1537,64 @@ class AppRuntime:
         QSS**，所以主题切换后它仍是系统默认的白底黑字——与整体风格脱节。
         创建时虽然涂过一次色，但那个样式是**快照**，切主题后不会自己更新，
         必须由 ThemeController 的广播重新推一次。
+
+        ## 支持单独配置（surface="menu"）
+
+        菜单很小，有时主窗口用深色、菜单反而保持浅色更好认。所以这里
+        不再直接复用主主题，而是按 `menu` 表面解析：
+
+            主配置 ← menu 表面的覆盖层（用户在外观页为托盘菜单单独设的）
+
+        没单独设过就沿用主配置，行为和以前一致。
         """
         menu = getattr(self, "menu", None)
         if menu is None:
             return
         try:
-            t = theme if theme is not None else getattr(self, "theme_obj", None)
-            if t is None:
-                from ui.theme_manager import build_theme
-
-                t = build_theme(self.config)
-            # 材质开启 → 背景透明，露出 GlassMenu 自绘的玻璃层
-            glass = bool(getattr(menu, "material_enabled", lambda: False)())
-            if hasattr(menu, "refresh_material"):
-                menu.refresh_material()
-            menu.setStyleSheet(t.menu_style(glass=glass))
+            t = self._menu_surface_theme(theme)
+            # GlassMenu 自己按主题生成渐变玻璃样式（纯 QSS，不覆盖
+            # paintEvent——自绘那版把菜单弄成全透明且极卡，已废弃）。
+            if hasattr(menu, "set_theme"):
+                menu.set_theme(t)
+            else:
+                menu.setStyleSheet(t.menu_style())
         except Exception as e:
             append_log("warn", "theme", "托盘菜单换肤失败：%r" % (e,))
+
+    def _menu_surface_theme(self, fallback=None):
+        """按 `menu` 表面解析出托盘菜单该用的主题。
+
+        ## 两种来源
+
+        * 用户在「外观 → 托盘菜单 → 独立配置」里设过 → 用那份
+        * 没设过 → 用主主题（`fallback`，缺省取 theme_obj）
+
+        ## 为什么要重新 build 而不是改 fallback
+
+        `fallback` 是**主主题对象**，直接改它会污染其它窗口。
+        单界面覆盖只影响这一个菜单，所以必须按解析结果重建一个新主题。
+        """
+        base = fallback if fallback is not None else getattr(
+            self, "theme_obj", None)
+
+        try:
+            from core.theme_profile import has_override, resolve
+
+            if has_override(self.config, "menu"):
+                params = resolve(self.config, "menu")
+                from ui.theme_manager import build_theme
+
+                return build_theme(
+                    {"theme_mode": params.get("theme_mode", "light"),
+                     "theme_preset": params.get("theme_preset", "classic")})
+        except Exception:
+            pass
+
+        if base is not None:
+            return base
+        from ui.theme_manager import build_theme
+
+        return build_theme(self.config)
 
     # ------------------------------------------------------------------
     # 注入链路

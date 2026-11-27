@@ -509,9 +509,12 @@ class AppearancePage(QWidget):
 
         # 旧键名 → 主题包字段名
         #
-        # ⚠ 漏了任何一项都会静默丢弃改动（用户点"选择显示区域"后
-        # 什么都没发生）。裁切四项就是漏掉过——报 AttributeError 之前
-        # 先被这里吃掉，表现为"点击没反应"。
+        # ⚠ 漏了任何一项都会静默丢弃改动（用户改了之后"什么都不发生"）。
+        # 这个坑踩过两次：
+        #   * 裁切四项（crop_x/y/w/h）漏了 → 点「选择显示区域」没反应
+        #   * **theme_mode / theme_preset 漏了** → 换主题完全不生效：
+        #     下拉框选项变了，但界面一直停在原主题。
+        #     因为 patch 为空时下面直接 return，连日志都不留。
         alias = {
             "material_strength": "material_strength",
             "material_saturate": "material_saturate",
@@ -521,6 +524,9 @@ class AppearancePage(QWidget):
             "material_enabled": "material_enabled",
             "panel_alpha": "panel_alpha",
             "image_opacity": "image_opacity",
+            # 主题（明暗 / 配色方案）—— 漏了就等于换肤功能整个失效
+            "theme_mode": "theme_mode",
+            "theme_preset": "theme_preset",
             # 背景图裁切
             "crop_x": "crop_x",
             "crop_y": "crop_y",
@@ -537,19 +543,39 @@ class AppearancePage(QWidget):
         if not patch:
             return
 
+        # ⚠ 顺序很关键：**先拷快照，再改 config**。
+        #
+        # `cfg` 是宿主的 `self.config`（同一个 dict 对象）。宿主的
+        # `apply_settings(new_cfg)` 是这么判断变化的：
+        #
+        #     old = dict(self.config)          # 拷当前值
+        #     self.config.update(new_cfg)
+        #     changed = {k for k ... if old.get(k) != v}
+        #
+        # 如果我们先 `set_profile(cfg, ...)` 再 `dict(cfg)`，那传出去的
+        # `target` 里就是**新值**，宿主的 `old` 也是新值 → `changed` 恒为空
+        # → 换肤分支不执行。
+        #
+        # 实测现象：下拉框显示"深色"、`config["theme_mode"]` 也变成了 dark，
+        # 但界面一直停在浅色，`theme_ctrl.current()` 仍返回 light。
+        #
+        # 所以这里拷贝一份**改之前**的配置，改动只落在副本上，
+        # 由宿主去统一落盘 + 广播。
+        target = dict(cfg)
         if surface == "main":
-            prof = get_profile(cfg)
+            prof = get_profile(target)
             prof.update(patch)
-            set_profile(cfg, prof)
+            set_profile(target, prof)
         else:
             if not has_override(cfg, surface):
                 return          # 未开独立配置时控件本就置灰，不该走到这
-            set_override(cfg, surface, patch)
+            set_override(target, surface, patch)
+            # 单界面覆盖层也要同步到宿主的 config 里，否则宿主读旧值
+            cfg["surface_overrides"] = target.get("surface_overrides")
 
         self._sync_enabled()
         if self._on_apply is None:
             return
-        target = dict(cfg)
         # 换材质种类时走过渡动画（明显视觉切换，需要遮掩重算停顿）
         if "material_type" in patch:
             animated = getattr(self, "_animated_apply", None)

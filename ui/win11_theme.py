@@ -71,6 +71,81 @@ _current_theme_name = "light"
 _current_theme_obj = None
 
 
+def glass_menu_style(t):
+    """托盘菜单的玻璃渐变 QSS。
+
+    ## 为什么放在这里
+
+    配色属于"主题定义"，应该和 `menu_style` 等同处一个文件。
+    `ui/glass_menu.py` 只有控件行为，不该写颜色常量。
+
+    ## 渐变方向
+
+    `x1:0,y1:0 → x2:0,y2:1` 从上到下：顶部亮、底部暗，
+    模拟光从上方打下——这就是"釉面玻璃"的观感。
+
+    ## 为什么用不透明色
+
+    QMenu 是独立顶层窗口，`WA_TranslucentBackground` + 自绘透明度
+    在 offscreen / 某些 Windows 主题下会变成**全透明不可点**。
+    这里全部用不透明色，只靠明暗层次营造质感，稳定可靠。
+    """
+    def _hex(color, fallback):
+        try:
+            if isinstance(color, str) and color.startswith("#") and len(color) >= 7:
+                return color[:7]
+        except Exception:
+            pass
+        return fallback
+
+    dark = bool(getattr(t, "dark", False))
+    accent = _hex(getattr(t, "accent", None), "#0078d4")
+    text = _hex(getattr(t, "text", None),
+                "#f3f3f3" if dark else "#1a1a1a")
+
+    if dark:
+        top, bottom = "#2b2b30", "#1a1a1d"
+        border, hover = "#3d3d44", "#3a3a44"
+        separator = "#45454d"
+    else:
+        top, bottom = "#fafafa", "#ececec"
+        border, hover = "#d5d5d5", "#e4e4e4"
+        separator = "#d0d0d0"
+
+    return f"""
+        QMenu {{
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 {top}, stop:1 {bottom});
+            border: 1px solid {border};
+            border-radius: 8px;
+            padding: 6px;
+            color: {text};
+            font-size: 13px;
+        }}
+        QMenu::item {{
+            background: transparent;
+            padding: 8px 22px 8px 14px;
+            border-radius: 5px;
+            color: {text};
+        }}
+        QMenu::item:selected {{
+            background: {accent};
+            color: #ffffff;
+        }}
+        QMenu::item:hover:!selected {{
+            background: {hover};
+        }}
+        QMenu::item:disabled {{
+            color: #888888;
+        }}
+        QMenu::separator {{
+            height: 1px;
+            background: {separator};
+            margin: 4px 12px;
+        }}
+    """
+
+
 def _glass_controls_css(t):
     """材质开启时给按钮/输入框追加的"玻璃控件"规则。
 

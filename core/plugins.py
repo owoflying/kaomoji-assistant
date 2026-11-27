@@ -79,7 +79,21 @@ SLOW_CALL_WARN_SEC = 0.05
 _MANIFEST_REQUIRED = ("name", "version", "entry")
 
 # 允许订阅的事件；on() 里做白名单校验，防止插件拼写错误后静默失效
-KNOWN_EVENTS = ("startup", "shutdown", "before_insert", "after_insert", "config_changed")
+#: 插件可订阅的事件全集。
+#:
+#: ⚠ 新增事件时**必须同时**改这里和 `docs/PLUGIN_GUIDE.md` 的事件一览，
+#: 否则插件 `on("新事件", ...)` 会直接抛「未知事件」。
+#: `tests/test_plugin_api_surface.py` 会检查文档里声明的事件都有 emit，
+#: 但反过来（能 emit 但不在白名单）只能靠这里自觉——因为 emit 不校验。
+KNOWN_EVENTS = (
+    "startup",          # 窗口就绪、界面元素已登记（读界面的正确时机）
+    "shutdown",         # 程序退出前
+    "page_changed",     # 切换侧边栏页面，参数 key
+    "theme_changed",    # 换肤完成，参数 theme
+    "before_insert",    # 上屏前（可改写文本）
+    "after_insert",     # 上屏后
+    "config_changed",   # 设置变化，参数 config
+)
 
 # 插件记录状态（唯一权威取值，UI 侧一律用这里的常量比较，别再手写字符串）
 STATE_DISABLED = "disabled"     # 未加载：从未启用 / 已停用
@@ -120,7 +134,42 @@ class PluginAPI:
 
     插件入口 setup(api) 拿到的就是它；禁止插件访问 manager 内部状态，
     所有能力都收敛在这几个方法里，方便审计与后续加权限。
+
+    ## 公开 API 清单（`PUBLIC_METHODS`）
+
+    这一组是**插件作者唯一应该依赖**的名字。有测试
+    （`tests/test_plugin_api_surface.py`）守着：
+
+    * 清单里列的名字必须真实存在
+    * 类上不能出现清单之外的公开方法
+
+    ## 为什么要有这份清单
+
+    之前 `register_home_card` 在代码里留了很久——它调用三个不存在
+    的方法，一调就 AttributeError，而 `docs/PLUGIN_GUIDE.md` 的能力
+    清单里**根本没有它**（v2 用 `api.ui.insert` 取代了）。
+
+    问题在于：删掉的东西没有机制防复发，加新方法也没有统一的登记处。
+    清单 + 测试把这两件事都管住了。
     """
+
+    #: 插件作者可依赖的公开方法/属性（新增能力必须同时登记到这里，
+    #: 并在 docs/PLUGIN_GUIDE.md 里写进去）
+    PUBLIC_METHODS = frozenset({
+        # 元信息（含实例属性）
+        "name", "version", "manifest", "settings", "id", "dir",
+        # 数据与行为
+        "log", "add_source", "register_transform", "on",
+        "get_config", "save_settings",
+        # 界面（新增）
+        "register_page", "register_settings_widget",
+        # 界面（弹窗/通知）
+        "show_dialog", "show_message", "ask", "notify",
+        # 界面（修改内置界面）
+        "ui", "find",
+        # 主题
+        "theme_tokens",
+    })
 
     def __init__(self, manager, plugin_id, manifest, plugin_dir, settings):
         self._manager = manager

@@ -690,6 +690,15 @@ class UnifiedSettingsWindow(FramelessShell):
 
     def on_page_shown(self, key):
         """页面切到前台后的刷新钩子。"""
+        # 通知插件：页面切换了。
+        #
+        # 插件常用它做进到某页才加载数据这类懒初始化——
+        # 之前没有这个事件，只能靠定时器猜时机。
+        try:
+            if getattr(self, "plugins", None) is not None:
+                self.plugins.emit("page_changed", key)
+        except Exception:
+            pass
         if key == "home":
             self.home_page.refresh_stats()
         elif key == "search":

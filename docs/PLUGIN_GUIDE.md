@@ -49,7 +49,7 @@ def setup(api):
 |------|-----|------|
 | 数据源 | `add_source(分类, 条目)` | 追加颜文字，只进内存，**不写盘** |
 | 输出转换 | `register_transform(fn, priority)` | 上屏前改写文本，priority 小者先 |
-| 事件 | `on(event, fn)` | `startup` / `shutdown` / `before_insert` / `after_insert` / `config_changed` |
+| 事件 | `on(event, fn)` | `startup` / `shutdown` / `page_changed` / `theme_changed` / `before_insert` / `after_insert` / `config_changed` |
 | 配置 | `settings`（活字典）+ `save_settings()` / `get_config(key)` | 私有配置落 `plugin_settings/<id>.json` |
 | 日志 | `log(msg)` | 写入全局日志（托盘「查看日志」可见） |
 | 侧边栏页 | `register_page(page_id, title, factory)` | 新增一页（不改动内置页） |
@@ -58,6 +58,22 @@ def setup(api):
 | 通知 | `notify(title, msg)` | 托盘气泡 |
 | 主题 | `theme_tokens()` | 只读颜色字典 |
 | **界面修改** | **`api.ui`** | **见下一节，可改任意内置界面** |
+
+### 事件一览
+
+| 事件 | 参数 | 触发时机 |
+|------|------|---------|
+| startup | — | 窗口建好、界面元素已登记（**读界面的正确时机**） |
+| shutdown | — | 程序退出前 |
+| page_changed | key | 切到某个侧边栏页面（如 "home"、"settings"） |
+| 	heme_changed | 	heme | 换肤完成（明暗、配色预设、强调色变化都会触发） |
+| efore_insert | 	ext, ctx | 颜文字上屏之前（可改写） |
+| fter_insert | 	ext, ctx | 上屏之后 |
+| config_changed | config | 设置项变化 |
+
+> ⚠ setup() 里窗口还没建：pi.ui.ids() 返回空、pi.ui.exists() 恒 False
+> （**写操作会排队，读不会**）。先用 pi.ui.ready() 判断，或把读取放到 startup。
+
 
 ---
 

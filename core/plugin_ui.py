@@ -79,8 +79,39 @@ class PluginUi:
         reg = self._registry
         return reg.resolve(target) if reg is not None else None
 
+    def ready(self):
+        """界面元素表是否已经就绪。
+
+        ## 为什么插件作者需要它
+
+        装配顺序是「先执行插件 `setup()` → 再建窗口登记元素」。
+        因此在 `setup()` 里：
+
+            api.ui.set_text("home.greeting.title", "你好")   # 会排队，稍后生效 ✓
+            api.ui.ids()        # 返回 []                     ← 读没排队 ✗
+            api.ui.exists("home.greeting")   # 返回 False      ← 同上
+
+        **写操作会排队、读操作不会**，这个不一致让人困惑：看代码好像
+        "某个元素不存在"，实际上只是时候没到。
+
+        现在有了 `ready()`，插件可以明确区分两种情况：
+
+            if api.ui.ready():
+                ... 立即读，拿到的是真实状态 ...
+            else:
+                ... 界面还没建好，改用在 startup 事件里做 ...
+
+        `startup` 事件在窗口建好之后才发出，是读界面的正确时机。
+        """
+        return self._ready()
+
     def ids(self):
-        """所有已登记、当前有效的元素 id（插件可据此发现可改的东西）。"""
+        """所有已登记、当前有效的元素 id。
+
+        ⚠ 在 `setup()` 阶段（界面未就绪）返回空列表——
+        写操作会排队但读不会。用 `api.ui.ready()` 先判断，
+        或把读取放到 `startup` 事件里。
+        """
         reg = self._registry
         return reg.ids() if reg is not None else []
 
@@ -95,7 +126,12 @@ class PluginUi:
         return reg.path_of(widget) if reg is not None else None
 
     def exists(self, target):
-        """目标是否存在（比 find 更直白的可读性封装）。"""
+        """目标是否存在（比 find 更直白的可读性封装）。
+
+        ⚠ 在 `setup()` 阶段（界面未就绪）**总是返回 False**——
+        即使这个 id 之后会出现。需要区分"真的不存在"和"时候没到"
+        时，先调 `api.ui.ready()`。
+        """
         return self.find(target) is not None
 
     def text_of(self, target, default=""):

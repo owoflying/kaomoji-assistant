@@ -317,6 +317,7 @@ class AppRuntime:
 
             # 托盘右键菜单：独立 QMenu 不继承全局 QSS，必须显式刷新
             self._theme_tray_menu(theme)
+
         finally:
             self._in_theme_broadcast = False
 
@@ -572,22 +573,25 @@ class AppRuntime:
 
         :return: `chunked=True` 时返回生成器，否则返回 None
 
-        ## 幂等
+        ## 这里也是 `theme_changed` 事件的发生点
 
-        `QApplication.setStyleSheet` 会让所有控件重新 polish，代价随
-        控件数量线性增长（实测热态 ≈450ms）。设置页任何改动都会走
-        应用链路，不做幂等短路的话，拖一下滑块就白卡近一秒。
+        **所有换肤路径都必经这里**（首次应用、设置里改、跟随系统、
+        换肤动画的分步执行）。之前我把事件挂在 `_on_theme_changed`
+        上——那个方法实际上**从来没被调用过**（换肤走的是
+        `apply_settings → _apply_theme_with_fade`），插件永远收不到。
 
-        `_applied_style` 仍然保留——但它的语义收窄了：**只是
-        "上一次贴到 Qt 上的 QSS 串"这一条渲染缓存**，不再兼任
-        "当前主题是什么"的真相（那是 controller 的职责）。
-
-        ## 为什么"分两次贴同一个串"是错的
-
-        曾试过「先贴前半段 → yield → 再贴完整串」，想借事件循环喘口气。
-        实测更慢：两次 `setStyleSheet` 都要全量重算，总时间翻倍。
-        正确做法是只贴一次，但把「贴」和「重绘」分到两帧。
+        放在入口而不是末尾，是因为这个方法有两条返回路径
+        （同步 `return None` 和生成器 `return _steps()`），
+        放末尾要写两遍。
         """
+        # 通知插件：主题变了（放在真正贴 QSS 之前，
+        # 让插件的界面重建能和换肤同一帧完成）
+        try:
+            if getattr(self, "plugins", None) is not None:
+                self.plugins.emit("theme_changed", theme)
+        except Exception:
+            pass
+
         ss = theme.style_sheet(glass=_glass_enabled(self.config))
         if ss == self._applied_style:
             return None
@@ -903,6 +907,11 @@ class AppRuntime:
         """
         QTimer.singleShot(0, self._maybe_show_welcome)
         QTimer.singleShot(0, self._maybe_show_update)
+        # startup：窗口已建好、元素表已登记 —— 这是读界面的正确时机。
+        #
+        # ⚠ 与 setup() 的区别：setup 时窗口还没建，pi.ui.ids() 是空的、
+        # pi.ui.exists() 恒为 False（写操作会排队，读不会）。
+        # 需要先读原值再改的插件必须等到这里。
         QTimer.singleShot(0, lambda: self.plugins.emit("startup"))
         # 自动更新：延迟检查（避开启动高峰），见 core/updater.py
         self._schedule_auto_update()

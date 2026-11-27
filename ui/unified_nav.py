@@ -228,6 +228,20 @@ class NavController:
         if callable(hook):
             hook(key)
 
+        # 页内内容从上往下依次浮现。
+        #
+        # 切页动画负责"新页整体出现"，这里负责"页内内容铺开"。
+        # delay=40 让页内浮现稍晚于切页起步，两者错开不互相掩盖。
+        #
+        # 插件页走的是同一段代码，所以**插件作者不需要任何适配**
+        # 就能获得这个效果（用户明确提过要"插件的侧边独立界面也这样"）。
+        try:
+            from ui.page_reveal import reveal_page
+
+            host._reveal_anims = reveal_page(page, delay=40)
+        except Exception:
+            pass
+
     def current_page(self):
         return self.host.content.currentWidget()
 

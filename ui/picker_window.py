@@ -54,7 +54,7 @@ RADIUS = 10
 # “刚自动关闭”的冷却时间：这段时间内忽略热键/托盘切换，避免“点一下就开→关→开”抖动
 DISMISS_COOLDOWN = 0.4
 # 淡入淡出时长（毫秒）
-FADE_MS = 130
+FADE_MS = 110      # 见 core/anim_tuning.py 的统一时长规范
 
 def _palette_from_theme(theme):
     """把统一主题色板转成候选条需要的字段。
@@ -313,7 +313,8 @@ class PickerWindow(WindowMaterialMixin, QWidget):
         self.setWindowOpacity(0.0)
         self._anim = QPropertyAnimation(self, b"windowOpacity", self)
         self._anim.setDuration(FADE_MS)
-        self._anim.setEasingCurve(QEasingCurve.OutCubic)
+        # 曲线走统一规范：OutQuint（末段收敛快，没有 OutCubic 的拖尾感）
+        self._anim.setEasingCurve(QEasingCurve.OutQuint)
         self._anim.finished.connect(self._on_anim_finished)
         #: 弹出时的上浮动画（见 _start_fade_in）
         self._slide_anim = None
@@ -697,7 +698,7 @@ class PickerWindow(WindowMaterialMixin, QWidget):
                 self._slide_anim.setDuration(FADE_MS)
                 self._slide_anim.setStartValue(base)
                 self._slide_anim.setEndValue(QPoint(base.x(), base.y() + 3))
-                self._slide_anim.setEasingCurve(QEasingCurve.OutQuad)
+                self._slide_anim.setEasingCurve(QEasingCurve.OutQuint)
                 self._slide_anim.start(QAbstractAnimation.DeleteWhenStopped)
         except Exception:
             pass
@@ -913,7 +914,7 @@ class PickerWindow(WindowMaterialMixin, QWidget):
             self._slide_anim.setDuration(FADE_MS)
             self._slide_anim.setStartValue(QPoint(base.x(), base.y() + 4))
             self._slide_anim.setEndValue(base)
-            self._slide_anim.setEasingCurve(QEasingCurve.OutCubic)
+            self._slide_anim.setEasingCurve(QEasingCurve.OutQuint)
             self.move(base.x(), base.y() + 4)
             self._slide_anim.start(QAbstractAnimation.DeleteWhenStopped)
         except Exception:

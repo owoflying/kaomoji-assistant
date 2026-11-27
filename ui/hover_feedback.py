@@ -63,8 +63,15 @@ class HoverFader(QObject):
         self._last_alpha = None
 
         self._anim = QVariantAnimation(self)
-        self._anim.setDuration(duration)
-        self._anim.setEasingCurve(QEasingCurve.OutCubic)
+        # 统一规范：90ms + OutQuad（亮度渐变用太陡的曲线会像"闪一下"）
+        try:
+            from core.anim_tuning import DURATION, EASING
+
+            self._anim.setDuration(DURATION["hover"])
+            self._anim.setEasingCurve(EASING["hover"])
+        except Exception:
+            self._anim.setDuration(duration)
+            self._anim.setEasingCurve(QEasingCurve.OutQuad)
         self._anim.valueChanged.connect(self._on_value)
 
         button.installEventFilter(self)

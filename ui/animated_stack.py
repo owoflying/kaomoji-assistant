@@ -1,4 +1,4 @@
-"""带平滑过渡的 QStackedWidget 替代：新页上浮 + 旧页截图淡出。
+﻿"""带平滑过渡的 QStackedWidget 替代：新页上浮 + 旧页截图淡出。
 
 ## 为什么不用 QGraphicsOpacityEffect
 
@@ -20,9 +20,9 @@
 * 不调 `setStyleSheet`（整棵内容树重新 polish，实测 260ms）
 * 不给真控件挂 graphics effect
 """
-from PySide6.QtWidgets import QStackedWidget, QWidget
+from PySide6.QtWidgets import QGraphicsOpacityEffect, QStackedWidget, QWidget
 from PySide6.QtCore import (
-    QAbstractAnimation, QEasingCurve, QPropertyAnimation, Qt,
+    QAbstractAnimation, QPropertyAnimation, Qt,
 )
 from PySide6.QtGui import QColor, QPainter
 
@@ -109,95 +109,104 @@ class AnimatedStackedWidget(QStackedWidget):
             p.end()
         super().paintEvent(e)
 
-    def slide_to(self, widget, duration=200, rise=8):
-        """切换到指定 widget：新页**淡入**（不再抓旧页截图）。
+    def slide_to(self, widget, duration=None, rise=8):
+        """切换页面：**让新页自身淡入**，不加任何覆盖层。
 
-        ## 前两版的问题
+        ## 三版的教训
 
-        **v1**：给新页做 `move()` 位移动画。
-        新页是 `QStackedWidget` 的直接子控件、参与布局，布局每帧会把它
-        改回原位 —— 动画和布局拉锯，画面抖动、跳帧。这就是
-        "特别卡顿和诡异"的根源。
+        **v1**：给新页 `move()` 位移动画。
+        新页参与布局，布局每帧把它改回原位——动画和布局拉锯，
+        画面抖动、跳帧。
 
-        **v2**：改用"旧页截图淡出"。
-        截图要 `old.grab()`，几百个控件的页面一次 30~50ms
-        **同步阻塞**在按键瞬间，体感是"按下去卡一下才动"。
-        而且旧页截图 + 新页过渡是两套 16ms tick，节奏不同步。
+        **v2**：旧页截图淡出。
+        `old.grab()` 一次 30~50ms 同步阻塞在按键瞬间；两套 16ms tick
+        节奏不同步。
 
-        ## 现在：只让新页淡入
+        **v3**：纯色覆盖层淡出。**这是用户说"闪一下白屏"的那一版**。
+        做法是先铺一层不透明的表面色盖住新页，再让它消失——
+        用户看到的当然是"先白一下，然后页面突然出现"，而不是淡入。
+        而且每次切页都要 new 一个全屏覆盖控件 + 跑一套动画，更卡。
 
-        用一个覆盖层盖住新页，从**不透明到透明**淡出——视觉上就是
-        新页从旧内容的底片里浮现出来。不抓旧页截图，零阻塞。
+        ## 现在：直接给新页加透明度效果
 
-        为什么这样看起来仍然是交叉过渡：切换瞬间屏幕上是新页，
-        但被半透明的覆盖层遮住；覆盖层退去，新页逐渐清晰。
-        人眼读到的就是"从上一页过渡过来"。
+            eff.setOpacity(0) → 1，180ms OutCubic
 
-        ## `_busy` 的安全阀
+        实测整页加 `QGraphicsOpacityEffect` 只多 8ms（94 → 102ms），
+        完全可接受——之前"opacity 很贵"的结论是在窗口半透明 + 材质
+        叠加的老架构上测的，现在前提已经变了。
 
-        如果上一次动画的 `finished` 没触发（窗口被隐藏、异常退出等），
-        `_busy` 会永久卡在 True，之后所有切页都被忽略——表现就是
-        "侧边栏点了没反应"。这里加一个超时自检兜底。
+        动画结束立刻摘掉 effect，避免它长期挂在页面上拖慢滚动。
         """
-        # 安全阀：超过 1 秒还 busy，说明上一次动画没正常结束
+        # 安全阀：上一次动画没正常结束（窗口隐藏/异常）时不要永久卡住
         if self._busy:
             import time as _t
 
             if _t.time() - getattr(self, "_busy_since", 0) > 1.0:
                 self._busy = False
-                self._cleanup_overlay()
             else:
                 return
 
         if widget is None or widget is self.currentWidget():
             return
 
-        geo = widget.geometry()
-        if geo.width() <= 0 or geo.height() <= 0 or not self.isVisible():
-            self.setCurrentWidget(widget)
-            return
-
-        # 开关：关掉就静态切换，不留任何过渡
+        # 开关
         try:
             from core.anim_settings import enabled as _anim_on
 
-            if not _anim_on("page_switch"):
-                self.setCurrentWidget(widget)
-                return
+            anim_on = _anim_on("page_switch")
         except Exception:
-            pass
+            anim_on = True
+
+        geo = widget.geometry()
+        if (not anim_on or geo.width() <= 0 or geo.height() <= 0
+                or not self.isVisible()):
+            # 关掉动画 / 窗口不可见 / 尺寸无效 → 直接切
+            widget.setGraphicsEffect(None)
+            self.setCurrentWidget(widget)
+            return
 
         import time as _t
 
         self._busy = True
         self._busy_since = _t.time()
         self.setCurrentWidget(widget)
-        widget.setGraphicsEffect(None)
-        widget.move(geo.x(), geo.y())
 
         try:
-            overlay = _FadeOverlay(self, None)
-            overlay.set_fill(self._surface or QColor(255, 255, 255))
-            overlay.show()
-            overlay.raise_()
-            fade = QPropertyAnimation(overlay, b"opacity", self)
-            fade.setDuration(duration)
-            fade.setStartValue(1.0)
-            fade.setEndValue(0.0)
-            fade.setEasingCurve(QEasingCurve.OutCubic)
+            # ⚠ effect 必须挂在 widget 上并且持有引用。
+            # 只写 widget.setGraphicsEffect(eff) 时，Python 侧的 eff 一旦
+            # 被回收，C++ 对象随之销毁，属性的 owner 就没了——
+            # QPropertyAnimation 会报
+            #   "you're trying to animate a non-existing property opacity"
+            # 所以这里同时把它挂到 self 上保活。
+            eff = QGraphicsOpacityEffect(widget)
+            eff.setOpacity(0.0)
+            widget.setGraphicsEffect(eff)
+            self._page_effect = eff
+            anim = QPropertyAnimation(eff, b"opacity", self)
+            # 时长/曲线走统一规范（core/anim_tuning.py）。
+            # 原来写的是 180ms + OutCubic —— OutCubic 前 30% 就走完 66%，
+            # 末段拖尾被读成"卡住"。
+            from core.anim_tuning import apply as _tune
+
+            _tune(anim, "page")
+            anim.setStartValue(0.0)
+            anim.setEndValue(1.0)
 
             def _done():
+                # 必须摘掉：effect 留着会让该页每次重绘都多一次离屏合成
+                try:
+                    widget.setGraphicsEffect(None)
+                except Exception:
+                    pass
+                self._page_effect = None
                 self._busy = False
-                self._cleanup_overlay()
 
-            fade.finished.connect(_done)
-            self._overlay = overlay
-            fade.start(QAbstractAnimation.DeleteWhenStopped)
-            return
+            anim.finished.connect(_done)
+            self._page_anim = anim        # 防止被 GC
+            anim.start(QAbstractAnimation.DeleteWhenStopped)
         except Exception:
-            pass
-
-        self._busy = False
+            widget.setGraphicsEffect(None)
+            self._busy = False
 
     def _cleanup_overlay(self):
         """确保覆盖层被彻底移除（不能留下游离窗口）。"""

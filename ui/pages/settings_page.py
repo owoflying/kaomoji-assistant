@@ -10,6 +10,8 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QTimer, Signal
 
+import os
+
 from core import autostart, uia_elevation, win_utils
 from core.win_utils import MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN
 from ui.fluent_combobox import FluentComboBox
@@ -263,6 +265,13 @@ class SettingsPage(QWidget):
         croot.addWidget(self._auto_update_status)
         v.addWidget(card)
 
+        # 数据迁移（导出 / 导入全部用户数据）
+        #
+        # 放在「高级」之后、页面末尾：换机迁移是低频但重要的操作，
+        # 不该挤在常用项里，但也不能藏进开发者模式。
+        v.addWidget(self._section_title("数据迁移"))
+        v.addWidget(self._build_backup_card())
+
         # 高级（**正式功能**：UIA 提权已毕业，不再受 use_test_features 门控。
         # 首次使用时会由欢迎页给出风险说明并要求勾选确认，见 ui/welcome_dialog.py）
         adv_title = self._section_title("高级")
@@ -344,6 +353,186 @@ class SettingsPage(QWidget):
         self._sync_emotion_controls()
         self._on_apply()
         self._refresh_emotion_stats()
+
+    # ---------- 数据迁移 ----------
+    def _build_backup_card(self):
+        """「数据迁移」卡片：一键导出 / 导入全部用户数据。
+
+        ## 为什么需要
+
+        用户换机器时，设置、外观、AI 训练数据、使用记录、自定义颜文字
+        分散在数据目录的十几个文件里，手动拷容易漏，也不知道哪些该带、
+        哪些是本机专用的（崩溃日志、版本标记）。
+
+        ## 设计
+
+        导出：打包成单个 zip。**必须是普通 zip**——
+        用户可以用资源管理器打开看里面有什么，不必信任界面的说法。
+
+        导入：先检查包、显示内容摘要，确认后才覆盖；覆盖前自动备份
+        当前数据到 `backup-before-import-<时间>/`。
+        """
+        card = self._card()
+        root = QVBoxLayout(card)
+        root.setContentsMargins(16, 14, 16, 14)
+        root.setSpacing(10)
+
+        tip = QLabel(
+            "导出会打包：设置、外观配置（含背景图）、AI 训练数据、"
+            "使用记录、自定义颜文字与快捷短语、插件设置。\n"
+            "崩溃日志和本机版本标记不会包含在内。")
+        tip.setObjectName("Caption")
+        tip.setWordWrap(True)
+        root.addWidget(tip)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self.backup_export_btn = QPushButton("导出全部数据…")
+        self.backup_export_btn.setMinimumHeight(32)
+        self.backup_export_btn.clicked.connect(self._on_export_data)
+        row.addWidget(self.backup_export_btn)
+
+        self.backup_import_btn = QPushButton("从备份导入…")
+        self.backup_import_btn.setMinimumHeight(32)
+        self.backup_import_btn.clicked.connect(self._on_import_data)
+        row.addWidget(self.backup_import_btn)
+        row.addStretch(1)
+        root.addLayout(row)
+
+        self.backup_status = QLabel("")
+        self.backup_status.setObjectName("Caption")
+        self.backup_status.setWordWrap(True)
+        self.backup_status.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        root.addWidget(self.backup_status)
+        return card
+
+    def _on_export_data(self):
+        """导出：选路径 → 打包 → 提示结果（并把路径复制到剪贴板）。"""
+        from PySide6.QtWidgets import QFileDialog
+
+        from core import backup, runtime
+
+        try:
+            default = os.path.join(
+                os.path.expanduser("~"), "Desktop", backup.default_name())
+        except Exception:
+            default = backup.default_name()
+
+        path, _f = QFileDialog.getSaveFileName(
+            self, "导出全部数据", default, "Kaomoji 备份包 (*.zip)")
+        if not path:
+            return
+        if not path.lower().endswith(".zip"):
+            path += ".zip"
+
+        self.backup_status.setText("正在打包…")
+        self.backup_export_btn.setEnabled(False)
+        try:
+            from PySide6.QtWidgets import QApplication
+
+            QApplication.processEvents()
+            version = ""
+            try:
+                from core import version as _ver
+
+                version = getattr(_ver, "__version__", "") or ""
+            except Exception:
+                pass
+            ok, msg, manifest = backup.export_all(
+                runtime.app_data_dir(), path, app_version=version)
+        finally:
+            self.backup_export_btn.setEnabled(True)
+
+        if not ok:
+            self.backup_status.setText("导出失败：%s" % msg)
+            return
+
+        # 摘要：让用户确认"该带的都带了"
+        parts = []
+        try:
+            for label, n, size in backup.summarize(manifest):
+                parts.append("%s %d 项" % (label, n))
+        except Exception:
+            pass
+        detail = ("，".join(parts) + "。") if parts else ""
+        try:
+            from PySide6.QtGui import QGuiApplication
+
+            QGuiApplication.clipboard().setText(path)
+        except Exception:
+            pass
+        self.backup_status.setText(
+            "已导出到：%s\n%s（路径已复制到剪贴板）" % (path, detail))
+
+    def _on_import_data(self):
+        """导入：选包 → 检查并展示摘要 → 二次确认 → 还原。"""
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+        from core import backup, runtime
+
+        path, _f = QFileDialog.getOpenFileName(
+            self, "选择备份包", "", "Kaomoji 备份包 (*.zip)")
+        if not path:
+            return
+
+        ok, msg, manifest = backup.inspect(path)
+        if not ok:
+            QMessageBox.warning(self, "无法导入", msg)
+            return
+
+        # 展示包内容，让用户知道会覆盖什么
+        lines = []
+        try:
+            lines.append("创建时间：%s" % manifest.get("created_at", "?"))
+            ver = manifest.get("app_version") or ""
+            if ver:
+                lines.append("导出版本：%s" % ver)
+            lines.append("")
+            lines.append("包含内容：")
+            for label, n, size in backup.summarize(manifest):
+                lines.append("  · %s：%d 项（%s）"
+                             % (label, n, backup.human_size(size)))
+        except Exception:
+            pass
+        lines.append("")
+        lines.append("导入会**覆盖**当前数据（会先自动备份一份）。确定继续？")
+
+        box = QMessageBox(self)
+        box.setWindowTitle("确认导入")
+        box.setIcon(QMessageBox.Warning)
+        box.setText("即将用这个备份替换当前数据")
+        box.setInformativeText("\n".join(lines))
+        yes = box.addButton("导入", QMessageBox.AcceptRole)
+        box.addButton("取消", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is not yes:
+            return
+
+        self.backup_status.setText("正在导入…")
+        self.backup_import_btn.setEnabled(False)
+        try:
+            from PySide6.QtWidgets import QApplication
+
+            QApplication.processEvents()
+            ok, msg, detail = backup.import_all(
+                path, runtime.app_data_dir())
+        finally:
+            self.backup_import_btn.setEnabled(True)
+
+        if not ok:
+            self.backup_status.setText("导入失败：%s" % msg)
+            QMessageBox.warning(self, "导入失败", msg)
+            return
+
+        extra = ""
+        bk = (detail or {}).get("backup_dir") or ""
+        if bk:
+            extra = "\n原数据已备份到：%s" % bk
+        self.backup_status.setText(
+            "%s。**请重启程序**让所有设置生效。%s" % (msg, extra))
+        QMessageBox.information(
+            self, "导入完成",
+            "%s。\n\n请重启程序，让所有设置与外观生效。%s" % (msg, extra))
 
     # ---------- 子控件工厂 ----------
     def _section_title(self, text):

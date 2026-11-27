@@ -70,7 +70,6 @@ _ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
 _PAGE_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,32}$")
 
 # 单个插件允许注册的侧边栏页数上限（防止恶意插件刷爆侧边栏）
-_MAX_PLUGIN_HOME_CARDS = 6     # 单个插件最多几张主页卡片
 _MAX_PLUGIN_PAGES = 8
 
 # 插件回调耗时告警阈值（秒）：回调在 Qt 主线程同步执行，越久界面卡顿越明显
@@ -233,40 +232,6 @@ class PluginAPI:
             self.id, pid, str(title or pid), factory, icon)
 
     # ---- 能力 7b：主页卡片 ----
-    def register_home_card(self, factory, card_id=None, position="top"):
-        """在**自带的主页**上插入一张卡片（v2 新增的正式扩展点）。
-
-        这是"修改自带界面"的官方姿势：插件不再需要沿 Qt 父子链爬对象树，
-        卡片由宿主创建、挂载、跟随主题、并在插件停用/卸载时自动销毁。
-
-        :param factory:  ``factory(parent) -> QWidget``，由宿主在需要时调用
-        :param card_id:  卡片标识（同插件内唯一，缺省自动生成）；用于原地更新
-        :param position: 插入位置——``"top"``（问候卡片之后，默认）
-                         / ``"bottom"``（所有插件卡片之后）
-        :return: 完整 key（形如 ``plugin:<id>:home_card:<card_id>``）
-
-        约束：返回的 widget 必须能独立显示（宿主只负责排布）。
-        宿主会给它垫上完整主题 QSS，插件无需自己处理深浅色。
-        """
-        self._require_ui()
-        if not callable(factory):
-            raise PluginError(
-                "register_home_card 需要 factory(parent) 可调用对象")
-        cid = str(card_id or "").strip() or "card%d" % (
-            len(self._manager._home_cards_for(self.id)) + 1)
-        if not _PAGE_ID_RE.match(cid):
-            raise PluginError("card_id 只能含字母/数字/下划线/连字符（最长 32）")
-        pos = str(position or "top").strip().lower()
-        if pos not in ("top", "bottom"):
-            raise PluginError("position 只能是 'top' 或 'bottom'")
-        return self._manager._add_home_card(self.id, cid, factory, pos)
-
-    def unregister_home_card(self, card_id):
-        """撤销本插件注册的一张主页卡片（幂等）。"""
-        self._require_ui()
-        return self._manager._remove_home_card(self.id, str(card_id or "").strip())
-
-    # ---- 能力 8：主题化弹窗 / 消息框 ----
     def show_dialog(self, factory=None, title="", width=0, height=0, modal=True):
         """弹出一个与主窗口同风格（无边框+圆角+亚克力色）的对话框。
 
@@ -366,8 +331,6 @@ class PluginManager(QObject):
         # 未注入时插件调 api.ui.* 只会"找不到目标"，不会崩溃。
         self._ui_registry = ui_registry
         self._ui_hub = MutatorHub(self._ui_registry, on_change=self._audit_change)
-        # 插件通过 api.register_home_card() 注册的主页卡片：key -> spec
-        self._home_cards = {}
         # plugin_id -> 记录 dict；见 discover()
         self.plugins = {}
         # 运行期能力注册表
@@ -777,56 +740,6 @@ class PluginManager(QObject):
     def _add_listener(self, plugin_id, event, fn):
         self._listeners.setdefault(event, []).append({"plugin": plugin_id, "fn": fn})
 
-    # ---- 主页卡片（api.register_home_card 的后端） ----
-    #
-    # ⚠ 这三个方法原来**只有调用没有实现**：`PluginAPI.register_home_card`
-    # 里写着 `self._manager._add_home_card(...)`，而 PluginManager 上
-    # 根本没有这个名字。插件一调就 AttributeError，而文档
-    # （docs/PLUGIN_GUIDE.md）把它列为"修改自带界面的官方姿势"。
-    # 实测探针插件确实在那里挂掉，等于这个扩展点是空头支票。
-    #
-    # 现在按 `_add_page` 的既有模式补齐：只登记 spec/factory，
-    # widget 实例由 UI 层（主页的 plugin_cards_slot）创建持有。
-
-    def _home_cards_for(self, plugin_id):
-        """某插件已注册的主页卡片列表（按注册顺序）。"""
-        return [spec for spec in self._home_cards.values()
-                if spec.get("plugin") == plugin_id]
-
-    def _add_home_card(self, plugin_id, card_id, factory, position="top"):
-        """登记一张主页卡片，返回完整 key。
-
-        :param position: "top"（问候卡片之后）或 "bottom"（所有插件卡片之后）
-        """
-        key = "plugin:%s:home_card:%s" % (plugin_id, card_id)
-        owned = len(self._home_cards_for(plugin_id))
-        if owned >= _MAX_PLUGIN_HOME_CARDS:
-            raise PluginError(
-                "单个插件最多注册 %d 张主页卡片" % _MAX_PLUGIN_HOME_CARDS)
-        self._home_cards[key] = {
-            "plugin": plugin_id,
-            "card_id": str(card_id),
-            "factory": factory,
-            "position": str(position or "top").lower(),
-        }
-        self.ui_changed.emit()
-        return key
-
-    def _remove_home_card(self, plugin_id, card_id):
-        """撤销一张主页卡片（幂等，返回是否真的删掉了）。"""
-        key = "plugin:%s:home_card:%s" % (plugin_id, card_id)
-        if key in self._home_cards:
-            self._home_cards.pop(key, None)
-            self.ui_changed.emit()
-            return True
-        return False
-
-    def home_cards(self):
-        """所有已注册的主页卡片：[(key, spec), ...]（供 UI 层遍历）。"""
-        return list(self._home_cards.items())
-
-
-    # ---------- UI 能力登记（由 PluginAPI 调用） ----------
     def _add_settings_widget(self, plugin_id, factory, title):
         self._settings_widgets[plugin_id] = {"factory": factory, "title": title}
         self.ui_changed.emit()

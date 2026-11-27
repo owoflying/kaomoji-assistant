@@ -240,3 +240,75 @@ def test_preview_import_never_writes(isolated_data, tmp_path, qapp,
               encoding="utf-8") as f:
         cfg = json.load(f)
     assert cfg["hotkey"] == "<ctrl>+<shift>+k"
+
+
+def test_setup_block_rows_do_not_overlap(qapp):
+    """最后一页的三行控件不能重叠。
+
+    ## 为什么需要这条
+
+    窗口的 `setMinimumHeight` 曾经是 420，而最后一页要放
+    「热键 / 外观 / 从备份导入」三行 + 分割线 + 提示，装不下。
+    布局就把它们压扁后叠在一起——截图里能看到文字互相覆盖，
+    用户反馈"几个按钮挤在一起"。
+
+    这类问题**不会报错**，只能靠看图发现。所以这里直接量控件坐标：
+    相邻两行的纵向区间不能相交。
+    """
+    from ui.welcome_dialog import WelcomeDialog
+
+    dlg = WelcomeDialog(theme_name="light", version="1.0", config={})
+    try:
+        # 切到最后一页并让布局跑完
+        dlg.show()
+        for _ in range(10):
+            qapp.processEvents()
+        dlg._show_step(len(dlg._pages) - 1, forward=True)
+        for _ in range(30):
+            qapp.processEvents()
+
+        hk = dlg._hotkey_combo
+        th = dlg._theme_combo
+        imp = dlg._import_btn
+        for w in (hk, th, imp):
+            assert w is not None
+
+        def _bottom(w):
+            return w.mapTo(dlg, w.rect().bottomLeft()).y()
+
+        def _top(w):
+            return w.mapTo(dlg, w.rect().topLeft()).y()
+
+        assert _top(th) >= _bottom(hk), (
+            "热键与外观两行重叠：热键底=%d，外观顶=%d"
+            % (_bottom(hk), _top(th)))
+        assert _top(imp) >= _bottom(th), (
+            "外观与「从备份导入」两行重叠：外观底=%d，导入顶=%d"
+            % (_bottom(th), _top(imp)))
+    finally:
+        dlg.close()
+
+
+def test_window_tall_enough_for_setup_page(qapp):
+    """窗口最小高度必须装得下最满的那一页。
+
+    直接盯住根因：如果以后又往最后一页加东西，而最小高度没跟着涨，
+    布局就会开始压扁控件。这条测试会在压扁之前就红。
+    """
+    from ui.welcome_dialog import WelcomeDialog
+
+    dlg = WelcomeDialog(theme_name="light", version="1.0", config={})
+    try:
+        dlg.show()
+        for _ in range(10):
+            qapp.processEvents()
+        setup_page = dlg._pages[-1]
+        need = setup_page.minimumSizeHint().height()
+        # 页面区实际能拿到的高度
+        avail = dlg._body.height()
+        assert avail >= need, (
+            "最后一页至少需要 %d 像素高，但页面区只有 %d。\n"
+            "控件会被压扁后重叠——请调大 setMinimumHeight。"
+            % (need, avail))
+    finally:
+        dlg.close()

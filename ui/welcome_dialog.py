@@ -132,7 +132,11 @@ class WelcomeDialog(QDialog):
         t, _params = surface_theme("dialog")
         self.setStyleSheet(t.style_sheet())
         self.setMinimumWidth(560)
-        self.setMinimumHeight(420)
+        # 高度不能卡死 420：最后一页除了图标/标题/正文，还要放
+        # 「热键 / 外观 / 从备份导入」三行 + 分割线 + 提示，
+        # 420 装不下，布局会把三行压扁后叠在一起（实测截图可见）。
+        # 这里给一个能容纳最满那页的最小高度，再让布局自然撑开。
+        self.setMinimumHeight(520)
 
         #: 用户在引导页里选的配置（点「开始使用」后由调用方合并进主配置）
         self.chosen = {}

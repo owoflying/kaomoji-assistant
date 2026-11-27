@@ -149,7 +149,27 @@ def migrate_legacy(cfg):
     """
     if not cfg:
         return cfg
-    if "theme_profile" not in cfg:
+    # ⚠ 判断"是否需要迁移"不能只看键是否存在。
+    #
+    # 实测踩到：用户的 config.json 里 **`"theme_profile": null` 这个键
+    # 是存在的**（早期某次保存写进了空值），于是
+    # `"theme_profile" not in cfg` 为 False，迁移被整个跳过。
+    #
+    # 后果非常隐蔽：主题包始终是 None，但旧平铺键里有真实值，
+    # 于是各处 `prof.get(k) or cfg.get(k)` 的兜底各自为政，
+    # 用户看到的现象就是"每个选项都像生效了，但组合起来不对劲，
+    # 有的还不生效"——因为读取路径分裂成了两套。
+    #
+    # 现在把"空值"也算作未迁移。`normalize(None)` 得到默认值字典，
+    # 但那种"全默认"的主题包同样意味着没迁移过，所以统一按
+    # "不存在"处理。
+    _existing = cfg.get("theme_profile")
+    _needs_migrate = (
+        "theme_profile" not in cfg
+        or not isinstance(_existing, dict)
+        or not _existing
+    )
+    if _needs_migrate:
         legacy = {}
         # 主配置：从旧键抄一份
         for old, new in (
@@ -212,28 +232,28 @@ def migrate_legacy(cfg):
 def get_profile(cfg):
     """取主配置（已归一化）。
 
-    ## 旧键优先于主题包（仅限主题模式/配色）
+    ## 主题包是**唯一真相**
 
-    `set_profile` 会同步写旧键，所以正常情况下两边一致。
-    但如果**外部代码直接写旧键**（测试、插件、旧版本数据），
-    主题包不会自动更新——读出来的就是旧值，表现为"改了没生效"。
+    这里曾经有一段"旧键优先于主题包"的特殊规则，只对
+    `theme_mode` / `theme_preset` 生效——理由是外部代码可能直接写旧键。
 
-    这里对"主题模式 / 配色方案"两个键做一次兜底：旧键存在且与主题包
-    不同时，以旧键为准。只对这两个键这么做，因为它们是外部最常直接
-    写的外观键；其它材质参数仍以主题包为唯一真相，避免把用户在新界面
-    里的设置冲掉。
+    结果是**同一个配置包里两套规则并存**：这两个键按旧值读，其余
+    材质参数按新值读。用户看到的现象就是"每个选项都像生效了，
+    但组合起来不对劲，有的还不生效"。
+
+    现在去掉那段特例。统一规则：
+
+        1. `migrate_legacy()` 先把旧键并入主题包（只做一次，之后
+           主题包已存在就跳过）
+        2. 之后一律以主题包为准
+
+    外部代码要改外观，应该走 `set_profile()`（它会同步写旧键），
+    而不是直接改平铺键。
     """
     migrate_legacy(cfg)
     prof = normalize(cfg.get("theme_profile"))
-    changed = False
-    for old, new in (("theme_mode", "theme_mode"),
-                     ("theme_preset", "theme_preset")):
-        v = cfg.get(old)
-        if isinstance(v, str) and v and v != prof.get(new):
-            prof[new] = v
-            changed = True
-    if changed:
-        cfg["theme_profile"] = prof
+    # 迁移后主题包就是唯一真相；把归一化结果写回，避免每次重算
+    cfg["theme_profile"] = prof
     return prof
 
 

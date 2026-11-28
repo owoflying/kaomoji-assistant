@@ -141,3 +141,34 @@ def install_excepthook():
         append_log("exception", "", text)
 
     sys.excepthook = hook
+
+
+# ---------------------------------------------------------------------------
+# 把「取最近日志」的能力注入给 crash_guard
+#
+# 崩溃报告里要附一段最近的日志，那是 crash_guard 需要的；而 crash_guard
+# 又负责安装异常钩子（本模块会调它）。两个模块互相需要对方的产物。
+#
+# 与其在两边函数里互相 import（能跑，但依赖是双向的、难以推理），
+# 不如由本模块在加载完成后**主动把读取器交出去** —— 依赖变成单向：
+#
+#     applog        →  crash_guard.set_log_reader(...)
+#     crash_guard   →  （不认识 applog，只认一个可调用对象）
+def _read_recent(limit=120):
+    """给 crash_guard 用的读取器：返回最近 limit 条日志的文本。"""
+    try:
+        lines = list(LOG_BUFFER)[-int(limit):]
+        return "\n".join(str(x) for x in lines)
+    except Exception:
+        return ""
+
+
+try:
+    from core.crash_guard import set_log_reader as _set_log_reader
+    from core.crash_guard import set_log_writer as _set_log_writer
+
+    _set_log_reader(_read_recent)
+    _set_log_writer(append_log)
+except Exception:
+    # crash_guard 不可用时不影响日志功能本身
+    pass

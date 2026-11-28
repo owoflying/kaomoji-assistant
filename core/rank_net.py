@@ -257,7 +257,7 @@ def features(text, *, state, data=None, hour_bucket_name=None,
     """
     import time as _time
 
-    from core.user_state import hour_bucket
+    from core.time_buckets import hour_bucket
 
     v = [0.0] * INPUT_DIM
     text = str(text or "")

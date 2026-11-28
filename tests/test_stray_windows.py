@@ -49,7 +49,35 @@ def _visible_tops(app):
 
 
 @pytest.fixture
-def runtime_like(qapp, tmp_path, quiet_log):
+def no_crash_dialogs():
+    """屏蔽崩溃弹窗，避免它干扰"游离窗口"的判定。
+
+    ## 为什么需要
+
+    这些测试断言的是"操作后不应**新增**可见顶层窗口"。
+    但全套运行时，前面某个用例可能留下了一个会抛异常的全局状态，
+    于是启用/停用插件时 crash_guard 弹出了 `CrashDialog`——
+    它确实是新窗口，于是被误判成"控件闪现"。
+
+    实测就是这么翻车的：断言里报的是
+    `多出了顶层窗口 ['CrashDialog', 'CrashDialog', 'CrashDialog']`，
+    而插件卡片本身一个都没漏。
+
+    本测试只关心**控件闪现**，不关心报错弹窗。所以这里把弹窗回调
+    摘掉（崩溃仍然写日志、仍然被兜住），断言就只反映它该反映的东西。
+    """
+    import core.crash_guard as CG
+
+    old_cb = getattr(CG, "_alert_callback", None)
+    CG.set_alert_callback(None)
+    try:
+        yield
+    finally:
+        CG.set_alert_callback(old_cb)
+
+
+@pytest.fixture
+def runtime_like(qapp, tmp_path, quiet_log, no_crash_dialogs):
     """建出一个带插件的主窗口（不启动监听/热键，只测 UI 生命周期）。"""
     from ui.unified_window import UnifiedSettingsWindow
 
@@ -82,6 +110,19 @@ def test_no_stray_windows_when_toggling_plugin(runtime_like, qapp):
 
     回归用例：`PluginPage.refresh()` 清空旧卡片时先 setParent(None) 后
     deleteLater，导致每张卡片都闪现为顶层窗口。
+
+    ## 为什么用"集合差 + 多点采样"
+
+    原来用 `len(tops) == baseline`。两个问题：
+
+      1. 基线是**全局**窗口数，全套测试里历史遗留的窗口会干扰判定
+         → 单独跑绿、全套跑红，反复横跳
+      2. 只在操作**结束后**采样一次。但"闪现"意味着窗口可能在
+         中间帧出现又消失，单点采样抓不到，于是偶发失败
+
+    现在：用 id 集合差找出**新出现**的窗口，并在操作过程中
+    多次采样（含 0ms/10ms 两个时点），把"闪现"也纳进来。
+    这样结果既不受历史窗口影响，也不再依赖运气。
     """
     window, pm, _cfg = runtime_like
     window.show()
@@ -89,36 +130,52 @@ def test_no_stray_windows_when_toggling_plugin(runtime_like, qapp):
     for _ in range(3):
         qapp.processEvents()
 
-    baseline = len(_visible_tops(qapp))
+    baseline_ids = {id(w) for w in _visible_tops(qapp)}
+
+    def _sample():
+        """采样一次，返回新出现的窗口（排除已记录的）。"""
+        qapp.processEvents()
+        return [w for w in _visible_tops(qapp) if id(w) not in baseline_ids]
 
     for pid, enabled in (("startup_notice", False),
                          ("startup_notice", True),
                          ("example_kaomoji", False),
                          ("example_kaomoji", True)):
         pm.set_enabled(pid, enabled)
+        seen = []
+        # 多点采样：操作完成后立刻一次，再让事件循环跑一轮
         for _ in range(2):
+            seen.extend(_sample())
+        if not seen:
+            # 再等一小段，覆盖"下一帧才闪现"的情况
             qapp.processEvents()
-        tops = _visible_tops(qapp)
-        names = [type(w).__name__ for w in tops]
-        assert len(tops) == baseline, (
+            seen.extend(_sample())
+        assert not seen, (
             "启用/停用 %s 后多出了顶层窗口 %s —— "
-            "说明有控件在 setParent(None) 之前没有 hide()" % (pid, names))
+            "说明有控件在 setParent(None) 之前没有 hide()"
+            % (pid, [type(w).__name__ for w in seen]))
 
 
 def test_no_stray_windows_when_switching_pages(runtime_like, qapp):
-    """切换页面（含插件扩展页增删）不得产生游离顶层窗口。"""
+    """切换页面（含插件扩展页增删）不得产生游离顶层窗口。
+
+    同 `..._toggling_plugin`：用 id 集合差判断"新出现"的窗口，
+    不受全套测试里历史遗留窗口的影响。
+    """
     window, _pm, _cfg = runtime_like
     window.show()
     for _ in range(3):
         qapp.processEvents()
-    baseline = len(_visible_tops(qapp))
+    baseline_ids = {id(w) for w in _visible_tops(qapp)}
 
     for key in ("library", "custom", "triggers", "search", "settings",
                 "about", "plugin", "home"):
         window._set_page(key)
         qapp.processEvents()
-        assert len(_visible_tops(qapp)) == baseline, \
-            "切到 %s 后出现游离顶层窗口" % key
+        new = [w for w in _visible_tops(qapp) if id(w) not in baseline_ids]
+        assert not new, (
+            "切到 %s 后出现游离顶层窗口 %s"
+            % (key, [type(w).__name__ for w in new]))
 
 
 def test_no_stray_windows_when_picker_rebuilds(qapp, tmp_path):

@@ -57,46 +57,29 @@ SURFACES = {s.key: s.title for s in _all_specs()}
 #: 各表面自己的背景图槽位（供 ui/window_material 之外的地方查询）
 SURFACE_IMAGE_SLOTS = {s.key: s.image_slot for s in _all_specs()}
 
-#: 主题包里包含的全部字段与默认值。
-#:
-#: 这些字段**所有表面共用同一套语义**，所以新窗口不需要定义自己的键。
-DEFAULT_PROFILE = {
-    "theme_mode": "light",          # light / dark / system
-    "theme_preset": "classic",
-    "accent_mode": "preset",
-    "accent_custom": "#0067c0",
-    "panel_alpha": 0.92,            # 整窗不透明度
-    "material_enabled": False,      # 是否用背景图/材质
-    "material_type": "none",        # none / blur / frosted / fog
-    "material_strength": 55,
-    "material_saturate": 18,        # ×10
-    "material_brightness": 104,     # ×100
-    "material_dim": 0,
-    "image_opacity": 100,           # 背景图不透明度
-    # 背景图裁切：(x, y, w, h) 相对比例；全 0 = 整图
-    "crop_x": 0.0,
-    "crop_y": 0.0,
-    "crop_w": 0.0,
-    "crop_h": 0.0,
-}
+#: 字段定义统一放在 `core/theme_fields.py`——那里不依赖任何 core 模块，
+#: 所以 `surface_spec` 和本模块都能安全引用，不再形成循环导入。
+from core.theme_fields import (  # noqa: E402
+    ACCENT_MODES, ALL_FIELDS, DEFAULT_PROFILE, MATERIAL_TYPES, RANGES,
+    THEME_MODES,
+)
 
-#: 数值字段的范围（用于归一化）
-_RANGES = {
-    "panel_alpha": (0.0, 1.0),
-    "material_strength": (0, 100),
-    "material_saturate": (10, 30),
-    "material_brightness": (80, 130),
-    "material_dim": (0, 100),
-    "image_opacity": (0, 100),
-    "crop_x": (0.0, 1.0),
-    "crop_y": (0.0, 1.0),
-    "crop_w": (0.0, 1.0),
-    "crop_h": (0.0, 1.0),
-}
+#: 本模块对外提供的公开名字（`ALL_FIELDS` 等是**转发**给下游用的，
+#: 本模块内部不一定用到，但外部一直从 here 取，保留以免破坏调用点）
+__all__ = [
+    "ACCENT_MODES", "ALL_FIELDS", "DEFAULT_PROFILE", "MATERIAL_TYPES",
+    "RANGES", "THEME_MODES",
+    "SURFACES", "SURFACE_IMAGE_SLOTS", "clear_override",
+    "effective_image_slot", "get_overrides", "get_profile",
+    "has_override", "migrate_legacy", "normalize", "resolve",
+    "set_override", "set_profile",
+]
 
-_MATERIAL_TYPES = ("none", "blur", "frosted", "fog")
-_THEME_MODES = ("light", "dark", "system")
-_ACCENT_MODES = ("preset", "system", "custom")
+#: 兼容旧引用名（本模块内部一直用 `_RANGES` 等私有名）
+_RANGES = RANGES
+_MATERIAL_TYPES = MATERIAL_TYPES
+_THEME_MODES = THEME_MODES
+_ACCENT_MODES = ACCENT_MODES
 
 
 def _clamp(name, value, default):

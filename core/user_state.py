@@ -75,29 +75,9 @@ NEGATIVE_TARGET = 0.15
 #: 不分 24 个桶是因为数据太稀疏——一天用不了几次，按小时统计
 #: 每个桶平均不到 1 次，噪声比信号大。6 个桶足够区分
 #: "清晨/上午/午后/傍晚/夜晚/深夜"这几种典型语境。
-HOUR_BUCKETS = (
-    ("dawn", 5, 8),       # 05:00–08:59 清晨
-    ("morning", 9, 11),   # 09:00–11:59 上午
-    ("noon", 12, 13),     # 12:00–13:59 午后
-    ("afternoon", 14, 17),  # 14:00–17:59 下午
-    ("evening", 18, 22),  # 18:00–22:59 夜晚
-    ("night", 23, 4),     # 23:00–04:59 深夜
-)
-
-
-def hour_bucket(ts=None):
-    """把时间戳（默认现在）映射成时段桶名。"""
-    import datetime
-
-    h = (datetime.datetime.fromtimestamp(ts) if ts is not None
-         else datetime.datetime.now()).hour
-    for name, lo, hi in HOUR_BUCKETS:
-        if lo <= hi:
-            if lo <= h <= hi:
-                return name
-        elif h >= lo or h <= hi:      # 跨零点的桶
-            return name
-    return "morning"
+#: 时段定义统一放在 `core/time_buckets.py`——那里只依赖标准库，
+#: 本模块和 `core/rank_net.py` 都引用它，不再是两者互相 import。
+from core.time_buckets import HOUR_BUCKETS, hour_bucket  # noqa: E402,F401
 
 
 #: 时段桶 → 对应的时间场景名（与 kaomoji.json 里的 scenes 对齐）

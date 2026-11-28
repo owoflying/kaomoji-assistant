@@ -50,12 +50,23 @@
 """
 #: 字段分组。
 #:
-#: ⚠ `ALL_FIELDS` **必须**从 `core.theme_profile.DEFAULT_PROFILE` 派生，
+#: ⚠ `ALL_FIELDS` **必须**从 `core.theme_fields.DEFAULT_PROFILE` 派生，
 #: 不能手写。手写必漏——这里就漏过 `panel_alpha`，结果所有界面的
 #: 透明度滑块整片消失（能力表说"不支持该字段"，页面就不渲染它了）。
 #:
-#: 分组只是给界面分区用的标签，未登记的字段仍然落在 `ALL_FIELDS` 里，
-#: 不会因为忘了归类而被砍掉。
+#: ## 为什么可以直接 import（不再需要惰性求值）
+#:
+#: 这些字段原来放在 `core.theme_profile.py`，而它又会 import 本模块
+#: （取 SURFACES），于是形成**模块级循环**——本模块被加载时
+#: `DEFAULT_PROFILE` 还没定义，只能写"读 sys.modules 再惰性求值"
+#: 那种别扭的补丁。
+#:
+#: 现在字段定义搬到 `core/theme_fields.py`（不依赖任何 core 模块），
+#: 依赖变成单向，可以正常 import 了。
+from core.theme_fields import ALL_FIELDS  # noqa: F401
+
+#: 字段分组（只是给界面分区用的标签；未登记的字段仍在 ALL_FIELDS 里，
+#: 不会因为忘了归类而被砍掉）。
 THEME_FIELDS = ("theme_mode", "theme_preset")
 ACCENT_FIELDS = ("accent_mode", "accent_custom")
 MATERIAL_FIELDS = (
@@ -66,53 +77,9 @@ MATERIAL_FIELDS = (
 CROP_FIELDS = ("crop_x", "crop_y", "crop_w", "crop_h")
 
 
-def _all_fields():
-    """主题包的字段全集（从 DEFAULT_PROFILE 派生）。
-
-    ## ⚠ 不能在模块顶层直接 import
-
-    `core.theme_profile` 会 import 本模块（取 SURFACES），所以本模块
-    顶层再反过来 import `DEFAULT_PROFILE` 就形成**循环导入**——
-    那一刻 `theme_profile` 的模块体还没执行到 `DEFAULT_PROFILE = {...}`，
-    `from ... import DEFAULT_PROFILE` 会失败并落到 except 分支，
-    于是拿到的是手写并集（**又漏了 panel_alpha**），问题原样复现。
-
-    实测症状：修好之后透明度滑块依然整片消失，查出来字段数 15 ≠ 16。
-
-    所以改成**惰性求值**：等真正需要字段表时（那时两个模块都已加载完）
-    再去读 DEFAULT_PROFILE。
-    """
-    try:
-        import sys as _sys
-
-        tp = _sys.modules.get("core.theme_profile")
-        if tp is not None:
-            prof = getattr(tp, "DEFAULT_PROFILE", None)
-            if prof:
-                return tuple(prof)
-        from core.theme_profile import DEFAULT_PROFILE
-
-        return tuple(DEFAULT_PROFILE)
-    except Exception:
-        # 极端兜底：分组并集 + 已知的独立字段
-        return (THEME_FIELDS + ACCENT_FIELDS + MATERIAL_FIELDS
-                + CROP_FIELDS + ("panel_alpha",))
-
-
-#: 全部字段（**函数**，不是常量）。
-#:
-#: 写成函数而不是模块级常量，是为了避开循环导入：
-#: 常量会在本模块被 import 的那一刻求值，那时 theme_profile 还没
-#: 定义 DEFAULT_PROFILE；函数则是调用时才求值，两个模块都加载完了。
-#:
-#: 兼容写法：调用方仍可把 `ALL_FIELDS` 当序列用（它是 tuple 的工厂），
-#: 下面 `SurfaceSpec.__init__` 里统一走 `all_fields()`。
-ALL_FIELDS = ()
-
-
 def all_fields():
-    """主题包字段全集（懒求值）。"""
-    return _all_fields()
+    """主题包字段全集（直接取自 theme_fields，无循环依赖）。"""
+    return tuple(ALL_FIELDS)
 
 
 class SurfaceSpec:

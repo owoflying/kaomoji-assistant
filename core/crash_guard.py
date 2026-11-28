@@ -201,13 +201,57 @@ def _collect_context():
     return info
 
 
-def _recent_logs(limit=120):
-    """取最近若干条日志。"""
-    try:
-        from core.applog import LOG_BUFFER
+#: 取最近日志的读取器（由 `core.applog` 注入）。
+#:
+#: ## 为什么用注入而不是直接 import
+#:
+#: `crash_guard` 需要读日志来生成崩溃报告，而 `applog` 需要调用
+#: `crash_guard.install()` 装异常钩子——两边互相依赖。
+#:
+#: 它们都在函数内 import 所以 Python 不报错，但这是一条**双向箭头**：
+#: 任何一个模块都可能在另一个还没初始化完时被调用，行为难以推理。
+#:
+#: 现在改成单向：`applog` 在模块末尾把读取器注入进来，
+#: `crash_guard` 只依赖"有一个可调用对象"，不关心它来自哪。
+LOG_READER = None
 
-        lines = list(LOG_BUFFER)[-limit:]
-        return "\n".join(str(x) for x in lines)
+
+def set_log_reader(fn):
+    """注入"取最近日志行"的读取器（`fn(limit) -> str`）。"""
+    global LOG_READER
+    LOG_READER = fn if callable(fn) else None
+
+
+#: 写日志的函数（由 `core.applog` 注入）。
+#:
+#: 与 `LOG_READER` 同理：`crash_guard` 不该认识 `applog`，
+#: 只依赖"有一个能写日志的可调用对象"。
+LOG_WRITER = None
+
+
+def set_log_writer(fn):
+    """注入日志写入器 `fn(level, source, message)`。"""
+    global LOG_WRITER
+    LOG_WRITER = fn if callable(fn) else None
+
+
+def _write_log(level, source, message):
+    """写一条日志（没有注入写入器时静默丢弃）。"""
+    if LOG_WRITER is None:
+        return
+    try:
+        LOG_WRITER(level, source, message)
+    except Exception:
+        pass
+
+
+def _recent_logs(limit=120):
+    """取最近若干条日志（没有注入读取器时返回空串）。"""
+    if LOG_READER is None:
+        return ""
+    try:
+        text = LOG_READER(limit)
+        return text if isinstance(text, str) else ""
     except Exception:
         return ""
 
@@ -395,11 +439,9 @@ def _handle(exc_type, exc_value, exc_tb, source="main"):
     except Exception:
         pass
 
-    # 2. 记录日志
+    # 2. 记录日志（通过注入的写入器，不直接 import applog）
     try:
-        from core.applog import append_log
-
-        append_log("exception", source,
+        _write_log("exception", source,
                    _safe_traceback(exc_type, exc_value, exc_tb))
     except Exception:
         pass

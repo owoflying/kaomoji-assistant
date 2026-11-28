@@ -121,8 +121,9 @@ class AppearancePage(QWidget):
         for attr in self._DYNAMIC_ATTRS:
             try:
                 setattr(self, attr, None)
-            except Exception:
-                pass
+            except Exception as _e:
+                from core.swallow import _report
+                _report('外观操作', _e, source="appearance")
 
         from core.surface_spec import (
             ACCENT_FIELDS, CROP_FIELDS, MATERIAL_FIELDS, THEME_FIELDS, spec,
@@ -254,8 +255,9 @@ class AppearancePage(QWidget):
         if self._on_apply is not None:
             try:
                 self._on_apply(dict(cfg))
-            except Exception:
-                pass
+            except Exception as _e:
+                from core.swallow import _report
+                _report('外观操作', _e, source="appearance")
 
     def _push_anim(self, key, value):
         """改一个动画开关。
@@ -270,8 +272,9 @@ class AppearancePage(QWidget):
         if self._on_apply is not None:
             try:
                 self._on_apply(dict(cfg))
-            except Exception:
-                pass
+            except Exception as _e:
+                from core.swallow import _report
+                _report('外观操作', _e, source="appearance")
 
     # ---------- 界面切换 ----------
     def _surface_row(self):
@@ -394,8 +397,9 @@ class AppearancePage(QWidget):
         if self._on_apply is not None:
             try:
                 self._on_apply(dict(cfg))
-            except Exception:
-                pass
+            except Exception as _e:
+                from core.swallow import _report
+                _report('外观操作', _e, source="appearance")
         self.refresh_from_controller()
 
     # ---------- 候选条外观 ----------
@@ -455,8 +459,9 @@ class AppearancePage(QWidget):
                         round(cw * 100), round(ch * 100),
                         round(float(cur.get("crop_x", 0.0)) * 100),
                         round(float(cur.get("crop_y", 0.0)) * 100)))
-        except Exception:
-            pass
+        except Exception as _e:
+            from core.swallow import _report
+            _report('外观操作', _e, source="appearance")
 
     def _add_row(self, layout, label, widget_or_layout):
         """一行设置项：左标签 + 右控件（与设置页同样的视觉规格）。"""
@@ -691,8 +696,9 @@ class AppearancePage(QWidget):
                            "_push 丢弃了未登记的字段：%r"
                            "（若这是外观选项，请加进 "
                            "core.theme_profile.DEFAULT_PROFILE）" % (ignored,))
-            except Exception:
-                pass
+            except Exception as _e:
+                from core.swallow import _report
+                _report('外观操作', _e, source="appearance")
 
         if not patch:
             return
@@ -758,8 +764,9 @@ class AppearancePage(QWidget):
                 else:
                     # 兼容：老回调只认完整配置
                     apply_fn(target)
-            except Exception:
-                pass
+            except Exception as _e:
+                from core.swallow import _report
+                _report('外观操作', _e, source="appearance")
 
         # 换材质种类时走过渡动画（明显视觉切换，需要遮掩重算停顿）
         if "material_type" in delta:
@@ -790,8 +797,9 @@ class AppearancePage(QWidget):
         """
         try:
             self.refresh_from_controller()
-        except Exception:
-            pass
+        except Exception as _e:
+            from core.swallow import _report
+            _report('外观操作', _e, source="appearance")
 
     def _push_from_slider(self, _key, _slider):
         # 默认路径不会走到（各滑块都自带 on_change）
@@ -807,8 +815,9 @@ class AppearancePage(QWidget):
         try:
             self.edit_preset_btn.setEnabled(
                 self.preset_combo.currentData() == "custom")
-        except Exception:
-            pass
+        except Exception as _e:
+            from core.swallow import _report
+            _report('外观操作', _e, source="appearance")
 
     def _sync_enabled(self):
         """按「当前界面 + 是否开独立配置 + 材质是否开启」联动置灰。
@@ -829,8 +838,9 @@ class AppearancePage(QWidget):
                 if w is not None:
                     try:
                         w.setEnabled(enabled)
-                    except Exception:
-                        pass
+                    except Exception as _e:
+                        from core.swallow import _report
+                        _report('外观操作', _e, source="appearance")
 
         try:
             cfg = self._ctrl.config()
@@ -859,8 +869,9 @@ class AppearancePage(QWidget):
             # 主题相关：只有开了独立配置（或就是主窗口）才能改
             _set(("theme_combo", "preset_combo", "edit_preset_btn",
                   "panel_alpha_slider"), own)
-        except Exception:
-            pass
+        except Exception as _e:
+            from core.swallow import _report
+            _report('外观操作', _e, source="appearance")
 
     # ------------------------------------------------------------ 背景图
     def _own_image_slot(self):
@@ -979,8 +990,9 @@ class AppearancePage(QWidget):
                 # 不支持独立图 → 如实说明它跟随谁，而不是假装"没设置"
                 self.material_image_label.setText(
                     "跟随主窗口（此界面不支持独立背景图）")
-        except Exception:
-            pass
+        except Exception as _e:
+            from core.swallow import _report
+            _report('外观操作', _e, source="appearance")
         del sp
 
     def _open_theme_editor(self):
@@ -1024,8 +1036,9 @@ class AppearancePage(QWidget):
         if cb2 is not None:
             try:
                 cb2()
-            except Exception:
-                pass
+            except Exception as _e:
+                from core.swallow import _report
+                _report('外观操作', _e, source="appearance")
         if cb is not None:
             cb(self._ctrl.config(), None)
         self._loading = True
@@ -1117,8 +1130,9 @@ class AppearancePage(QWidget):
                     chk = getattr(self, "_anim_checks", {}).get(name)
                     if chk is not None:
                         chk.setChecked(bool(cfg.get(key, True)))
-            except Exception:
-                pass
+            except Exception as _e:
+                from core.swallow import _report
+                _report('外观操作', _e, source="appearance")
         finally:
             self._loading = False
         self._sync_preset_btn()
@@ -1132,11 +1146,13 @@ class AppearancePage(QWidget):
         for c in self.findChildren(_CB):
             try:
                 c.set_theme(theme_obj)
-            except Exception:
-                pass
+            except Exception as _e:
+                from core.swallow import _report
+                _report('外观操作', _e, source="appearance")
         for t in self.findChildren(ToggleSwitch):
             try:
                 t.update_theme(theme_obj)
-            except Exception:
-                pass
+            except Exception as _e:
+                from core.swallow import _report
+                _report('外观操作', _e, source="appearance")
         self.update()

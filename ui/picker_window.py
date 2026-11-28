@@ -265,7 +265,7 @@ class PickerWindow(WindowMaterialMixin, QWidget):
         self._drag = None
         self._press_global = QPoint()  # 按下时的全局坐标，用于区分“点击”与“拖动”
         self._drag_moved = False       # 本次按压是否发生了足以算作拖动的位移
-        self._hk_active = False        # 全局钩子是否生效（面板可见时为 True）
+        self._hk_flag = False          # 逻辑开关（面板显示时置 True）
         self._hiding = False           # 正在播放淡出动画
         self._dismissed_at = 0.0       # 上次因“继续打字 / 点外部”自动关闭的时间戳
         self._had_editable = False     # 本次显示期间是否曾检测到可编辑焦点
@@ -602,6 +602,38 @@ class PickerWindow(WindowMaterialMixin, QWidget):
         if isinstance(ctx, dict):
             ctx.setdefault("_shown", list(self.items))
         self.selected.emit(text, ctx)
+
+    @property
+    def _hk_active(self):
+        """全局键鼠钩子是否应当响应。
+
+        ## 为什么做成"属性"而不是普通字段
+
+        它曾经是个普通字段，只在显示时置 True、隐藏时置 False。
+        但所有**提前 return** 的路径（最典型的是"检测到输入法正在输入，
+        本次不弹出"）都不会复位它，于是上一次弹窗留下的 True 一直生效：
+
+            候选条没显示
+            → 钩子仍把 1~9 当成"选第 N 个候选"
+            → 用户按数字键输入的文字被吞掉，反而上屏了一张颜文字
+
+        用户实测踩到过，属于**丢字**级别的伤害。
+
+        现在把"可见"作为硬条件：即使某处忘了复位 `_hk_flag`，
+        窗口不可见时钩子也一定不响应。新增任何"提前返回"路径都
+        不可能再引入这个 bug。
+        """
+        if not self._hk_flag:
+            return False
+        try:
+            return bool(self.isVisible()) and not self._hiding
+        except Exception:
+            return False
+
+    def _set_hk_active(self, value):
+        """设置逻辑开关（是否真正生效还要看可见性，见 `_hk_active`）。"""
+        self._hk_flag = bool(value)
+
     def _on_hk_action(self, action):
         if action == "cancel":
             self.dismiss()
@@ -674,7 +706,7 @@ class PickerWindow(WindowMaterialMixin, QWidget):
         """
         if mark_dismiss:
             self._dismissed_at = time.time()
-        self._hk_active = False
+        self._set_hk_active(False)
         self._focus_timer.stop()
         if not self.isVisible() or self._hiding:
             if not self.isVisible():
@@ -707,7 +739,7 @@ class PickerWindow(WindowMaterialMixin, QWidget):
         self._anim.stop()
         self.setWindowOpacity(0.0)
         self._hiding = False
-        self._hk_active = False
+        self._set_hk_active(False)
         self._focus_timer.stop()
         self._emotion = None
         self._caret = False
@@ -728,7 +760,7 @@ class PickerWindow(WindowMaterialMixin, QWidget):
     def shutdown(self):
         """退出前卸载全局键盘/鼠标钩子，避免钩子线程残留。"""
         self._focus_timer.stop()
-        self._hk_active = False
+        self._set_hk_active(False)
         for hook in (self._interceptor, self._mouse_watch):
             if hook is None:
                 continue
@@ -800,6 +832,20 @@ class PickerWindow(WindowMaterialMixin, QWidget):
                 append_log("info", "picker",
                            "检测到输入法正在输入（%s），本次不弹出候选条"
                            % why)
+                # ⚠ 必须**同时关掉全局键鼠钩子**。
+                #
+                # 用户实测踩到过：候选条没有显示，但按数字键仍然选中了
+                # 候选——打出来的不是他正在输入的拼音，而是一张颜文字。
+                #
+                # 原因是 `_hk_active` 是"上一次弹窗"留下的 True：
+                # 拒绝弹出只是 return，没有任何一处把它复位。
+                # 于是钩子继续把 1~9 当成"选第 N 个候选"吞掉并触发选中，
+                # 用户完全不知道发生了什么，字就这么丢了。
+                #
+                # 这里显式复位，保证"没显示候选条 = 钩子一定不响应"。
+                self._set_hk_active(False)
+                # 顺带把可能残留的候选状态清掉，避免选中到上一次的内容
+                self._finish_hide_now()
                 return
         except Exception:
             # 检测本身失败时宁可照常弹出，不能因为一个辅助判断让功能失效
@@ -860,7 +906,7 @@ class PickerWindow(WindowMaterialMixin, QWidget):
         else:
             self._position_center()
         self.raise_()                     # 仅抬升 Z 序，不激活、不抢焦点
-        self._hk_active = True            # 开启全局键盘捕获
+        self._set_hk_active(True)            # 开启全局键盘捕获
         self._interceptor.reset_session()  # 清掉上一次显示遗留的互动状态
         self._hiding = False
         self._had_editable = self._caret

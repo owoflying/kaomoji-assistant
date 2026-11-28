@@ -594,12 +594,84 @@ def test_nested_override_change_is_detected():
     r = CB.ScopeRouter()
     r.register(CB.SURFACE, lambda e: dispatched.append(e.get("surface")))
 
-    # 模拟外观页：改同一个嵌套 dict 里的值
     set_override(cfg, "picker", {"theme_mode": "dark"})
     assert cfg["surface_overrides"] is before_ref, (
         "这是复现前提：dict 对象身份没变，diff 才判不出来")
 
-    # 走新通道 → 无论 diff 如何，都会被派发
     r.commit(cfg, {}, scopes=[CB.SURFACE], surface="picker")
     assert dispatched == ["picker"], dispatched
     assert get_overrides(cfg)["picker"]["theme_mode"] == "dark"
+
+
+# ---------------------------------------------------------------------------
+# 候选条的全局键鼠钩子（"没显示却吞数字键"）
+# ---------------------------------------------------------------------------
+
+def _make_picker(tmp_path):
+    from core.config_store import load_config
+    from core.kaomoji_data import KaomojiData
+    from core.user_state import UserState
+    from ui.picker_window import PickerWindow
+
+    d = str(tmp_path / "d")
+    os.makedirs(d, exist_ok=True)
+    return PickerWindow(KaomojiData(), load_config(),
+                        UserState(path=os.path.join(d, "s.json")))
+
+
+def test_hook_inactive_when_picker_hidden(tmp_path, qapp):
+    """**核心回归**：候选条不可见时，全局钩子必须不响应。
+
+    ## 实测踩到的现象（丢字级）
+
+    用户开着输入法打字，程序检测到"输入法活跃"就**不弹**候选条。
+    但按数字键时，程序却仍把 1~9 当成"选第 N 个候选"吞掉了——
+    打出来的不是他输入的拼音，而是一张颜文字。
+
+    根因：`_hk_active` 是普通字段，只在显示/隐藏时赋值。
+    "检测到输入法 → return"这条路径**从不复位**它，于是上一次弹窗
+    留下的 True 一直生效。
+
+    现在 `_hk_active` 是属性，硬性要求窗口可见。
+    """
+    w = _make_picker(tmp_path)
+    try:
+        # 残留的 True + 不可见 → 必须判为 False
+        w._set_hk_active(True)
+        assert w._hk_active is False, (
+            "候选条不可见时钩子仍判定为激活——会吞掉用户的数字键，"
+            "把正在输入的文字替换成颜文字。")
+
+        w.show()
+        qapp.processEvents()
+        assert w._hk_active is True, "可见时钩子必须生效，否则选不了候选"
+
+        w.hide()
+        qapp.processEvents()
+        assert w._hk_active is False
+    finally:
+        w.close()
+
+
+def test_hook_guard_survives_ime_early_return(tmp_path, qapp, monkeypatch):
+    """检测到输入法活跃而拒绝弹出时，钩子必须保持关闭。"""
+    import core.ime_guard as IG
+
+    w = _make_picker(tmp_path)
+    try:
+        # 先让它"显示过"，留下 True
+        w._set_hk_active(True)
+        w.show()
+        qapp.processEvents()
+
+        # 下一次弹出遇到输入法活跃 → 提前 return
+        monkeypatch.setattr(IG, "other_ime_active",
+                            lambda *a, **kw: (True, "测试输入法"))
+        w._present([("(^_^)",)], emotion=None, caret=False)
+        qapp.processEvents()
+
+        assert w._hk_active is False, (
+            "拒绝弹出后钩子仍然生效——用户按数字键会被吞掉，"
+            "输入的文字变成颜文字。")
+    finally:
+        w.close()

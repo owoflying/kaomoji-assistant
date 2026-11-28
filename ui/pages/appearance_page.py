@@ -350,43 +350,45 @@ class AppearancePage(QWidget):
             return "main"
 
     def _on_follow_toggled(self, follow):
-        """切「独立配置」：开 = 把当前生效值落成一份覆盖；关 = 删掉覆盖。
+        """切「独立配置」：开 = 建一个**空覆盖层**；关 = 删掉覆盖。
 
-        ## ⚠ 字段必须全量复制，不能手写清单
+        ## ⚠ 为什么不能把当前值全量抄进覆盖层
 
-        这里原先是手写的 8 个字段，漏了 8 个——包括 **theme_mode /
-        theme_preset**（明暗与配色），于是打开独立配置后：
+        上一版是"开独立时把 `resolve()` 的结果全量固化成覆盖层"，
+        本意是"此后改动任何一项都由覆盖层接管"。结果是个陷阱：
 
-            在这个界面改深浅色 → patch 有 theme_mode
-            → set_override 能写进去
-            但覆盖层是**从漏了 theme_mode 的快照**建的
+            开独立 → 覆盖层里 theme_mode 已经是"当前值 dark"
+            → 用户把下拉从 dark 改成 dark（看起来是操作了）
+            → currentIndexChanged **不触发**（值没变）
+            → _push 一次都不执行
+            → 用户以为"改了候选条主题"，其实什么都没发生
 
-        更糟的是 `resolve()` 合并时，覆盖层里没有的键会回落到主配置，
-        所以"打开独立配置 → 改深浅色 → 界面没反应"，
-        用户完全看不出哪里错了。
+        更糟的是此时候选条**永远不会刷新**——因为没有任何改动被应用过。
 
-        现在直接从 `DEFAULT_PROFILE` 全量复制：主题包加字段，
-        这里自动跟上，不会再漏。
+        ## 现在的语义
+
+            覆盖层存在（哪怕是 `{}`）  = 这个界面不再跟随主窗口
+            覆盖层里没有的字段         = 仍用主配置的值
+
+        `resolve()` 本来就是"主配置 + 覆盖层"合并，所以空覆盖层
+        等价于"刚打开独立、还没改任何东西"，界面显示的就是主配置的值；
+        用户改哪一项，哪一项就写进覆盖层。
+
+        这样"开独立"和"改值"是两个独立动作，不会互相吞掉。
         """
         if self._loading:
             return
-        from core.theme_profile import (
-            DEFAULT_PROFILE, clear_override, resolve, set_override,
-        )
+        from core.theme_profile import clear_override, has_override, set_override
 
         surface = self._current_surface()
         if surface == "main":
             return
         cfg = self._ctrl.config()
         if follow:
-            p = resolve(cfg, surface)
-            # 全量快照：把这个界面当前**实际生效**的每个字段都固化下来，
-            # 之后改动任何一项都由覆盖层接管。
-            snapshot = {}
-            for key in DEFAULT_PROFILE:
-                if key in p:
-                    snapshot[key] = p[key]
-            set_override(cfg, surface, snapshot)
+            # 空覆盖层 = "已独立，但还没改过任何值"。
+            # 见本方法 docstring：不能把当前值全量抄进去。
+            if not has_override(cfg, surface):
+                set_override(cfg, surface, {})
         else:
             clear_override(cfg, surface)
         if self._on_apply is not None:
@@ -695,24 +697,11 @@ class AppearancePage(QWidget):
         if not patch:
             return
 
-        # ⚠ 顺序很关键：**先拷快照，再改 config**。
+        # 改动只落在副本上，由宿主统一落盘 + 按 scope 分派刷新。
         #
-        # `cfg` 是宿主的 `self.config`（同一个 dict 对象）。宿主的
-        # `apply_settings(new_cfg)` 是这么判断变化的：
-        #
-        #     old = dict(self.config)          # 拷当前值
-        #     self.config.update(new_cfg)
-        #     changed = {k for k ... if old.get(k) != v}
-        #
-        # 如果我们先 `set_profile(cfg, ...)` 再 `dict(cfg)`，那传出去的
-        # `target` 里就是**新值**，宿主的 `old` 也是新值 → `changed` 恒为空
-        # → 换肤分支不执行。
-        #
-        # 实测现象：下拉框显示"深色"、`config["theme_mode"]` 也变成了 dark，
-        # 但界面一直停在浅色，`theme_ctrl.current()` 仍返回 light。
-        #
-        # 所以这里拷贝一份**改之前**的配置，改动只落在副本上，
-        # 由宿主去统一落盘 + 广播。
+        # ⚠ 不要直接把改动写进宿主 config 再交给宿主比对：
+        # `apply_settings` 的 diff 会因"old 读到的已是新值"而恒为空，
+        # 换肤分支不执行（这个坑在主题、编辑器预览里各踩过一次）。
         target = dict(cfg)
         if surface == "main":
             prof = get_profile(target)
@@ -722,20 +711,64 @@ class AppearancePage(QWidget):
             if not has_override(cfg, surface):
                 return          # 未开独立配置时控件本就置灰，不该走到这
             set_override(target, surface, patch)
-            # 单界面覆盖层也要同步到宿主的 config 里，否则宿主读旧值
-            cfg["surface_overrides"] = target.get("surface_overrides")
 
         self._sync_enabled()
         if self._on_apply is None:
             return
+
+        # ---- 声明这次变更的影响范围 ----
+        #
+        # 不再让宿主去猜"改了哪些键、该刷新什么"。这里明确说：
+        #
+        #   改主窗口的任意项 → THEME（若含主题键）+ SURFACE(main)
+        #   改某个独立界面   → SURFACE(那个界面)，**不碰主窗口**
+        #
+        # 这正是"改候选条却把主窗口也换肤"的解耦点。
+        from core import config_bus as CB
+
+        theme_keys = ("theme_mode", "theme_preset", "accent_mode",
+                      "accent_custom")
+        scopes = [CB.SURFACE]
+        if surface == "main" and (set(patch) & set(theme_keys)):
+            scopes.append(CB.THEME)
+
+        self._apply_with_scopes(target, scopes, surface)
+
+    def _apply_with_scopes(self, target, scopes, surface):
+        """把目标配置和新值一起交给宿主（走显式 scope 通道）。
+
+        `target` 是"改完之后的完整配置"，但宿主需要的只是**增量**——
+        这里把差异算出来，避免全量替换覆盖掉别处刚改的值。
+        """
+        try:
+            cfg_now = self._ctrl.config()
+            delta = {k: v for k, v in target.items()
+                     if cfg_now.get(k) != v}
+        except Exception:
+            delta = {}
+
+        apply_fn = self._on_apply
+
+        def _run():
+            try:
+                # 宿主若支持精确通道，优先用它
+                host_cb = getattr(self, "_on_apply_scoped", None)
+                if callable(host_cb):
+                    host_cb(delta, scopes, surface)
+                else:
+                    # 兼容：老回调只认完整配置
+                    apply_fn(target)
+            except Exception:
+                pass
+
         # 换材质种类时走过渡动画（明显视觉切换，需要遮掩重算停顿）
-        if "material_type" in patch:
+        if "material_type" in delta:
             animated = getattr(self, "_animated_apply", None)
             if animated is not None:
-                animated(lambda: self._on_apply(target))
+                animated(_run)
                 self._refresh_after_apply()
                 return
-        self._on_apply(target)
+        _run()
         self._refresh_after_apply()
 
     def _refresh_after_apply(self):

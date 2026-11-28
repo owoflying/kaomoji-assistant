@@ -494,6 +494,9 @@ class UnifiedSettingsWindow(FramelessShell):
             page = AppearancePage(
                 self.appearance_ctrl, self.theme,
                 on_apply=self._on_appearance_applied)
+            # 精确通道：外观页会明确告诉"改了哪些键、影响哪个界面"，
+            # 宿主照做，不再靠 diff 推断（见 core/config_bus.py）
+            page._on_apply_scoped = self._on_appearance_scoped
             page._theme_preview_cb = self._appearance_theme_preview
             # 主题编辑器保存后必须强制重载（色板已写盘，不能靠 diff 判断）
             page._force_reload_cb = self._force_reload_theme
@@ -1047,11 +1050,46 @@ class UnifiedSettingsWindow(FramelessShell):
         except Exception:
             pass
 
+    def _on_appearance_scoped(self, delta, scopes, surface):
+        """外观页的精确变更：转给宿主的 pply_config_change。
+
+        :param delta: 增量键值（只含真正变化的）
+        :param scopes: 影响范围（core.config_bus 的常量）
+        :param surface: 影响哪个界面
+
+        ## 为什么不再发 config_applied
+
+        那条路靠 diff 判断，对 surface_overrides 这种嵌套结构不可靠：
+        顶层字典对象没变、里面的值变了，diff 判不出来 —— 于是
+        "改了候选条却完全不刷新"，甚至顺带把主窗口也换了一次肤。
+
+        这里直接走显式通道，宿主照着 scopes 做，不看 diff。
+        """
+        try:
+            rt = getattr(self, "runtime", None) or getattr(
+                self, "_runtime", None)
+            fn = getattr(rt, "apply_config_change", None)
+            if callable(fn):
+                fn(delta, scopes=scopes, surface=surface)
+                return
+        except Exception:
+            pass
+        # 兜底：拿不到 runtime 时（独立构造的窗口 / 测试）只合并进本地
+        # 配置并发信号，不做额外的失败动作。
+        #
+        # ⚠ 这里不能抛异常：以前失败会让 crash_guard 弹窗，
+        # 在测试里表现为"切换页面后多出游离顶层窗口"。
+        try:
+            if delta:
+                self.config.update(delta)
+            self.config_applied.emit(dict(self.config))
+        except Exception:
+            pass
+
     def _force_reload_theme(self):
         """强制重新加载主题（绕开差异比对）。
 
         ## 为什么不能走 `config_applied` → `apply_settings`
-
         主题编辑器保存时，色板已经写到 `themes.json`。如果当前
         preset 本来就是 `custom`，配置里的 `theme_preset` 没有变化，
         `apply_settings` 的 diff 为空 → 不重载 → 用户改的强调色

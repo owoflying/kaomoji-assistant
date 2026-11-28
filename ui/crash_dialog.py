@@ -134,6 +134,29 @@ class CrashDialog(QDialog):
         row.addWidget(close)
         root.addLayout(row)
 
+    def closeEvent(self, e):
+        """关闭时通知持有者放开引用。
+
+        ## 为什么需要
+
+        为了把连环报错合并到一个窗口，宿主会长期持有 `self._crash_dialog`
+        引用（见 `AppRuntime._on_crash_alert`）。如果用户关掉窗口后引用
+        还在，下一次报错会往一个**已关闭**的窗口里追加——用户完全看不到，
+        而且这个窗口对象还挂在内存里。
+
+        这里在关闭时回调 `on_closed(self)`，让宿主清掉引用。
+        """
+        cb = getattr(self, "_on_closed", None)
+        if callable(cb):
+            try:
+                cb(self)
+            except Exception:
+                pass
+        try:
+            super().closeEvent(e)
+        except Exception:
+            pass
+
     def add_report(self, summary, detail):
         """把新的一条报错追加到**当前窗口**里，而不是再弹一个窗。
 

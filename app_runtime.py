@@ -202,6 +202,11 @@ class AppRuntime:
         # 这里注入弹窗回调（无头/测试环境里 UI 层可能还没准备好，
         # 回调内部会兜住异常，不影响安装）。
         self._install_crash_guard()
+        # 配置变更通道：显式声明意图，不靠 diff 推断
+        try:
+            self._register_config_handlers()
+        except Exception as e:
+            append_log("error", "config", "配置通道注册失败：%r" % (e,))
         # 动画开关集中读取（core/anim_settings 缓存配置引用）
         try:
             from core import anim_settings
@@ -499,6 +504,44 @@ class AppRuntime:
             except Exception:
                 pass
 
+    def close_alert_dialogs(self):
+        """关掉并释放常驻的报错窗口（退出 / 测试清理用）。
+
+        这些窗口为了"合并连环报错"会被宿主长期持有，属于**正常**的
+        顶层窗口。但退出时不清掉，测试里就会看到"多出来的顶层窗口"。
+        """
+        for attr in ("_crash_dialog", "_error_dialog"):
+            dlg = getattr(self, attr, None)
+            setattr(self, attr, None)
+            if dlg is None:
+                continue
+            try:
+                dlg.close()
+                dlg.deleteLater()
+            except Exception:
+                pass
+
+    def _bind_dialog_close(self, dlg, attr):
+        """让窗口关闭时清掉宿主持有的引用。
+
+        :param dlg: 弹窗对象
+        :param attr: 宿主上保存它的属性名（如 `"_crash_dialog"`）
+
+        复用弹窗的前提是"引用能及时释放"。否则用户关掉窗口后，
+        下一次报错会往一个已不可见的窗口里追加内容。
+        """
+        def _on_closed(_d, _self=self, _attr=attr, _dlg=dlg):
+            try:
+                if getattr(_self, _attr, None) is _dlg:
+                    setattr(_self, _attr, None)
+            except Exception:
+                pass
+
+        try:
+            dlg._on_closed = _on_closed
+        except Exception:
+            pass
+
     def _on_crash_alert(self, summary, detail):
         """崩溃回调：弹窗告知用户（非阻塞）。
 
@@ -529,6 +572,9 @@ class AppRuntime:
             dlg = show_crash(summary, detail, parent=parent)
             if dlg is not None:
                 self._crash_dialog = dlg
+                # 窗口关闭时放开引用，否则下一次报错会往一个已关闭的
+                # 窗口里追加（用户看不到，对象也一直挂着）
+                self._bind_dialog_close(dlg, "_crash_dialog")
                 append_log("error", "app", "已弹出崩溃提示：%s" % summary)
         except Exception:
             pass
@@ -571,6 +617,7 @@ class AppRuntime:
                     dlg = show_error(summary, detail, parent=parent)
                     if dlg is not None:
                         self._error_dialog = dlg
+                        self._bind_dialog_close(dlg, "_error_dialog")
                 except Exception:
                     pass
 
@@ -736,6 +783,12 @@ class AppRuntime:
             # 注入唯一主题源：主窗口不再自己 build，避免两份状态不同步
             theme_ctrl=self.theme_ctrl,
         )
+        # 注入宿主的配置通道引用：外观页的精确变更要转给
+        # `apply_config_change`（靠 diff 推断会漏掉嵌套变更）
+        try:
+            self.unified.runtime = self
+        except Exception:
+            pass
 
     def _wire_components(self):
         w = self.window
@@ -1198,6 +1251,148 @@ class AppRuntime:
     # ------------------------------------------------------------------
     # 配置应用
     # ------------------------------------------------------------------
+    def apply_config_change(self, new_values=None, scopes=(), surface=None):
+        """**显式声明意图**的配置变更入口（新代码请用这个）。
+
+        :param new_values: 要写入的键值（增量，不做全量替换）
+        :param scopes: 影响范围，见 `core.config_bus` 的常量
+        :param surface: 涉及的界面（`SURFACE` scope 用）
+
+        ## 为什么需要它
+
+        原来的 `apply_settings(new_cfg)` 靠**比对**新旧配置推断
+        "什么变了、该刷新什么"。这个做法有三种结构性失效：
+
+            1. 嵌套结构看不出变化 —— `surface_overrides` 里改了候选条，
+               顶层字典对象没变，diff 判不出来 → 完全不重绘
+            2. 值被提前写入 → `old` 读到新值，changed 恒为空
+            3. 键名推不出意图 —— 同样是 `surface_overrides` 变了，
+               到底该重绘哪个界面，diff 无法回答
+
+        这条路径**不靠推断**：调用方直接说"我改了主题，影响候选条"，
+        这里照着做。`test_theme_dataflow.py` 里有守卫测试盯着它。
+        """
+        from core import config_bus
+
+        scopes = list(scopes or ())
+        scopes.append(config_bus.CONFIG)
+
+        results = self._scope_router.commit(
+            self.config, new_values, scopes=scopes, surface=surface)
+
+        # 落盘失败要记日志，但不阻断重绘
+        for scope, r in results:
+            if not r.ok and scope == config_bus.CONFIG:
+                append_log("error", "config",
+                           "配置落盘失败：%s" % (r.message or "未知"))
+        return results
+
+    def _register_config_handlers(self):
+        """把各 scope 的处理函数注册到路由器上。
+
+        ## 为什么集中在这里注册
+
+        新增"改了要做什么"只要：加一个 scope 常量 + 在这里注册一个
+        handler。不需要去改 `apply_settings` 里那一长串 if。
+        """
+        from core import config_bus as CB
+
+        self._scope_router = CB.ScopeRouter()
+        self._scope_router.set_logger(append_log)
+
+        def _on_config(event):
+            try:
+                save_config(self.config)
+            except Exception as e:
+                return CB.Handler(False, repr(e))
+            return CB.OK
+
+        def _on_theme(event):
+            ctrl = getattr(self, "theme_ctrl", None)
+            if ctrl is None:
+                return CB.OK
+            ctrl.set_config(self.config, notify=False)
+            self._apply_theme_with_fade(self.theme_ctrl.current())
+            return CB.OK
+
+        def _on_surface(event):
+            """某个界面的外观变了 → 只重绘那个界面。
+
+            这是"改候选条却把主窗口也换肤"的解耦点：
+            以前所有变更都走 `apply_settings`，它无条件重贴主窗口的 QSS。
+            现在按 `event["surface"]` 精确分派。
+            """
+            surface = (event or {}).get("surface")
+            try:
+                self._repaint_surface(surface)
+            except Exception as e:
+                return CB.Handler(False, repr(e))
+            return CB.OK
+
+        def _on_hotkey(event):
+            try:
+                self.hotkey_reregister()
+            except Exception:
+                pass
+            return CB.OK
+
+        def _on_autostart(event):
+            try:
+                want = bool(self.config.get("autostart", False))
+                use_task = bool(self.config.get("use_uia_elevation", False))
+                ok, msg = autostart.set_autostart(
+                    want, use_task=want and use_task)
+                append_log("info" if ok else "warn", "autostart", msg)
+            except Exception:
+                pass
+            return CB.OK
+
+        def _on_fonts(event):
+            try:
+                self._apply_theme_object(self.theme_ctrl.current())
+            except Exception:
+                pass
+            return CB.OK
+
+        self._scope_router.register(CB.CONFIG, _on_config)
+        self._scope_router.register(CB.THEME, _on_theme)
+        self._scope_router.register(CB.SURFACE, _on_surface)
+        self._scope_router.register(CB.HOTKEY, _on_hotkey)
+        self._scope_router.register(CB.AUTOSTART, _on_autostart)
+        self._scope_router.register(CB.FONTS, _on_fonts)
+
+    def _repaint_surface(self, surface=None):
+        """重绘指定界面；`None` 表示全部。
+
+        各界面各自持有一份材质合成缓存，参数变了必须让它重算——
+        但**只算该重算的那个**，否则改候选条会把主窗口整窗重铺
+        （≈340ms 的卡顿，而且看起来像"主窗口也被切换了主题"）。
+        """
+        targets = ([surface] if surface
+                   else ["main", "picker", "log", "plugin", "menu", "dialog"])
+        for s in targets:
+            try:
+                if s == "main":
+                    u = getattr(self, "unified", None)
+                    if u is not None:
+                        if hasattr(u, "invalidate_material_cards"):
+                            u.invalidate_material_cards()
+                        u.update()
+                elif s == "picker":
+                    w = getattr(self, "window", None)
+                    if w is not None and hasattr(w, "invalidate_material"):
+                        w.invalidate_material()
+                        w.update()
+                elif s == "menu":
+                    self._theme_tray_menu()
+                elif s == "log":
+                    v = getattr(self, "log_viewer", None)
+                    if v is not None and hasattr(v, "invalidate_material"):
+                        v.invalidate_material()
+                        v.update()
+            except Exception:
+                pass
+
     def apply_settings(self, new_cfg):
         """配置变更的唯一落盘 + 广播入口。
 

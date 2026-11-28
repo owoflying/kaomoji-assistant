@@ -286,7 +286,14 @@ def set_profile(cfg, profile):
 
 
 def get_overrides(cfg):
-    """取所有表面的覆盖层（已按能力表过滤掉不支持的字段）。"""
+    """取所有表面的覆盖层（已按能力表过滤掉不支持的字段）。
+
+    ⚠ **空覆盖层也会保留**（值仍是 `{}`）。
+
+    空覆盖层表示"这个界面已独立，但还没改过任何值"。如果这里把它
+    过滤掉，`has_override()` 就会认为"没开独立"，于是开关自己弹回去、
+    改动写不进去——正是"候选条改了不刷新"的成因。
+    """
     migrate_legacy(cfg)
     raw = cfg.get("surface_overrides") or {}
     out = {}
@@ -318,22 +325,41 @@ def _filter_by_capability(surface, patch):
 
 
 def has_override(cfg, surface):
-    """某个表面是否有独立配置。"""
-    return bool(get_overrides(cfg).get(surface))
+    """某个表面是否**开着**独立配置。
+
+    ## 语义：看"键在不在"，不看"里面有没有东西"
+
+    覆盖层可以是空的 `{}` —— 那表示"这个界面已独立，但还没改过任何值"，
+    此时 `resolve()` 会把主配置的值原样给它（因为合并时覆盖层没有键）。
+
+    如果这里用 `bool(ovr.get(surface))` 判断，空覆盖层会被当成
+    "没开独立"，于是：
+
+        * 界面上「独立配置」开关一打开就自己弹回去
+        * `_push` 走 else 分支直接 return —— 改了任何东西都不生效
+
+    实测症状：给候选条开独立后改主题，下拉框看着变了，
+    候选条却永远不刷新（因为 `_push` 一次都没执行）。
+    """
+    migrate_legacy(cfg)
+    raw = cfg.get("surface_overrides") or {}
+    return isinstance(raw.get(surface), dict)
 
 
 def set_override(cfg, surface, patch):
     """给某个表面写覆盖项（只写差异，且只写该界面支持的字段）。
 
-    :param patch: dict；传空 dict 表示"恢复沿用主配置"
+    :param patch: dict
+
+        * 非空 → 把这些字段写进覆盖层（该界面不支持的会被过滤掉）
+        * 空 dict → **保留空的覆盖层**（表示"已独立、尚未改任何值"）
+
+    想彻底取消独立配置请用 `clear_override()`。
     """
     migrate_legacy(cfg)
     ovr = cfg.setdefault("surface_overrides", {})
     cleaned = _filter_by_capability(surface, patch or {})
-    if not cleaned:
-        ovr.pop(surface, None)
-    else:
-        ovr.setdefault(surface, {}).update(cleaned)
+    ovr.setdefault(surface, {}).update(cleaned)
     return cfg
 
 

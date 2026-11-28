@@ -285,19 +285,25 @@ def test_glass_menu_cache_key_includes_dark():
 
 
 def test_override_snapshot_is_complete():
-    """打开「独立配置」时，覆盖层必须包含主题包的**全部字段**。
+    """打开「独立配置」必须建**空覆盖层**，不能把当前值全量抄进去。
 
-    ## 实测踩到的现象
+    ## 演进过程（两次都踩过坑，结论写在这里）
 
-    `_on_follow_toggled()` 原来手写 8 个字段建覆盖层，漏了 8 个，
-    其中包含 **theme_mode / theme_preset**（明暗与配色）。
+    **第一版**：手写 8 个字段建覆盖层，漏了 8 个（含 theme_mode/
+    theme_preset）。后果：开独立后改深浅色没反应。
 
-    后果：打开独立配置 → 在这个界面改深浅色 → 表面上 `_push`
-    写进了覆盖层，但因为快照里压根没有这个键，`resolve()` 合并时
-    又从主配置回落，于是"改了没反应"，且没有任何报错。
+    **第二版**：改成 `for key in DEFAULT_PROFILE` 全量快照。
+    字段是齐了，但引入了更隐蔽的问题——
 
-    这与 `_push` 的 alias 手写漏字段是**同一类错误**，
-    修法也一致：从 DEFAULT_PROFILE 派生，不要手写。
+        开独立 → 覆盖层里 theme_mode 已经是"当前值"
+        → 用户把下拉改成同一个值 → currentIndexChanged 不触发
+        → `_push` 一次都不执行 → 候选条永远不刷新
+
+    也就是说"开独立"这个动作把后续所有改动都吞掉了。
+
+    **现在**：开独立只建 `{}` 空覆盖层（表示"已独立、尚未改过"），
+    `resolve()` 合并时用主配置的值填上；用户改哪一项，哪一项才写进
+    覆盖层。两个动作彼此独立，不会互相吞掉。
     """
     src = _read("ui/pages/appearance_page.py")
     i = src.find("def _on_follow_toggled")
@@ -305,11 +311,40 @@ def test_override_snapshot_is_complete():
     j = src.find("\n    def ", i + 10)
     body = _strip_comments(src[i:j])
 
-    assert "DEFAULT_PROFILE" in body, (
-        "创建覆盖层时必须遍历 DEFAULT_PROFILE 全量快照——\n"
-        "手写字段清单必然漏，漏了就是静默失效（改深浅色没反应）。")
-    assert "for key in DEFAULT_PROFILE" in body, (
-        "_on_follow_toggled 里应当 `for key in DEFAULT_PROFILE` 逐项拷贝。")
+    compact = body.replace(" ", "").replace("\n", "")
+    assert "set_override(cfg,surface,{})" in compact, (
+        "开「独立配置」应当建空覆盖层（set_override(cfg, surface, {})）——\n"
+        "全量快照会让后续所有改动都变成「没有变化」，改动被吞掉。")
+    assert "for key in DEFAULT_PROFILE" not in body, (
+        "不要在开独立时全量抄当前值：那会让用户改任何一项都被判成"
+        "「值没变」，_push 不执行，界面永远不刷新。")
+
+
+def test_empty_override_counts_as_enabled():
+    """空覆盖层必须被认定为"已开独立"。
+
+    如果 `has_override` 用 `bool(...)` 判断，空覆盖层会被当成没开：
+    开关一打开就自己弹回去，`_push` 走 else 分支直接 return。
+    """
+    from core.theme_profile import has_override, set_override
+
+    cfg = {}
+    set_override(cfg, "picker", {})
+    assert cfg.get("surface_overrides", {}).get("picker") == {}, \
+        "set_override 传空 dict 应当保留一个空覆盖层"
+    assert has_override(cfg, "picker"), (
+        "空覆盖层 = 已独立但未改任何值，必须被认定为已开独立")
+
+
+def test_empty_override_resolves_to_main_values():
+    """空覆盖层下，解析结果应当等于主配置（还没改过任何值）。"""
+    from core.theme_profile import resolve, set_override
+
+    cfg = {"theme_profile": {"theme_mode": "dark",
+                             "theme_preset": "warm"}}
+    set_override(cfg, "picker", {})
+    assert resolve(cfg, "picker").get("theme_mode") == "dark"
+    assert resolve(cfg, "main").get("theme_mode") == "dark"
 
 
 def test_every_profile_field_is_snapshotted():
@@ -474,9 +509,97 @@ def test_build_packages_all_readonly_data():
             "build.py 的 READONLY_DATA 没登记 %r——\n"
             "打包后的 exe 会缺这个文件，而源码运行看不出问题。" % (need,))
 
-    # ARGS 里确实生成了 --add-data 参数对
     args = getattr(mod, "ARGS", [])
     n_add = sum(1 for a in args if a == "--add-data")
     assert n_add >= len(listed), (
         "build.py 的 ARGS 只生成了 %d 条 --add-data，但清单里有 %d 项"
         % (n_add, len(listed)))
+
+
+# ---------------------------------------------------------------------------
+# 配置变更通道（core/config_bus.py）
+# ---------------------------------------------------------------------------
+
+def test_config_bus_declares_scopes():
+    """配置通道必须暴露明确的 scope 常量。"""
+    from core import config_bus as CB
+
+    for name in ("CONFIG", "THEME", "SURFACE", "HOTKEY", "AUTOSTART",
+                 "FONTS"):
+        assert hasattr(CB, name), "config_bus 缺少 scope 常量 %r" % (name,)
+    assert set(CB.ALL_SCOPES) >= {"config", "theme", "surface"}
+
+
+def test_config_bus_commits_config_first():
+    """CONFIG（落盘）必须最先执行。
+
+    否则重绘失败时配置还没保存——用户下次启动看到的仍是旧值，
+    表现为"改了等于没改"。
+    """
+    from core import config_bus as CB
+
+    order = []
+    r = CB.ScopeRouter()
+    r.register(CB.SURFACE, lambda e: order.append("surface"))
+    r.register(CB.CONFIG, lambda e: order.append("config"))
+    r.commit({}, {"a": 1}, scopes=[CB.SURFACE, CB.CONFIG])
+    assert order[0] == "config", order
+
+
+def test_config_bus_passes_surface():
+    """SURFACE scope 必须带上具体界面，而不是"全部"。"""
+    from core import config_bus as CB
+
+    seen = []
+    r = CB.ScopeRouter()
+    r.register(CB.SURFACE, lambda e: seen.append(e.get("surface")))
+    r.commit({}, {}, scopes=[CB.SURFACE], surface="picker")
+    assert seen == ["picker"], seen
+
+
+def test_config_bus_handler_error_does_not_block_others():
+    """一个 handler 抛异常，不能影响其它 scope。"""
+    from core import config_bus as CB
+
+    ran = []
+    r = CB.ScopeRouter()
+
+    def boom(_e):
+        raise RuntimeError("boom")
+
+    r.register(CB.CONFIG, boom)
+    r.register(CB.THEME, lambda e: ran.append("theme"))
+    results = r.commit({}, {"x": 1}, scopes=[CB.CONFIG, CB.THEME])
+    assert "theme" in ran, "前面的 handler 抛错导致后面没执行"
+    assert any(not h.ok for _s, h in results)
+
+
+def test_nested_override_change_is_detected():
+    """**核心回归**：改嵌套的 `surface_overrides` 必须能被识别。
+
+    这是"改了候选条却完全不刷新"的根因：`apply_settings` 靠
+    `old.get(k) != v` 比对，而 `surface_overrides` 是同一个字典对象，
+    内容变了引用没变 → 判不出来。
+
+    新通道不靠比对：调用方直接声明 scope + surface。
+    """
+    from core import config_bus as CB
+    from core.theme_profile import get_overrides, set_override
+
+    cfg = {}
+    set_override(cfg, "picker", {"theme_mode": "light"})
+    before_ref = cfg["surface_overrides"]
+
+    dispatched = []
+    r = CB.ScopeRouter()
+    r.register(CB.SURFACE, lambda e: dispatched.append(e.get("surface")))
+
+    # 模拟外观页：改同一个嵌套 dict 里的值
+    set_override(cfg, "picker", {"theme_mode": "dark"})
+    assert cfg["surface_overrides"] is before_ref, (
+        "这是复现前提：dict 对象身份没变，diff 才判不出来")
+
+    # 走新通道 → 无论 diff 如何，都会被派发
+    r.commit(cfg, {}, scopes=[CB.SURFACE], surface="picker")
+    assert dispatched == ["picker"], dispatched
+    assert get_overrides(cfg)["picker"]["theme_mode"] == "dark"

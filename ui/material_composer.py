@@ -93,15 +93,26 @@ class MaterialComposer:
 
         ## 取图规则
 
-        1. **所有窗口默认沿用主窗口那张**（`background`）——
-           这是"主题包"的核心：主配置一改，所有界面跟着变
-        2. 只有候选条显式设了独立图，才用 `picker_background`
+        1. 界面支持独立图、且开了「独立配置」并设过图 → 用它自己的槽位
+        2. 否则**一律沿用主窗口那张**（`background`）
+
+        ## 为什么 None 要回落到主槽位
+
+        `effective_image_slot()` 对"不支持独立图"的界面（菜单、对话框等）
+        返回 **None**——那是为了阻止有人拿它去 `clear_background()`
+        误删主图（用户反馈过这个 bug）。
+
+        但**取图**和**删图**是两回事：取图时必须回落到主窗口那张，
+        否则菜单/对话框会突然没有背景图。所以这里显式把 None 映射成
+        `SLOT_MAIN`。
         """
         try:
             from core.theme_profile import effective_image_slot
-            from ui.window_material import background_path
+            from ui.window_material import SLOT_MAIN, background_path
 
             slot = effective_image_slot(self._config, self._surface)
+            if not slot:
+                slot = SLOT_MAIN
             return background_path(slot)
         except Exception:
             return _background_path()

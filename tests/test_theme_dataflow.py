@@ -326,3 +326,112 @@ def test_every_profile_field_is_snapshotted():
     assert not missing, (
         "这些主题包字段 resolve() 没有返回，覆盖层快照会漏掉它们：%r"
         % (missing,))
+
+
+def test_surface_fields_cover_all_profile_fields():
+    """能力表的字段必须覆盖主题包的**全部**字段。
+
+    ## 实测踩到的现象
+
+    `surface_spec.ALL_FIELDS` 是手写的分组并集，漏了 `panel_alpha`。
+    后果不是报错，而是**所有界面的「透明度」滑块整片消失**——
+    页面按能力渲染，能力表说"不支持这个字段"，页面就不画它了。
+
+    这和 `_push` 的 alias 手写漏字段、覆盖层快照手写漏字段是
+    **同一类错误**，所以这里直接从 DEFAULT_PROFILE 双向校验。
+
+    另有一个更隐蔽的坑：即使写成"从 DEFAULT_PROFILE 派生"，
+    如果在本模块**顶层**求值，会因为循环导入（theme_profile 先
+    import 本模块）拿到空值。所以字段表必须**惰性求值**。
+    """
+    from core.surface_spec import all_fields, spec
+    from core.theme_profile import DEFAULT_PROFILE
+
+    fields = set(all_fields())
+    profile = set(DEFAULT_PROFILE)
+    assert fields == profile, (
+        "能力表字段与主题包字段不一致：\n"
+        "  主题包有但能力表没有：%r\n"
+        "  能力表有但主题包没有：%r\n"
+        "缺字段的后果是界面上对应的控件**静默消失**。"
+        % (sorted(profile - fields), sorted(fields - profile)))
+
+    # 每个表面都必须支持全部字段（实测所有窗口底层都支持材质/裁切）
+    for key in ("main", "picker", "log", "plugin", "menu", "dialog"):
+        missing = sorted(profile - set(spec(key).fields))
+        assert not missing, (
+            "表面 %r 缺少字段 %r——外观页会因此不渲染对应控件。"
+            % (key, missing))
+
+
+def test_every_surface_has_its_own_image_slot():
+    """每个表面都要有自己的背景图槽位，互不覆盖。
+
+    ## 实测踩到的现象
+
+    `effective_image_slot()` 原来硬编码"只有 picker 有独立槽位，
+    其它一律返回 background"。于是给「托盘菜单」点「清除背景图」，
+    删掉的是**主窗口那张图**。
+
+    现在每个表面各有槽位，从数据层杜绝这种误伤。
+    """
+    from core.surface_spec import all_specs
+    from core.theme_profile import effective_image_slot
+
+    slots = {}
+    for s in all_specs():
+        assert s.image_slot, "表面 %r 没有背景图槽位" % (s.key,)
+        assert s.image_slot not in slots, (
+            "表面 %r 与 %r 共用了槽位 %r——清一个会误伤另一个"
+            % (s.key, slots[s.image_slot], s.image_slot))
+        slots[s.image_slot] = s.key
+
+    # 开了独立配置后，必须拿到自己那个槽位（而不是主图）
+    for s in all_specs():
+        if s.key == "main":
+            continue
+        cfg = {"surface_overrides": {s.key: {"theme_mode": "dark"}}}
+        got = effective_image_slot(cfg, s.key)
+        assert got == s.image_slot, (
+            "开了独立配置的表面 %r 拿到了槽位 %r，应该是 %r——\n"
+            "拿到 background 就意味着清除操作会删掉主窗口的图。"
+            % (s.key, got, s.image_slot))
+
+
+def test_appearance_page_does_not_hardcode_main_slot():
+    """外观页不能把背景图操作写死成主窗口槽位。"""
+    import re
+
+    src = _read("ui/pages/appearance_page.py")
+    body = _strip_comments(src)
+
+    def _scan(text):
+        for m in re.finditer(r"(copy_background|clear_background)\(([^)]*)\)",
+                             text):
+            args = m.group(2)
+            if "slot" not in args:
+                return m.group(1), args.strip()
+        return None
+
+    hit = _scan(body)
+    if hit is not None:
+        # 命中的可能是 docstring 里的举例（"原来 copy_background(path)
+        # 用的是默认参数"这种说明文字）。逐行判断：能解析成真实调用的行里
+        # 必须带 slot；只在字符串/注释里出现的不算。
+        bad = []
+        for line in body.splitlines():
+            s = line.strip()
+            if not s or "def " in s:
+                continue
+            # 跳过明显是文档说明的行（含中文标点的散文）
+            if re.match(r"^[^《\"']*[\u4e00-\u9fff]", s) and "=" not in s:
+                continue
+            m2 = re.search(
+                r"(copy_background|clear_background)\(([^)]*)\)", s)
+            if m2 and "slot" not in m2.group(2) and s.startswith(("ok", "if",
+                                                                 "result")):
+                bad.append(s)
+        assert not bad, (
+            "外观页这些调用没传 slot（会用默认主窗口槽位，"
+            "在别的界面点「清除」会删掉主窗口的图）：\n  "
+            + "\n  ".join(bad))

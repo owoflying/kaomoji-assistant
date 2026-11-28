@@ -46,16 +46,16 @@
 import copy
 
 #: 各个表面（窗口类别）→ 显示名
-SURFACES = {
-    "main": "主窗口",
-    "picker": "候选条",
-    "log": "日志窗口",
-    "plugin": "插件弹窗",
-    # 托盘右键菜单：独立 QMenu，不继承 app 全局 QSS，
-    # 也经常需要单独调（比如主窗口用深色、菜单想保持浅色更好认）
-    "menu": "托盘菜单",
-    "dialog": "其它对话框",
-}
+#:
+#: ⚠ 这里不再手工维护，而是从 `core.surface_spec.SPECS` 派生。
+#: 新增界面只需在能力表里登记一条，这个字典自动跟上——
+#: 两处各写一份正是"界面列表和实际能力对不上"的来源。
+from core.surface_spec import all_specs as _all_specs  # noqa: E402
+
+SURFACES = {s.key: s.title for s in _all_specs()}
+
+#: 各表面自己的背景图槽位（供 ui/window_material 之外的地方查询）
+SURFACE_IMAGE_SLOTS = {s.key: s.image_slot for s in _all_specs()}
 
 #: 主题包里包含的全部字段与默认值。
 #:
@@ -286,28 +286,54 @@ def set_profile(cfg, profile):
 
 
 def get_overrides(cfg):
-    """取所有表面的覆盖层。"""
+    """取所有表面的覆盖层（已按能力表过滤掉不支持的字段）。"""
     migrate_legacy(cfg)
     raw = cfg.get("surface_overrides") or {}
-    return {k: dict(v) for k, v in raw.items() if isinstance(v, dict)}
+    out = {}
+    for k, v in raw.items():
+        if isinstance(v, dict):
+            out[k] = _filter_by_capability(k, v)
+    return out
+
+
+def _filter_by_capability(surface, patch):
+    """把覆盖项里**该界面不支持**的字段剔除。
+
+    ## 为什么必须在数据层过滤
+
+    外观页理论上只渲染该界面支持的能力，但覆盖层可能来自旧版本、
+    来自手工编辑的 config.json、或者将来某个调用点写错了。与其
+    到处假设「调用方不会写多余字段」，不如在落盘边界统一兜住：
+
+    * 写：`set_override` 只存支持的字段
+    * 读：`get_overrides` 只返回支持的字段
+
+    这样即使上层出 bug，也不会让「候选条」突然带上裁切参数、
+    或让「对话框」出现背景图，导致后续 `resolve()` 出现无法解释的值。
+    """
+    from core.surface_spec import spec
+
+    allowed = spec(surface).fields
+    return {k: v for k, v in patch.items() if k in allowed}
 
 
 def has_override(cfg, surface):
     """某个表面是否有独立配置。"""
-    return surface in get_overrides(cfg)
+    return bool(get_overrides(cfg).get(surface))
 
 
 def set_override(cfg, surface, patch):
-    """给某个表面写覆盖项（只写差异）。
+    """给某个表面写覆盖项（只写差异，且只写该界面支持的字段）。
 
     :param patch: dict；传空 dict 表示"恢复沿用主配置"
     """
     migrate_legacy(cfg)
     ovr = cfg.setdefault("surface_overrides", {})
-    if not patch:
+    cleaned = _filter_by_capability(surface, patch or {})
+    if not cleaned:
         ovr.pop(surface, None)
     else:
-        ovr.setdefault(surface, {}).update(patch)
+        ovr.setdefault(surface, {}).update(cleaned)
     return cfg
 
 
@@ -340,11 +366,41 @@ def resolve(cfg, surface="main"):
 def effective_image_slot(cfg, surface):
     """某个表面该用哪张背景图。
 
-    :return: 背景图命名空间名（见 ui/window_material.SLOT_*）
+    :return: 背景图命名空间名（见 ui/window_material.SLOT_*）；None 表示
+             "这个界面不支持独立背景图，必须沿用主窗口那张"
 
-    规则：默认全部沿用主窗口的 `background`；
-    只有 picker 显式设了独立图才用自己的 `picker_background`。
+    ## 旧实现的严重缺陷
+
+    原来是硬编码的：
+
+        if surface == "picker" and has_override(cfg, "picker"):
+            return "picker_background"
+        return "background"
+
+    只有 picker 有独立槽位，其它表面**一律返回 "background"**。
+    于是给「托盘菜单」点「清除背景图」，清掉的是**主窗口的图**——
+    用户明确反馈过这个问题。
+
+    ## 现在
+
+    槽位由能力表（`core.surface_spec`）声明，每个支持独立图的界面
+    有自己互不覆盖的槽位。新增界面只要在表里登记 `image_slot` 即可。
     """
-    if surface == "picker" and has_override(cfg, "picker"):
-        return "picker_background"
-    return "background"
+    from core.surface_spec import spec
+
+    sp = spec(surface)
+    if surface == "main":
+        return "background"
+    if not sp.own_image or not sp.image_slot:
+        # 没有自己的槽位 → 返回 None。
+        #
+        # **取图**和**删图**是两回事：
+        #   * 删图：拿到 None 就知道"这个界面没有独立图可删"，
+        #     从数据层堵死"给菜单点清除却删了主图"（用户反馈过）
+        #   * 取图：调用方（material_composer）必须把 None 回落成
+        #     SLOT_MAIN，否则菜单/对话框会突然没有背景图
+        return None
+    if not has_override(cfg, surface):
+        # 还没打开「独立配置」→ 沿用主窗口那张
+        return "background"
+    return sp.image_slot

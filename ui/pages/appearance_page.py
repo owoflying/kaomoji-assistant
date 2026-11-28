@@ -39,77 +39,171 @@ class AppearancePage(QWidget):
     :param on_apply: 无参回调——外观变了、需要落盘 + 重绘时调用
     """
 
+    #: 页面重建时需要显式清空的控件属性。
+    #:
+    #: 这些都是"按界面能力决定建不建"的控件。重建时必须置 None——
+    #: 否则旧的 Python 引用还挂着，`getattr` 依然能拿到已销毁的控件，
+    #: 既让能力判断失效，又会在操作时抛 RuntimeError。
+    _DYNAMIC_ATTRS = (
+        "_follow_check",
+        "theme_combo", "preset_combo", "edit_preset_btn",
+        "panel_alpha_slider", "panel_alpha_slider_value",
+        "material_check", "material_combo",
+        "material_strength_slider", "material_strength_slider_value",
+        "material_saturate_slider", "material_saturate_slider_value",
+        "material_brightness_slider", "material_brightness_slider_value",
+        "material_dim_slider", "material_dim_slider_value",
+        "material_image_btn", "material_image_clear",
+        "material_image_label",
+        "main_crop_btn", "main_crop_reset", "main_crop_label",
+    )
+
     def __init__(self, controller, theme, on_apply=None, parent=None):
         super().__init__(parent)
         self._ctrl = controller
         self._theme = theme
         self._on_apply = on_apply
         self._loading = False
+        self._surface_combo = None
         self._build()
 
     # ------------------------------------------------------------ 构建
-    # ------------------------------------------------------------ 构建
     def _build(self):
-        root = page_layout(self)
+        """按**表面能力表**渲染界面。
+
+        ## 为什么不一次性把所有控件都建出来再隐藏
+
+        隐藏的控件仍然存在，用户切界面时状态会互相干扰（改过的值残留在
+        别的界面上），代码里也要到处判断"这个控件在这个界面该不该用"。
+        现在改成：**每个区块按能力决定建不建**，切换界面时重建。
+
+        ## 重建的代价
+
+        控件数量在几十个量级，重建 + 重新布局实测 <15ms，远低于感知阈值。
+        而换来的是"界面里出现的每个控件都真的对当前界面有效"——
+        这正是之前"候选条也显示裁切选项"这类问题的反面。
+        """
+        # ⚠ `page_layout()` 返回的是**滚动区里的内容布局**，不是
+        # `self.layout()`（那是最外层的滚动区容器）。
+        #
+        # 之前重建时拿 `self.layout()` 当根布局去清空和追加，于是新控件
+        # 被加到滚动区**外层**、没有滚动区的尺寸约束，所有行全被压到
+        # 同一点（实测所有控件 y=6、宽 34）——用户看到的就是
+        # "按钮全挤在一起"。
+        self._root = page_layout(self)
+        self._anim_checks = {}
+        self._rebuild_body()
+
+    def _rebuild_body(self):
+        """按当前表面的能力重建整个页面内容。"""
+        # 清空旧内容（用**内容布局**，不是 self.layout()）
+        root = getattr(self, "_root", None)
+        if root is None:
+            self._root = root = page_layout(self)
+        while root.count():
+            item = root.takeAt(0)
+            w = item.widget() if item is not None else None
+            if w is not None:
+                w.hide()
+                w.setParent(None)
+                w.deleteLater()
+
+        # ⚠ 必须同时清掉这些**属性引用**。
+        #
+        # `deleteLater()` 是异步的，而且即使控件被销毁，`self.theme_combo`
+        # 这个属性仍然指向那个对象（Python 引用还在）。于是
+        # `getattr(self, "theme_combo")` 依然能拿到旧控件，
+        # 判断"这个界面有没有该控件"就永远是"有"。
+        #
+        # 实测就踩到了：切到「对话框」后页面上确实不再显示材质控件，
+        # 但 `hasattr` 仍为 True，导致 `_sync_enabled` 去操作已销毁的
+        # 控件（RuntimeError），而且能力驱动的判断完全失效。
+        for attr in self._DYNAMIC_ATTRS:
+            try:
+                setattr(self, attr, None)
+            except Exception:
+                pass
+
+        from core.surface_spec import (
+            ACCENT_FIELDS, CROP_FIELDS, MATERIAL_FIELDS, THEME_FIELDS, spec,
+        )
+
+        surface = self._current_surface()
+        sp = spec(surface)
         root.addWidget(page_title("外观"))
 
-        # ---- 作用于哪个界面 ----
-        #
-        # ⚠ 这里**合并了原来的「外观」页和「主题包」页**。
-        #
-        # 那两页曾同时存在，且都能改材质开关/材质效果/材质强度/整窗不透明度
-        # ——同一份配置两个入口，纯属重复。现在只有一个页面，顶部选界面，
-        # 下面所有控件都作用于选中的那个。
+        # ---- 作用于哪个界面（永远显示，它是页面的主语）----
         root.addWidget(section_title("应用于"))
         c = card()
         lay = card_layout(c)
         self._add_row(lay, "界面", self._surface_row())
-        self._add_row(lay, "独立配置", self._follow_check_row())
-        self._hint(lay, "所有界面默认沿用「主窗口」的配置。"
-                        "打开「独立配置」后，该界面才会有自己的设置，"
-                        "不再跟随主窗口。")
+        if surface != "main":
+            self._add_row(lay, "独立配置", self._follow_check_row())
+            self._hint(lay, "打开后，这个界面将有自己的一套设置，"
+                            "不再跟随主窗口。关闭则完整沿用主窗口。")
+        else:
+            self._follow_check = None
+            self._hint(lay, "主窗口是其余界面的默认外观来源。"
+                            "想让某个界面不一样，在上面选它并打开「独立配置」。")
+        if sp.note:
+            self._hint(lay, sp.note)
         root.addWidget(c)
 
-        # ---- 主题 ----
-        root.addWidget(section_title("主题"))
-        c = card()
-        lay = card_layout(c)
-        self._add_row(lay, "主题", self._theme_combo())
-        self._add_row(lay, "配色方案", self._preset_row())
-        self._hint(lay, "「自定义」配色可以用右侧的「编辑…」调整颜色；"
-                        "强调色也在编辑器里设置。")
-        root.addWidget(c)
+        # ---- 主题（所有界面都支持明暗；配色看能力）----
+        if sp.supports_any(THEME_FIELDS):
+            root.addWidget(section_title("主题"))
+            c = card()
+            lay = card_layout(c)
+            self._add_row(lay, "主题", self._theme_combo())
+            self._add_row(lay, "配色方案", self._preset_row())
+            if sp.supports_any(ACCENT_FIELDS):
+                self._hint(lay, "「自定义」配色可以用右侧的「编辑…」调整颜色；"
+                                "强调色也在编辑器里设置。")
+            else:
+                self._hint(lay, "此界面的强调色跟随主窗口。")
+            root.addWidget(c)
 
         # ---- 透明度 ----
-        root.addWidget(section_title("透明度"))
-        c = card()
-        lay = card_layout(c)
-        self._add_row(lay, "面板不透明度", self._panel_alpha_row())
-        self._hint(lay, "整窗透明度：拉到 100% 完全不透明，"
-                        "拉低会透出桌面和背景图。")
-        root.addWidget(c)
+        if sp.supports("panel_alpha"):
+            root.addWidget(section_title("透明度"))
+            c = card()
+            lay = card_layout(c)
+            self._add_row(lay, "面板不透明度", self._panel_alpha_row())
+            self._hint(lay, "整窗透明度：拉到 100% 完全不透明，"
+                            "拉低会透出桌面和背景图。")
+            root.addWidget(c)
 
         # ---- 背景材质 ----
-        root.addWidget(section_title("背景材质"))
-        c = card()
-        lay = card_layout(c)
-        self._add_row(lay, "启用背景材质", self._material_toggle())
-        self._add_row(lay, "材质效果", self._material_combo())
-        self._add_row(lay, "材质强度", self._material_strength_row())
-        self._add_row(lay, "玻璃饱和度", self._material_saturate_row())
-        self._add_row(lay, "玻璃亮度", self._material_brightness_row())
-        self._add_row(lay, "背景图", self._material_image_row())
-        self._add_row(lay, "显示图片的一部分", self._main_crop_row())
-        self._add_row(lay, "背景暗化/提亮", self._material_dim_row())
-        self._hint(lay, "设置了背景图时，面板会自动让位给背景图（始终看得见）；"
-                        "没设背景图时显示主题实色面板。")
-        root.addWidget(c)
+        if sp.supports_any(MATERIAL_FIELDS):
+            root.addWidget(section_title("背景材质"))
+            c = card()
+            lay = card_layout(c)
+            self._add_row(lay, "启用背景材质", self._material_toggle())
+            into = ""
+            if sp.own_image:
+                into = "；可用「选择图片」为本界面单独指定背景图，" \
+                       "不设置则沿用主窗口那张。"
+            else:
+                into = "；此界面不提供独立背景图，始终沿用主窗口那张。"
+            self._hint(lay, "设置了背景图时，面板会自动让位给背景图"
+                            "（始终看得见）；没设背景图时显示主题实色面板。"
+                            + into)
+            self._add_row(lay, "材质效果", self._material_combo())
+            self._add_row(lay, "材质强度", self._material_strength_row())
+            self._add_row(lay, "玻璃饱和度", self._material_saturate_row())
+            self._add_row(lay, "玻璃亮度", self._material_brightness_row())
+            if sp.own_image:
+                self._add_row(lay, "背景图", self._material_image_row())
+            # 裁切只在支持的界面上出现
+            if sp.supports_all(CROP_FIELDS):
+                self._add_row(lay, "显示图片的一部分", self._main_crop_row())
+            self._add_row(lay, "背景暗化/提亮", self._material_dim_row())
+            root.addWidget(c)
 
-        # ---- 动画 ----
+        # ---- 动画（全局设置，与界面无关，永远显示）----
         root.addWidget(section_title("动画"))
         c = card()
         lay = card_layout(c)
-        self._anim_checks = {}
         from core.anim_settings import ANIMATIONS
 
         for name, key, label, desc in ANIMATIONS:
@@ -122,6 +216,9 @@ class AppearancePage(QWidget):
                         "（首次启动的欢迎页动画不受这里控制）")
         root.addWidget(c)
         root.addStretch(1)
+
+        # 回填当前值
+        self.refresh_from_controller()
 
     # ---------- 动画开关 ----------
     def _anim_toggle(self, name, key):
@@ -194,12 +291,6 @@ class AppearancePage(QWidget):
         self._follow_check.toggled.connect(self._on_follow_toggled)
         return self._follow_check
 
-    def _current_surface(self):
-        try:
-            return self._surface_combo.currentData() or "main"
-        except Exception:
-            return "main"
-
     def _current_params(self):
         """当前选中界面**实际生效**的外观参数（主配置 + 该界面覆盖）。
 
@@ -215,9 +306,44 @@ class AppearancePage(QWidget):
             return {}
 
     def _on_surface_changed(self):
+        """切换目标界面：**整页重建**。
+
+        不同界面的能力不同（候选条没有裁切、对话框没有材质），
+        重建才能保证"看到的每个控件都对当前界面有效"，
+        也不用在十几个控件上到处判断"该不该显示"。
+
+        ## ⚠ 必须先把目标界面记下来
+
+        重建会**新建** `_surface_combo`。如果直接把新 combo 的
+        `currentData()` 当依据，它此刻还是初始值（main），
+        于是"切到候选条"实际又渲染回主窗口——自己把自己覆盖掉。
+
+        实测就踩到了：切到 picker 后 `_current_surface()` 仍是 main，
+        给 picker 设的独立配置全写进了主配置。
+        """
         if self._loading:
             return
-        self.refresh_from_controller()
+        try:
+            target = self._surface_combo.currentData() or "main"
+        except Exception:
+            target = "main"
+        self._pending_surface = target
+        self._rebuild_body()
+        self._pending_surface = None
+
+    def _current_surface(self):
+        """当前选中的界面。
+
+        重建过程中（`_pending_surface` 已设置）优先用它——
+        那时 `_surface_combo` 可能还没建好或仍是初始值。
+        """
+        pend = getattr(self, "_pending_surface", None)
+        if pend:
+            return pend
+        try:
+            return self._surface_combo.currentData() or "main"
+        except Exception:
+            return "main"
 
     def _on_follow_toggled(self, follow):
         """切「独立配置」：开 = 把当前生效值落成一份覆盖；关 = 删掉覆盖。
@@ -648,51 +774,94 @@ class AppearancePage(QWidget):
             pass
 
     def _sync_enabled(self):
-        """按「当前界面 + 是否开独立配置 + 材质是否开启」联动置灰。"""
+        """按「当前界面 + 是否开独立配置 + 材质是否开启」联动置灰。
+
+        ## 为什么用 _set_enabled 容错
+
+        页面现在**按能力渲染**，不支持的控件根本没被创建
+        （`self.material_combo` 可能不存在）。直接 `self.xxx.setEnabled()`
+        会在切到「对话框」这类界面时抛 AttributeError。
+
+        所以统一走一个"属性存在才操作"的小工具，而不是到处 try。
+        """
         from core.theme_profile import has_override, resolve
+
+        def _set(names, enabled):
+            for n in names:
+                w = getattr(self, n, None)
+                if w is not None:
+                    try:
+                        w.setEnabled(enabled)
+                    except Exception:
+                        pass
 
         try:
             cfg = self._ctrl.config()
             surface = self._current_surface()
             own = surface == "main" or has_override(cfg, surface)
             params = resolve(cfg, surface)
-            on = own and bool(params.get("material_enabled", False))
+            mat_on = own and bool(params.get("material_enabled", False))
 
             # 材质相关：关着就置灰
-            for w in (self.material_combo, self.material_strength_slider,
-                      self.material_saturate_slider,
-                      self.material_brightness_slider,
-                      self.material_image_btn,
-                      self.main_crop_btn, self.main_crop_reset,
-                      self.material_dim_slider):
-                w.setEnabled(on)
+            _set(("material_combo", "material_strength_slider",
+                  "material_saturate_slider", "material_brightness_slider",
+                  "material_image_btn", "main_crop_btn", "main_crop_reset",
+                  "material_dim_slider"), mat_on)
 
-            from ui.window_material import SLOT_MAIN, background_path
+            # 「清除背景图」只在本界面**自己有图**时可用
+            clear_btn = getattr(self, "material_image_clear", None)
+            if clear_btn is not None:
+                slot = self._own_image_slot()
+                has_img = False
+                if slot:
+                    from ui.window_material import background_path
 
-            self.material_image_clear.setEnabled(
-                on and bool(background_path(SLOT_MAIN)))
+                    has_img = bool(background_path(slot))
+                clear_btn.setEnabled(mat_on and has_img)
 
             # 主题相关：只有开了独立配置（或就是主窗口）才能改
-            for w in (self.theme_combo, self.preset_combo,
-                      self.edit_preset_btn, self.panel_alpha_slider):
-                w.setEnabled(own)
+            _set(("theme_combo", "preset_combo", "edit_preset_btn",
+                  "panel_alpha_slider"), own)
         except Exception:
             pass
+
+    # ------------------------------------------------------------ 背景图
+    def _own_image_slot(self):
+        """当前界面**自己的**背景图槽位。
+
+        ## 为什么必须按表面取槽位
+
+        原来 `copy_background(path)` / `clear_background()` 都用默认参数
+        （`SLOT_MAIN`），于是给「托盘菜单」点「清除背景图」清掉的是
+        **主窗口的图**——用户实测反馈过。
+
+        :return: 槽位名；当前界面不支持独立图时返回 None
+        """
+        from core.surface_spec import spec
+
+        sp = spec(self._current_surface())
+        return sp.image_slot if sp.own_image else None
 
     def _pick_image(self):
         from PySide6.QtWidgets import QFileDialog, QMessageBox
 
         from ui.window_material import IMAGE_SUFFIXES, copy_background
 
+        slot = self._own_image_slot()
+        if not slot:
+            return          # 该界面不支持独立背景图（控件本就该置灰）
+
         patterns = " ".join("*" + e for e in IMAGE_SUFFIXES)
         path, _ = QFileDialog.getOpenFileName(
             self, "选择背景图", "", "图片 (%s);;所有文件 (*.*)" % patterns)
         if not path:
             return
-        ok, result = copy_background(path)
+        ok, result = copy_background(path, slot=slot)
         if not ok:
             QMessageBox.warning(self, "背景图", result)
             return
+        # 选了图就把材质打开，否则用户选完看不到任何变化
+        self._material_check.setChecked(True)
         self._refresh_image_label()
         self._sync_enabled()
         # 图片本身不在配置里（存在数据目录），仍要通知重绘
@@ -700,9 +869,31 @@ class AppearancePage(QWidget):
             self._on_apply()
 
     def _clear_image(self):
+        """清除**当前界面自己**的背景图（绝不动主窗口的图）。"""
+        from PySide6.QtWidgets import QMessageBox
+
         from ui.window_material import clear_background
 
-        if clear_background():
+        slot = self._own_image_slot()
+        if not slot:
+            return
+        if slot == "background":
+            # 主窗口的图是所有界面的默认来源，删了会影响一批界面，
+            # 所以必须确认一次（其它界面各有自己的槽位，删了只影响自己）。
+            box = QMessageBox(self)
+            box.setWindowTitle("清除背景图")
+            box.setIcon(QMessageBox.Question)
+            box.setText("要清除主窗口的背景图吗？")
+            box.setInformativeText(
+                "沿用主窗口背景图的界面也会一起变成纯色面板。\n"
+                "已经单独设置过背景图的界面不受影响。")
+            yes = box.addButton("清除", QMessageBox.AcceptRole)
+            box.addButton("取消", QMessageBox.RejectRole)
+            box.exec()
+            if box.clickedButton() is not yes:
+                return
+
+        if clear_background(slot):
             self._refresh_image_label()
             self._sync_enabled()
             if self._on_apply is not None:
@@ -711,16 +902,28 @@ class AppearancePage(QWidget):
     def _refresh_image_label(self):
         import os
 
+        from core.surface_spec import spec
         from ui.window_material import background_path
 
-        p = background_path()
+        surface = self._current_surface()
+        sp = spec(surface)
+        slot = self._own_image_slot()
         try:
-            if p:
-                self.material_image_label.setText(os.path.basename(p))
+            if slot:
+                p = background_path(slot)
+                if p:
+                    self.material_image_label.setText(
+                        "%s（本界面独立）" % os.path.basename(p))
+                else:
+                    self.material_image_label.setText(
+                        "未设置（沿用主窗口）")
             else:
-                self.material_image_label.setText("未设置（使用纯色）")
+                # 不支持独立图 → 如实说明它跟随谁，而不是假装"没设置"
+                self.material_image_label.setText(
+                    "跟随主窗口（此界面不支持独立背景图）")
         except Exception:
             pass
+        del sp
 
     def _open_theme_editor(self):
         """打开主题编辑器（自定义配色）。"""
@@ -797,23 +1000,27 @@ class AppearancePage(QWidget):
             idx = self._surface_combo.findData(surface)
             if idx >= 0 and self._surface_combo.currentIndex() != idx:
                 self._surface_combo.setCurrentIndex(idx)
-            self._follow_check.setEnabled(not is_main)
-            # 主窗口没有"独立配置"这个概念——它就是基准本身。
-            # 之前写 `setChecked(own)` 而 own 含 is_main，于是切到主窗口时
-            # 开关显示成"开"，但它是禁用的：用户看到一个亮着又点不动的开关，
-            # 会以为主窗口的独立配置被锁死了。
-            self._follow_check.setChecked(False if is_main else own)
+            # 主窗口不显示这个开关（页面按能力渲染时它压根不存在）
+            fc = getattr(self, "_follow_check", None)
+            if fc is not None:
+                fc.setEnabled(not is_main)
+                fc.setChecked(False if is_main else own)
 
-            # 主题
-            for combo, val in (
-                    (self.theme_combo, params.get("theme_mode", "light")),
-                    (self.preset_combo, params.get("theme_preset", "classic")),
-                    (self.material_combo, params.get("material_type", "none"))):
+            # 主题 / 配色 / 材质效果（可能因为界面能力不同而没被创建）
+            for combo_attr, val in (
+                    ("theme_combo", params.get("theme_mode", "light")),
+                    ("preset_combo", params.get("theme_preset", "classic")),
+                    ("material_combo", params.get("material_type", "none"))):
+                combo = getattr(self, combo_attr, None)
+                if combo is None:
+                    continue
                 i2 = combo.findData(val)
                 combo.setCurrentIndex(i2 if i2 >= 0 else 0)
 
-            self.material_check.setChecked(bool(
-                params.get("material_enabled", False)))
+            mat_chk = getattr(self, "material_check", None)
+            if mat_chk is not None:
+                mat_chk.setChecked(bool(
+                    params.get("material_enabled", False)))
 
             # 滑块（单位不同，分别格式化）
             for attr, val, fmt in (
@@ -839,8 +1046,11 @@ class AppearancePage(QWidget):
                     if lbl is not None:
                         lbl.setText(fmt(s.value()))
 
-            self._refresh_image_label()
-            self._refresh_main_crop_label()
+            # 这两个只在对应控件存在时才有意义（按能力渲染）
+            if getattr(self, "material_image_label", None) is not None:
+                self._refresh_image_label()
+            if getattr(self, "main_crop_btn", None) is not None:
+                self._refresh_main_crop_label()
             # 动画开关（读原始配置，不属于主题包）
             try:
                 from core.anim_settings import ANIMATIONS as _ANIMS

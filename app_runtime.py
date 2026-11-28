@@ -440,9 +440,21 @@ class AppRuntime:
         所以这里必须：
           1. 只读配置（纯 Python，线程安全）
           2. 弹窗交给 `_dev_error_alert`，它内部会调度到主线程
+
+        ## ⚠ 崩溃类日志不再二次弹窗
+
+        `crash_guard._handle()` 记的 exception 日志，已经**由崩溃弹窗
+        告知过用户**了。如果这里再弹一个"运行时错误"，一次崩溃会出现
+        **两个弹窗**——用户实测反馈过。
+
+        所以 `level == "exception"` 或者来自崩溃兜底的日志一律跳过：
+        崩溃只用一种弹窗告知，日志里也只留崩溃本身那一条。
         """
         try:
             if level not in ("error", "exception"):
+                return
+            # 崩溃已由 crash_guard 的弹窗告知，这里不重复
+            if level == "exception":
                 return
             if not bool(self.config.get("developer_mode", False)):
                 return
@@ -545,37 +557,40 @@ class AppRuntime:
     def _on_crash_alert(self, summary, detail):
         """崩溃回调：弹窗告知用户（非阻塞）。
 
-        ## 复用同一个窗口，新报错合并进去
+        ## 三条硬规则（都是踩过坑加的）
 
-        原来每条异常都新开一个窗（只保留最近 3 个引用）。实测一次
-        连环异常能连弹五六个，把屏幕盖满、用户没法操作。
+        ### 1. 这里**不写日志**
 
-        现在：已有窗口且仍可见 → 把新报错**追加进那个窗口**；
-        否则才新建。
+        崩溃本身已经被 `crash_guard._handle()` 记进日志了。这里再写
+        "已弹出崩溃提示"只是**弹窗动作的回显**，不是新信息；而且它会
+        触发日志订阅者 → 又弹一个开发者报错窗 → 用户看到两个弹窗。
+
+        用户明确要求："崩溃弹窗就不用写到日志了，只要日志有报错就行"。
+
+        ### 2. 合并而不是新开
+
+        已有窗口且仍可见 → 把新报错追加进那个窗口；否则才新建。
+
+        ### 3. 关闭时释放引用
+
+        见 `_bind_dialog_close`。
         """
         try:
             from ui.crash_dialog import show_crash
 
             parent = self.unified if getattr(self, "unified", None) else None
             dlg = getattr(self, "_crash_dialog", None)
-            # 窗口还在（没被用户关掉）→ 合并
             if dlg is not None:
                 try:
                     if dlg.isVisible():
                         dlg.add_report(summary, detail)
-                        append_log("error", "app",
-                                   "已合并崩溃提示：%s" % summary)
-                        return
+                        return          # 不写日志（见 docstring 第 1 条）
                 except RuntimeError:
-                    # 底层 C++ 对象已销毁
-                    dlg = None
+                    dlg = None          # 底层 C++ 对象已销毁
             dlg = show_crash(summary, detail, parent=parent)
             if dlg is not None:
                 self._crash_dialog = dlg
-                # 窗口关闭时放开引用，否则下一次报错会往一个已关闭的
-                # 窗口里追加（用户看不到，对象也一直挂着）
                 self._bind_dialog_close(dlg, "_crash_dialog")
-                append_log("error", "app", "已弹出崩溃提示：%s" % summary)
         except Exception:
             pass
 

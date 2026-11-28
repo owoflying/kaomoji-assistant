@@ -675,3 +675,52 @@ def test_hook_guard_survives_ime_early_return(tmp_path, qapp, monkeypatch):
             "输入的文字变成颜文字。")
     finally:
         w.close()
+
+# ---------------------------------------------------------------------------
+# 崩溃弹窗：一次崩溃只弹一个窗、日志里只留崩溃本身
+# ---------------------------------------------------------------------------
+
+def test_crash_alert_does_not_write_log(qapp):
+    """崩溃弹窗本身不能往日志里写"已弹出崩溃提示"。
+
+    ## 实测踩到的现象
+
+    用户反馈"触发崩溃时还是会弹出 2 个弹窗，并且会在日志里重复写
+    已弹窗、合并弹窗"。
+
+    根因：`_on_crash_alert` 里调了 `append_log("error", ...,
+    "已弹出崩溃提示：...")`。这条日志会触发日志订阅者
+    `_on_log_for_dev` → `_dev_error_alert` → **又弹一个窗**。
+    于是：一次崩溃 = 两个弹窗 + 两条回显日志。
+
+    崩溃本身已经被 `crash_guard._handle()` 记进日志了，弹窗动作的
+    回显是纯噪音，还制造了回路。
+    """
+    src = _read("app_runtime.py")
+    i = src.find("def _on_crash_alert")
+    assert i > 0
+    j = src.find("\n    def ", i + 10)
+    body = _strip_comments(src[i:j])
+    # 去掉 docstring（说明文字里会引用这两句做反面举例）
+    import re as _re
+
+    code = _re.sub(r'""".*?"""', "", body, flags=_re.S)
+
+    assert "已弹出崩溃提示" not in code, (
+        '崩溃回调里仍在写「已弹出崩溃提示」日志——这条日志会触发'
+        '日志订阅者再弹一个窗（一次崩溃弹两个弹窗）。')
+    assert "已合并崩溃提示" not in code, (
+        '崩溃回调里仍在写「已合并崩溃提示」日志——同上，纯噪音。')
+
+
+def test_dev_log_listener_skips_exception_level(qapp):
+    """日志订阅者必须跳过 exception 级（崩溃已由崩溃弹窗告知）。"""
+    src = _read("app_runtime.py")
+    i = src.find("def _on_log_for_dev")
+    assert i > 0
+    j = src.find("\n    def ", i + 10)
+    body = _strip_comments(src[i:j])
+
+    assert 'if level == "exception"' in body, (
+        '日志订阅者没有跳过 exception 级——'
+        '崩溃会同时弹「崩溃提示」和「运行时错误」两个窗。')

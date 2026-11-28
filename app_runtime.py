@@ -909,6 +909,17 @@ class AppRuntime:
         self.menu.addAction(quit_action)
         self.menu.aboutToShow.connect(
             lambda: log_action.setVisible(self._developer_mode()))
+        # 每次弹出前**重刷一次外观**。
+        #
+        # 用户反馈："深色下第一次打开文字是白色，第二次打开就变成黑色"。
+        # 样式表本身查过是对的（两次都是 #ffffff），所以问题出在
+        # 绘制/内部状态在两次弹出之间被改动了——托盘菜单是常驻对象，
+        # 两次弹出之间可能发生主题广播、材质重建、QSS 重排等。
+        #
+        # 与其去追"是哪一次副作用改坏了"，不如在弹出前把该做的都做一遍：
+        # 重新解析主题 → 重贴样式 → 清玻璃缓存。这样每次弹出的起点
+        # 都是确定的，不会带着上一次的残留状态。
+        self.menu.aboutToShow.connect(self._refresh_tray_menu)
         self.tray.setContextMenu(self.menu)
 
         self.tray.setToolTip("颜文字输入辅助器")
@@ -1552,6 +1563,18 @@ class AppRuntime:
             except Exception as e:
                 append_log("warn", "theme", "日志窗口换肤失败：%r" % (e,))
 
+    def _refresh_tray_menu(self):
+        """托盘菜单每次弹出前刷新外观，保证两次打开看起来一致。
+
+        见 `aboutToShow` 连接处的说明：菜单是常驻对象，两次弹出之间
+        可能被主题广播等改过内部状态，导致第二次的观感与第一次不同。
+        这里在显示前把主题解析、样式重贴、玻璃缓存都重置一遍。
+        """
+        try:
+            self._theme_tray_menu()
+        except Exception:
+            pass
+
     def _theme_tray_menu(self, theme=None):
         """给托盘右键菜单换肤。
 
@@ -1580,8 +1603,19 @@ class AppRuntime:
             # QSS 只负责菜单项的文字/选中色，背景由 GlassMenu 自绘。
             if hasattr(menu, "refresh_material"):
                 menu.refresh_material()
+            # 样式表重贴前先清空一次。
+            #
+            # Qt 对"同一个 widget 反复 setStyleSheet"有内部复用/增量处理，
+            # 常驻的 QMenu 在两次弹出之间重贴同一个串时，偶尔不会触发完整
+            # 的 repolish，表现为"第二次打开观感变了"。
+            # 先置空再设置，强制走一次完整的样式解析。
+            menu.setStyleSheet("")
             menu.setStyleSheet(t.menu_style(
                 glass=bool(getattr(menu, "material_enabled", lambda: False)())))
+            try:
+                menu.update()
+            except Exception:
+                pass
         except Exception as e:
             append_log("warn", "theme", "托盘菜单换肤失败：%r" % (e,))
 

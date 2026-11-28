@@ -44,8 +44,19 @@ import traceback
 #: 同一异常签名的最小弹窗间隔（秒）
 DEDUPE_WINDOW = 30.0
 
+#: 短时间内的弹窗总量限制：(统计窗口秒数, 最多弹几个)
+#:
+#: 只按签名去重挡不住**连环异常**——一次操作引发的一串异常各自
+#: 指纹都不同，实测能连弹五六个窗口把屏幕盖满。这里给个总量上限：
+#: 超出的只写日志，不再弹窗。
+BURST_WINDOW = 20.0
+MAX_BURST = 3
+
 #: 已弹过的异常签名 → 上次弹窗时间
 _recent = {}
+
+#: 最近弹窗的时间戳（用于总量限流）
+_burst = []
 
 #: 用户设置的弹窗回调（由 UI 层注入；None 时只记录不弹）
 _alert_callback = None
@@ -116,10 +127,33 @@ def _signature(exc_type, exc_value, tb):
 
 
 def _should_alert(sig):
-    """判断这次异常是否该弹窗（去重窗口内不重复弹）。"""
+    """判断这次异常是否该弹窗。
+
+    ## 两层限流
+
+    ### 1. 同一异常指纹去重（DEDUPE_WINDOW 内不重复弹）
+
+    用「类型 + 消息 + 出错位置」做指纹。同一处代码抛同样的错只弹一次。
+
+    ### 2. 短时间内弹出总量上限（新增）
+
+    只按指纹去重还不够。实测遇到过：一次操作引发**连环异常**
+    ——每个异常的指纹都不同（行号/消息略有差异），于是短时间内
+    弹出五六个几乎一样的窗口，把屏幕盖满，用户根本没法操作。
+
+    现在限制：`BURST_WINDOW` 秒内最多弹 `MAX_BURST` 个，
+    超出的只写日志不弹窗（日志里仍然一条不少）。
+    """
     import time
 
     now = time.monotonic()
+
+    # ---- 2. 总量限流 ----
+    _burst[:] = [t for t in _burst if now - t < BURST_WINDOW]
+    if len(_burst) >= MAX_BURST:
+        return False
+
+    # ---- 1. 指纹去重 ----
     last = _recent.get(sig)
     if last is not None and (now - last) < DEDUPE_WINDOW:
         return False
@@ -127,6 +161,7 @@ def _should_alert(sig):
     for k in [k for k, v in _recent.items() if now - v > DEDUPE_WINDOW]:
         _recent.pop(k, None)
     _recent[sig] = now
+    _burst.append(now)
     return True
 
 
@@ -543,5 +578,6 @@ def uninstall():
     _installed = False
     _alert_callback = None
     _recent.clear()
+    _burst.clear()
     _last_crash.clear()
     sys.excepthook = sys.__excepthook__

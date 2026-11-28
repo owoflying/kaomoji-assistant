@@ -500,18 +500,35 @@ class AppRuntime:
                 pass
 
     def _on_crash_alert(self, summary, detail):
-        """崩溃回调：弹窗告知用户（非阻塞）。"""
+        """崩溃回调：弹窗告知用户（非阻塞）。
+
+        ## 复用同一个窗口，新报错合并进去
+
+        原来每条异常都新开一个窗（只保留最近 3 个引用）。实测一次
+        连环异常能连弹五六个，把屏幕盖满、用户没法操作。
+
+        现在：已有窗口且仍可见 → 把新报错**追加进那个窗口**；
+        否则才新建。
+        """
         try:
             from ui.crash_dialog import show_crash
 
             parent = self.unified if getattr(self, "unified", None) else None
-            # 保存引用，避免被 GC 掉导致窗口一闪而过
-            self._crash_dialogs = getattr(self, "_crash_dialogs", [])
+            dlg = getattr(self, "_crash_dialog", None)
+            # 窗口还在（没被用户关掉）→ 合并
+            if dlg is not None:
+                try:
+                    if dlg.isVisible():
+                        dlg.add_report(summary, detail)
+                        append_log("error", "app",
+                                   "已合并崩溃提示：%s" % summary)
+                        return
+                except RuntimeError:
+                    # 底层 C++ 对象已销毁
+                    dlg = None
             dlg = show_crash(summary, detail, parent=parent)
             if dlg is not None:
-                self._crash_dialogs.append(dlg)
-                # 只保留最近 3 个引用
-                self._crash_dialogs = self._crash_dialogs[-3:]
+                self._crash_dialog = dlg
                 append_log("error", "app", "已弹出崩溃提示：%s" % summary)
         except Exception:
             pass
@@ -542,11 +559,18 @@ class AppRuntime:
 
                     if not _on_main_thread():
                         return
-                    self._error_dialogs = getattr(self, "_error_dialogs", [])
+                    # 已有开发者报错窗口 → 合并进去，不要越弹越多
+                    dlg = getattr(self, "_error_dialog", None)
+                    if dlg is not None:
+                        try:
+                            if dlg.isVisible():
+                                dlg.add_report(summary, detail)
+                                return
+                        except RuntimeError:
+                            dlg = None
                     dlg = show_error(summary, detail, parent=parent)
                     if dlg is not None:
-                        self._error_dialogs.append(dlg)
-                        self._error_dialogs = self._error_dialogs[-3:]
+                        self._error_dialog = dlg
                 except Exception:
                     pass
 

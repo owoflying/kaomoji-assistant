@@ -57,6 +57,8 @@ class CrashDialog(QDialog):
         self._detail = detail
         self._report_fn = report_fn
         self._expanded = False
+        #: 已合并的报错（第 0 条是构造时那条）
+        self._extra = [(summary, detail)]
 
         self.setMinimumWidth(520)
         try:
@@ -79,6 +81,8 @@ class CrashDialog(QDialog):
         msg.setObjectName("BodyText")
         msg.setWordWrap(True)
         root.addWidget(msg)
+        #: 摘要行引用（`add_report()` 会在合并新报错时更新它）
+        self._summary_label = msg
 
         # 状态说明：**按实际情况生成，不能写死**
         #
@@ -129,6 +133,61 @@ class CrashDialog(QDialog):
         close.clicked.connect(self.accept)
         row.addWidget(close)
         root.addLayout(row)
+
+    def add_report(self, summary, detail):
+        """把新的一条报错追加到**当前窗口**里，而不是再弹一个窗。
+
+        ## 为什么这样做
+
+        一次操作可能引发连环异常（每个指纹不同，去重挡不住）。
+        实测能连弹五六个几乎一样的窗口把屏幕盖满，用户根本没法
+        操作，也看不清到底出了几个错。
+
+        合并到一个窗口后：
+
+            * 只占一个窗口，不遮挡工作区
+            * 标题显示累计条数，一眼知道出了几个错
+            * 详情区按时间顺序累积，方便一起导出
+
+        :return: 累计条数
+        """
+        self._extra.append((summary, detail))
+        n = len(self._extra)
+        # 标题带计数，让用户知道不止一个错
+        try:
+            self.setWindowTitle("程序遇到了 %d 个问题" % n)
+        except Exception:
+            pass
+        # 摘要行显示最新一条
+        try:
+            if getattr(self, "_summary_label", None) is not None:
+                self._summary_label.setText(
+                    "%s（共 %d 条，见详情）" % (summary, n))
+        except Exception:
+            pass
+        # 详情区累积
+        try:
+            parts = []
+            for i, (s, d) in enumerate(self._extra, 1):
+                parts.append("── 第 %d 条 ──\n%s\n%s" % (i, s, d))
+            self._detail_view.setPlainText("\n\n".join(parts))
+        except Exception:
+            pass
+        # 有新错误时把详情展开，否则用户不知道又多了
+        try:
+            if not self._expanded:
+                self._expanded = True
+                self._detail_view.setVisible(True)
+                self._toggle.setText("收起详情")
+        except Exception:
+            pass
+        try:
+            self.show()
+            self.raise_()
+            self.activateWindow()
+        except Exception:
+            pass
+        return n
 
     def note_report_saved(self, path):
         """告知弹窗"报告已经自动存到哪了"，并把路径复制到剪贴板。

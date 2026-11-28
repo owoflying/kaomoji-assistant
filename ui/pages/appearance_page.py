@@ -181,8 +181,12 @@ class AppearancePage(QWidget):
             self._add_row(lay, "启用背景材质", self._material_toggle())
             into = ""
             if sp.own_image:
-                into = "；可用「选择图片」为本界面单独指定背景图，" \
-                       "不设置则沿用主窗口那张。"
+                if surface == "main":
+                    into = "；可用「选择图片」为主窗口指定背景图，其余界面默认沿用它。"
+                else:
+                    into = ("；可用「选择图片」为本界面单独指定背景图。"
+                            "未开启「独立配置」时沿用主窗口那张，"
+                            "开启后本界面只用自己这张（未设置则显示纯色面板）。")
             else:
                 into = "；此界面不提供独立背景图，始终沿用主窗口那张。"
             self._hint(lay, "设置了背景图时，面板会自动让位给背景图"
@@ -860,8 +864,12 @@ class AppearancePage(QWidget):
         if not ok:
             QMessageBox.warning(self, "背景图", result)
             return
-        # 选了图就把材质打开，否则用户选完看不到任何变化
-        self._material_check.setChecked(True)
+        # 选了图就把材质打开，否则用户选完看不到任何变化。
+        # ⚠ 属性名是 `material_check`（无前导下划线）；写成 `_material_check`
+        # 会 AttributeError，而且是在"已经复制完图片"之后才炸——
+        # 表现为"报错 + 设置不生效"。
+        if getattr(self, "material_check", None) is not None:
+            self.material_check.setChecked(True)
         self._refresh_image_label()
         self._sync_enabled()
         # 图片本身不在配置里（存在数据目录），仍要通知重绘
@@ -899,6 +907,16 @@ class AppearancePage(QWidget):
             if self._on_apply is not None:
                 self._on_apply()
 
+    def _is_override_on(self):
+        """当前界面是否开着「独立配置」。"""
+        try:
+            from core.theme_profile import has_override
+
+            s = self._current_surface()
+            return s == "main" or has_override(self._ctrl.config(), s)
+        except Exception:
+            return False
+
     def _refresh_image_label(self):
         import os
 
@@ -915,8 +933,15 @@ class AppearancePage(QWidget):
                     self.material_image_label.setText(
                         "%s（本界面独立）" % os.path.basename(p))
                 else:
-                    self.material_image_label.setText(
-                        "未设置（沿用主窗口）")
+                    # 开了独立配置就是完全独立：没有自己的图 = 纯色面板，
+                    # **不会**回落到主窗口那张。文字必须如实说明，
+                    # 写成"沿用主窗口"会误导用户。
+                    if self._is_override_on():
+                        self.material_image_label.setText(
+                            "未设置（本界面用纯色面板）")
+                    else:
+                        self.material_image_label.setText(
+                            "未设置（沿用主窗口）")
             else:
                 # 不支持独立图 → 如实说明它跟随谁，而不是假装"没设置"
                 self.material_image_label.setText(

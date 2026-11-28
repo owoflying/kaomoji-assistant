@@ -415,15 +415,13 @@ def test_appearance_page_does_not_hardcode_main_slot():
 
     hit = _scan(body)
     if hit is not None:
-        # 命中的可能是 docstring 里的举例（"原来 copy_background(path)
-        # 用的是默认参数"这种说明文字）。逐行判断：能解析成真实调用的行里
-        # 必须带 slot；只在字符串/注释里出现的不算。
+        # 命中的可能是 docstring 里的举例。逐行判断：能解析成真实调用
+        # 的行里必须带 slot；只在字符串/注释里出现的不算。
         bad = []
         for line in body.splitlines():
             s = line.strip()
             if not s or "def " in s:
                 continue
-            # 跳过明显是文档说明的行（含中文标点的散文）
             if re.match(r"^[^《\"']*[\u4e00-\u9fff]", s) and "=" not in s:
                 continue
             m2 = re.search(
@@ -435,3 +433,50 @@ def test_appearance_page_does_not_hardcode_main_slot():
             "外观页这些调用没传 slot（会用默认主窗口槽位，"
             "在别的界面点「清除」会删掉主窗口的图）：\n  "
             + "\n  ".join(bad))
+
+
+def test_build_packages_all_readonly_data():
+    """打包脚本必须带上全部只读数据。
+
+    ## 实测踩到的现象
+
+    `build.py` 原来逐个写 `--add-data`，漏了 `data/themes.json`。
+    结果**发布版没有主题预设**——只剩代码里回落的 classic，
+    midnight / warm / contrast 全消失，主题编辑器也失去基底色板。
+
+    而本地源码运行完全正常，这个 bug **只有打包后才暴露**，
+    很容易在发布前漏掉。
+
+    这条测试直接检查清单覆盖了 data 目录下的只读文件。
+    """
+    import os as _os
+
+    root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+    try:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "build_mod", _os.path.join(root, "build.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    except SystemExit:
+        raise AssertionError(
+            "build.py 的自检失败：READONLY_DATA 里登记的文件不存在。")
+    except Exception as e:
+        raise AssertionError("无法导入 build.py：%r" % (e,))
+
+    listed = {rel.replace("/", _os.sep)
+              for rel, _desc in getattr(mod, "READONLY_DATA", [])}
+    for need in ("data" + _os.sep + "themes.json",
+                 "data" + _os.sep + "kaomoji.json",
+                 "data" + _os.sep + "emotion_model.json"):
+        assert need in listed, (
+            "build.py 的 READONLY_DATA 没登记 %r——\n"
+            "打包后的 exe 会缺这个文件，而源码运行看不出问题。" % (need,))
+
+    # ARGS 里确实生成了 --add-data 参数对
+    args = getattr(mod, "ARGS", [])
+    n_add = sum(1 for a in args if a == "--add-data")
+    assert n_add >= len(listed), (
+        "build.py 的 ARGS 只生成了 %d 条 --add-data，但清单里有 %d 项"
+        % (n_add, len(listed)))

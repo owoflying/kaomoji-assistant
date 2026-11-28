@@ -30,9 +30,53 @@ DATA = os.path.join(HERE, "data", "kaomoji.json")
 #: 情绪识别小网络的权重。训练脚本 tools/train_emotion_model.py 产出。
 #: ⚠ 必须随包分发，否则打包后情绪识别只能退回关键词匹配。
 DATA_MODEL = os.path.join(HERE, "data", "emotion_model.json")
+
+#: 需要随包分发的**全部**只读数据文件。
+#:
+#: ## 为什么改成列表 + 自动校验
+#:
+#: 原来是逐个写 `--add-data`。结果 `data/themes.json` 被漏了——
+#: 发布版读不到预设文件，只剩代码里回落的 classic，
+#: midnight / warm / contrast 全部消失，主题编辑器也失去基底色板。
+#: 而本地源码运行一切正常，**这个 bug 只有打包后才暴露**。
+#:
+#: 所以这里改成：登记清单 + 构建时逐个断言存在，任何一项缺失直接
+#: 构建失败，而不是打出一个"少了点东西"的包发出去。
+#:
+#: ⚠ 新增只读数据（预设、权重、内置文案…）时**必须**加到这里。
+#: 用户数据（user_*.json / config.json）不能加，那些在 APPDATA 里。
+READONLY_DATA = [
+    ("data/kaomoji.json", "颜文字库"),
+    ("data/emotion_model.json", "情绪识别权重"),
+    ("data/themes.json", "主题预设色板"),
+    ("data/rank_net.json", "推荐网络初始权重"),
+]
+
 FONT = os.path.join(HERE, "ui", "fonts", "FluentSystemIcons-Regular.ttf")
 # 应用图标：与系统托盘同款（白底圆角 + 颜文字），构建时自动生成 .ico
 ICO = os.path.join(HERE, "app.ico")
+
+
+def readonly_data_args():
+    """生成 `--add-data` 参数对，并校验每个文件都存在。"""
+    out = []
+    missing = []
+    for rel, desc in READONLY_DATA:
+        path = os.path.join(HERE, rel.replace("/", os.sep))
+        if not os.path.isfile(path):
+            missing.append("%s（%s）" % (rel, desc))
+            continue
+        # 目标目录固定是 data/（与 core.runtime.resource_path 对应）
+        out.extend(["--add-data", "%s%sdata" % (path, os.pathsep)])
+    if missing:
+        raise SystemExit(
+            "缺少需要随包分发的只读数据：\n  "
+            + "\n  ".join(missing)
+            + "\n\n这些文件缺失会导致发布版功能不完整"
+              "（例如没有主题预设色板）。\n"
+              "请先补齐，或确认 READONLY_DATA 清单是否写错。")
+    return out
+
 
 ARGS = [
     "main.py",
@@ -42,10 +86,9 @@ ARGS = [
     "--icon", ICO,         # exe 文件图标，与托盘同款
     "--noconfirm",
     "--clean",
-    # 只读资源 data/kaomoji.json：运行时用 resource_path 还原到 data/ 子目录
-    "--add-data", "%s%sdata" % (DATA, os.pathsep),
-    # 情绪识别网络权重（同目录，落到 data/ 下）
-    "--add-data", "%s%sdata" % (DATA_MODEL, os.pathsep),
+    # 只读数据（颜文字库 / 情绪权重 / 主题预设 / 推荐网络权重）。
+    # 清单见 READONLY_DATA，缺失会直接构建失败。
+] + readonly_data_args() + [
     # 内置图标字体（Fluent System Icons，MIT 许可）：随包分发，Win10 也能显示
     # 目标路径需与 core.runtime.resource_path("ui","fonts",...) 完全对应。
     # 注意：--add-data 的目标必须是“目录”，文件名由源自动带入；
